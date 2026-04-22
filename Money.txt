@@ -1,0 +1,377 @@
+
+아래의 조건에 해당되는 프로그램을 생성하시오.
+- 위치: E:\Git\Money 폴더
+
+- 목표: KOSPI 및 KOSDAQ 주가예측
+
+- 조건들
+  * 1년전부터 각 일자별 대한민국의 모든 뉴스를 찾음
+  * 각 일자별 주식수익률 20%이상 되는 종목들 정리
+  * N-1일의 뉴스와 N일의 주식수익률과의 상관관계를 정리
+  * 위의 데이터들을 토대로 N+1일의 주식수익률 20%이상 될 것으로 예상되는 종목들 모두 찾음
+  * 예측으로 구성된 종목들과 실제 수익률 비교 및 관련 뉴스들도 함꼐 볼 수 있어야 하며,
+    특히 어떤 정보로 예측이 되었는지 highlight 표시 해서 보여주어야 함
+  
+
+- 주의사항
+  * 위의 주식수익률 20%이상 될 것으로 예상되는 종목들 중 실제로는 마이너스 수익률 된것들은 특별히 정리되어야 하고
+    왜 차이점이 발생하였는지 분석내용 보여줘야 함
+  * N일이 휴일 또는 공휴일 이후인 경우는 뉴스정보는 직전 주식개장일부터 N-1일까지 찾아봐야 함
+  * 한국의 주식장은 15:00에 마감되기에
+    N일 장이 완료되기 전인 14:00 ~ 14:50분까지 N+1일에 20%이상 상승할 종목을 매수하기 위함임.
+    그렇기에 N+1일 주식수익률 20%이상 될 것으로 예상되는 종목들의 대상 뉴스는 N-1일 14:30까지만 대상으로 해야함.
+    14:30이후의 뉴스와 매수대상 종목의 실제수익률이 20%미만인 경우와의 상관관계도 조사해야 함
+
+- 테스트
+
+  * 테스트로 2026년 1월 2일부터 찾아서 각 파일로 정리.
+    한달 간격으로 파일 1개 생성.
+    주별 Tab으로 분리 및 각 일자별은 아래에 append
+  * 파일 위치  : E:\Git\Money\output\
+  * 파일명 예시: report_2026.01
+                report_2026.02
+				report_2026.03
+				report_2026.04
+				... ...     
+  * 각 파일의 내용은 종목명, 예측수익률, 실제수익률 등 정리해서 보기좋게 정리
+  * 종목명 click시 종목차트로 link가 연결되어야 함
+  * 날짜를 지정하지 않고 실행하면 N일(당일)의 14:30까지의 뉴스 대상으로 
+    N+1일에 주식수익률 20%이상 될 것으로 예상되는 종목들을 찾으면 됨.
+    날짜를 지정하면 (ex: .\.venv\Scripts\python main.py\20260401) 해당 날짜를 대상으로
+	N+1일에 주식수익률 20%이상 될 것으로 예상되는 종목들을 찾으면 됨.
+  * 어떤 뉴스로 인하여 예측수익률이 높게 나왔는지 알려주고,
+    실제상승률은 어떤 뉴스로 높게 나왔는지도 함께 알려줘.
+  * .\.venv\Scripts\python.exe main.py [N일자] 실행시(ex> .\.venv\Scripts\python.exe main.py 20260401)
+    N이 당일이면 뉴스는 오늘 14:30까지의 정보로 예측을 해서 보여주고
+	N이 오늘 이전일자면 실제수익률과 예측수익률을 함께 보여주는 형식이야.
+  * N+1일이 주식시장이 휴장일이 아닌경우에는 14:30분에 자동으로 아래의 명령을 실행하고
+    Set-Location e:\Git\Money; $env:MOCK_NEWS = "0"; .\.venv\Scripts\python.exe main.py 
+	파일 생성(또는 append)가 완료되면 
+	E:\Git\Money\output 폴더가 자동으로 열리고
+	생성된(또는 append)된 파일도 자동으로 열어줘.
+  * 예측수익률과 실제수익률이 차이가 나는 경우, 상세분석한 내용을 함께 보여줘.
+  * 20%이상 상승한 종목이 실제 존재하는데 Report에는 누락되어 있음.
+    N+1일의 수익률을 예측하는 경우는 예측종목들만 보여주고,
+	과거의 수익률 분석을 하는경우에는 20%이상 상승한 종목을 함께 보여주어야 함.
+  * main.py 가 실행되고 나면
+  	항상 E:\Git\Money\output 폴더가 자동으로 열리고, 생성된(또는 append)된 파일도 자동으로 브라우저로 열어야 함
+
+- 기타
+ * 각 File의 function들에 주석을 상세히 달아주고,
+   전체적인 흐름, 구성, 사용방식 등에 대한 상세설명용 파일도 하나 생성해줘.
+
+
+Money\data\cache\news 에 2773개의 종목들에 해당되는 뉴스 조회하는 부분과 
+Money\data\cache 에 2773개의 종목정보 가져오는 부분이 시간이 너무 오래걸림.   
+뉴스 조회하는 부분은 종목코드별 날짜From ~ 날짜To로 조회하는 것으로 되어있을텐데, 아니면 변경이 필요함.
+또한 [키움 Open API+]를 사용하는 방법을 고려해보고, 적합하면 그에 맞게 변경해줘.
+
+
+report 파일 관련하여
+현재 1주별 1개의 파일로 보여주는 부분을
+한달간격으로 1개의 파일로 생성해주고
+각 일자별은 아래에 append하는 식으로 생성해줘.
+
+
+  * 테스트로 2026년 1월 2일부터 찾아서 각 파일로 정리.
+    한달 간격으로 파일 1개 생성.
+    주별 Tab으로 분리 및 각 일자별은 아래에 append
+  * 파일 위치  : E:\Git\Money\output\
+  * 파일명 예시: report_2026.01
+                report_2026.02
+				report_2026.03
+				report_2026.04
+				... ... 
+
+
+* https://developers.naver.com/apps/#/myapps/91T0YGpOLvMr_Mpdztpo/overview
+
+
+* ohlcv_long_full.parquet 파일만 먼저 생성하려고 하면 어떤 명령어로 어떤 파일을 실행해야 해? 기간은 20260101 ~ 20260410
+  인자 없이 실행하면 예전처럼 TRAIN_START_DEFAULT - 10일 ~ 오늘 구간으로 받음
+  > Set-Location "e:\Git\Money"; .\.venv\Scripts\python.exe scripts\build_ohlcv_full_cache.py 20260101 20260410
+    Set-Location "e:\Git\Money"; .\.venv\Scripts\python.exe scripts\build_ohlcv_full_cache.py 20250101 20260410
+  python scripts\build_ohlcv_full_cache.py 20250101 20260414
+
+### git
+	해당 폴더 마우스 오른쪽 > Git Bash Here
+	$ git init  (.git 폴더 생성됨)
+	$ git status
+	$ git add .
+	$ git commit -m "Initial commit"									$ git commit -m "commit message"
+	$ git remote add origin https://github.com/mohican0607/Money.git	$ git remote add origin REPOR주소
+	$ git remote -v													  	  git과 연결
+	$ git push origin master
+
+### pykrx
+	.\.venv\Scripts\pip.exe install pykrx
+	
+
+	python -m pip install -U pykrx
+
+	pip install scikit-learn
+	e:\Git\Money\.venv\Scripts\python.exe e:\Git\Money\main.py
+
+전역 C:\Python310을 꼭 고치고 싶다면
+다른 터미널·IDE·백신이 Python310 폴더를 잡고 있지 않게 한 뒤
+관리자 권한이 필요하면 관리자 PowerShell에서:
+
+
+### ticker	20260301 ~ 20260419	
+	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260326 20260331 --force
+
+
+### both	2025911 ~ 20260420
+	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20251001 20251102 --force
+	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260422
+	
+	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20250915 --force
+
+
+### main.py
+	--rebuild-train-snapshot	전체 재계산 후 스냅샷 덮어쓰기 (최우선)
+	--no-train-snapshot			스냅샷 미사용 (매번 전부 메모리에서만 계산, 파일 읽기/쓰기 없음)
+	--use-train-snapshot		생략 가능. 기본과 동일(호환·명시용)
+
+	.\.venv\Scripts\python.exe main.py --use-train-snapshot     20260301 20260414	
+	.\.venv\Scripts\python.exe main.py --rebuild-train-snapshot 20250409 20260423
+
+	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 오늘
+	.\.venv\Scripts\python.exe main.py 20260401 내일
+
+	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260422
+	.\.venv\Scripts\python.exe main.py 20260410 20260423
+
+
+	pip install pykrx
+	
+	마누스
+	일품아 ?
+
+	
+	
+
+###	9401 - 8시에는 타야할 듯
+	
+	1. 프로젝트명 : 식음료 관련회사 ERP 구축
+	2. 기 간 : 2026.05 ~ 2027.10
+	3. 요청 등급 : 고급 – 다수
+	4. 수행 장소 : 종로(남대문) 인근
+	5. 수행 업무 : SAP ERP 컨설턴트
+	6. 요구 기술 : SAP ERP - FI, CO, MM, SD, PP, QM 컨설턴트
+	   -각 모듈별 다수 투입이 요구됩니다.
+	7. 비 고 : 컨설턴트 인원으로 지원 요청드립니다.
+
+
+mohican06072
+Spdlqj@Dkagh#$!
+
+91T0YGpOLvMr_Mpdztpo
+LRA2yqtZmK
+
+
+KyTmt3idTfNfAMUgXjSP
+hdihTayhLe
+
+
+
+pip install pykrx
+python.exe -m pip install --upgrade pip (오류발생시 --user 붙임 > python.exe -m pip install --upgrade pip --user)	
+
+
+'python main.py 20260415'를 실행하게 되면,
+20260414의 14:30까지의 뉴스를 토대로 20260415의 예측수익률을 구해서 보여줘야 하는데, Report에 아무런 종목이 보이지 않음.
+
+USE_DECISION_NEWS_INTRADAY_CUTOFF=1일 때 위 규칙 적용 (현재 기본값)
+USE_DECISION_NEWS_INTRADAY_CUTOFF=0이면 컷오프 없이 윈도우 전체 뉴스를 early로 사용
+N=오늘 실시간 실행 시에는 코드상 당일 시점에 따라 live_n 처리로 당일 뉴스 포함 범위가 달라질 수 있음
+즉 질문하신 흐름(“N일 예측은 N-1 14:30까지 뉴스 기반”)이 현재 설계의 핵심 로직이 맞습니다.
+
+참고: pykrx·KRX 전종목 등락률 조회에 실패했습니다. 실제 20%↑는 OHLCV에 있는 종목 범위에서만 집계합니다. (pip install pykrx, 네트워크·영업일 확인)
+
+
+훈련 사례가 없으면 22%를 씁니다.
+==> 
+이 22%는 강한 근거 기반이라기보다 “초기 기본값” 성격이므로, 실전 매수 신뢰도를 위해서는 조정이 필요합니다.
+원하시면 바로 다음 중 하나로 바꿔드릴 수 있습니다.
+ 22% -> 20%로 보수화
+ 고정값 제거 후 이력 없으면 — 표시(가장 엄격)
+ 시장 평균/업종 평균 기반 fallback으로 변경(그나마 합리적)
+
+### 최대 호출건수
+	ticker 모드 최대 호출 수(일자 1일 기준)
+		종목수 × NEWS_TICKER_NAVER_MAX_PAGES
+
+		현재 종목 2773, NEWS_TICKER_NAVER_MAX_PAGES=10이면
+		최대 27,730 호출/일
+
+	market 모드 최대 호출 수
+		시장 쿼리 개수 × NEWS_NAVER_MARKET_MAX_PAGES
+
+		현재 코드상 시장 쿼리 개수는 보통 10개(기본 4개 + NEWS_QUERY_SEEDS에서 6개)
+		NEWS_NAVER_MARKET_MAX_PAGES=10이면
+		최대 100 호출/일
+
+	both 모드 최대 호출 수
+		ticker + market 이므로
+
+		최대 27,830 호출/일 (27,730 + 100)
+		즉 both는 ticker 대비 호출이 아주 조금(+100) 늘어나는 구조입니다.
+		핵심 부담은 여전히 ticker 쪽(종목 수 × 페이지 수)입니다.
+
+
+
+
+
+6-747. GMO 프로젝트-GCP 데이터 파이프라인 개발/운영  
+★	SI	고:1
+즉시~'27/12	
+남부터미널역	
+(모두 필수) Python, Airflow, GCP
+업무 : Airflow 기반 ETL 개발/운영, 워크플로우 설계, 데이터 정합성 및 리포팅, Adhoc 데이터 대응
+rec_link_53045165
+<a class="str_tit " id="rec_link_53045165" onclick="s_trackApply(this, 'company_info_view', 'close_recruit');" style="pointer-events:none;" title="상황 인식/음성 AI/지능: 추론&amp;amp;판단 연구·개발자 채용" href="" target="_blank" onmousedown=""><span>상황 인식/음성 AI/지능: 추론&amp;판단 연구·개발자 채용</span></a>
+
+https://www.saramin.co.kr/
+
+https://www.saramin.co.kr/zf_user/jobs/relay/view?view_type=list&rec_idx=53045165
+https://www.saramin.co.kr/zf_user/jobs/relay/view?view_type=list&rec_idx=53604425
+
+
+
+
+
+----------------------------------------------------------------------------------------------------
+krx_listing.parquet				KRX 상장 목록 (FinanceDataReader)
+ohlcv_long_full.parquet			전종목 일봉 OHLCV (기본, USE_KRX_OHLCV=0)
+ohlcv_long_krx_full.parquet		전종목 일봉             (USE_KRX_OHLCV=1 일 때)
+ohlcv_long_*Ntickers.parquet	.env에 SAMPLE_TICKERS 숫자가 있을 때만
+
+----------------------------------------------------------------------------------------------------
+E:Git\Money> python main.py 20260301 20260414
+	가격 데이터 수집(캐시 있으면 재사용)…
+	전종목 OHLCV 다운로드 타임아웃 28800s, 워커 1, (2773종목) -> 캐시 ohlcv_long_full.parquet
+	디스크: 기존 OHLCV 캐시 읽는 중... (ohlcv_long_full.parquet)
+	캐시에 있는 날짜 범위: 2025-01-02 ~ 2026-04-13
+	OHLCV 캐시 확장: 기존 2025-01-02~2026-04-13, 추가 구간 2026-04-14~2026-04-14
+	네트워크: OHLCV 수신 시작: 2773건, 동시 1워커 (가격 다운로드(캐시 보강))
+	가격 다운로드(캐시 보강):  44%|█████████████████████████▎                               | 1230/2773 [01:28<01:50, 13.90it/s]
+
+----------------------------------------------------------------------------------------------------
+* 프로젝트 목적, 
+개별로 실행가능한 파일인 경우, 각 파일 실행방법 등.
+
+------------------------------------------
+오폭 관련
+
+위성사진과 실제 출입하는 사람들의 특징을 비교 및 확인하여
+실제 해당 건물이 어떠한 용도로 사용되는지 학인하고 싶다.
+
+건물의 실제 활용성 등을 확인하고 싶다...
+------------------------------------------
+3일전 ~ 1일전 14:30분 까지의 뉴스들을 확인하여
+다음 1일 ~ 3일의 주가가 20%이상 상승하는 주식종목을 예측하는 프로그램.
+
+sism2100
+DPTMdkdldptmDPA@#!
+----------------------------------------------------------------------------------------------------
+
+----------------------------------------------------------------------------------------------------
+
+
+
+----------------------------------------------------------------------------------------------------
+
+
+build_ohlcv_full_cache.py 실행 시 진행상태를 알고 싶음. 
+  현재는 Network로 부터 데이터를 받고 있는지 조차 알 수 없기에 진행상황을 보여주었으면 좋겠음.
+
+build_ohlcv_full_cache.py 실행 시 아래와 같은 메시지가 보이는데 데이터를 받아오지 못해서 그런건가?
+Polling the job until it finishes — it's processing 2,773 symbols and exceeded the initial wait.
+  
+  
+$ Set-Location e:\Git\Money; $env:MOCK_NEWS = "0"; .\.venv\Scripts\python.exe main.py 20260101 20260410
+$ Set-Location e:\Git\Money; $env:MOCK_NEWS = "0"; .\.venv\Scripts\python.exe main.py 20260401 20260410
+$ Set-Location e:\Git\Money; $env:MOCK_NEWS = "0"; .\.venv\Scripts\python.exe main.py 20260410
+
+$ Set-Location e:\Git\Money; $env:PYTHONIOENCODING='utf-8'; $env:PYTHONUTF8='1'; python main.py 20260101 20260410
+$ Set-Location e:\Git\Money; $env:PYTHONIOENCODING='utf-8'; $env:PYTHONUTF8='1'; python main.py 20260301 20260410
+$ Set-Location e:\Git\Money; $env:PYTHONIOENCODING='utf-8'; $env:PYTHONUTF8='1'; python main.py 20260401 20260410
+
+
+아래의 질문에 상세하고 정확한 답변을 부탁합니다.
+1. 뉴스의 내용이 너무 적음. 종목이 2773개 인데 하루치에 해당되는 뉴스가 어떻게 1000건도 안되지?
+2. 뉴스의 제목만으로 예측과 추론을 하는것인가? 뉴스의 내용으로 학습하고 예측을 해야 하는데.
+
+
+
+느티골	입구	(계곡위 다리 건너 짐을 날라야하는 불편함. 1호 가장 안쪽 private)
+가마골	중간 (뷰가 최고.)
+밤티골	안쪽 (1호 2호 바비큐장 독립적. 1호 가장 private)
+
+
+Set-Location e:\Git\Money
+$env:MOCK_NEWS = "0"
+$env:PYTHONUNBUFFERED = "1"
+.\.venv\Scripts\python.exe -u main.py 20260410
+
+* --force 또는 이번 로직이 빈 [] 캐시를 지우고 다시 받습니다.
+python scripts/fetch_news_naver_day.py 20260410 --force
+
+'fetch_news_naver_day.py 특정일자' 대신
+'fetch_news_naver_day.py 특정일자From 특정일자To'로 변경해줘.
+
+python main.py 20260410
+python main.py 20260401 20260410
+python main.py 20260101 20260410
+
+python scripts/fetch_news_naver_day.py 20260401 20260409 --force
+
+
+ohlcv_long_full.parquet
+
+              1%|1         | 36/2773 [00:00<00:59, 46.16it/s]
+���� �ٿ�ε�:   2%|1         | 49/2773 [00:01<01:00, 44.75it/s]
+���� �ٿ�ε�:   2%|2         | 65/2773 [00:01<00:52, 51.17it/s]
+���� �ٿ�ε�:   3%|2         | 78/2773 [00:01<00:53, 50.83it/s]
+���� �ٿ�ε�:   3%|3         | 92/2773 [00:01<00:51, 51.87it/s]
+���� �ٿ�ε�:   3%|3         | 97/2773 [00:20<00:51, 51.87it/s]
+
+
+
+
+cf> https://openapi.naver.com/v1/search/news.json?query=2026%EB%85%84+4%EC%9B%94+10%EC%9D%BC+%EC%A6%9D%EC%8B%9C&display=100&start=1&sort=date
+	https://openapi.naver.com/v1/search/news.json?query=2026년+4월+10일+증시&display=100&start=1&sort=date
+
+Client ID		CZ1fNuY7CbTu9ygZ2EgX
+Client Secret	H36bdoK18Z
+
+https://api-v2.deepsearch.com/v2/manual/redoc#tag/%EA%B5%AD%EB%82%B4-%EA%B8%B0%EC%82%AC
+https://api-v2.deepsearch.com/v1/articles?company_name=삼성전자&date_from=2024-04-25&date_to=2024-04-25&api_key={인증키}
+
+
+krx_listing.parquet			KOSPI/KOSDAQ 등 상장 종목 Code·Name·Market (지금 생성됨)
+ohlcv_long_full.parquet		종목별 일봉 long 테이블 (별도로 전종목 다운로드 필요, 시간 오래 걸림)
+
+DeepSearch(딥서치)의 API를 사용하려고 하는데
+실제 사용할 수 이는 '인증키'값을 하나 알려줘.
+
+https://api-v2.deepsearch.com/v1/articles?company_name=삼성전자&date_from=2024-04-25&date_to=2024-04-25&api_key={인증키}
+
+
+
+
+NAVER_NEWS_URL = "https://openapi.naver.com/v1/search/news.json"
+
+
+'python scripts/fetch_news_naver_day.py 20260410'을 실행하게 되면
+news.py에서 실제 호출되는 NAVER_NEWS_URL의 값을 보여줘. 브라우저에서 확인해 보기 위해 필요함.
+
+news.py에서 왜 호출URL이 아래처럼 되어있지?
+https://openapi.naver.com/v1/search/news.json?query=2026년+4월+10일+증시&display=100&start=1&sort=date
+
+각 종목별 (2773개의 종목) 종목명으로 아래처럼 조회해아 하는것 아닌가?
+https://openapi.naver.com/v1/search/news.json?query=2026년+4월+10일+삼성전자&display=100&start=1&sort=date
+https://openapi.naver.com/v1/search/news.json?query=2026%EB%85%84+4%EC%9B%94+10%EC%9D%BC+%EC%82%BC%EC%84%B1%EC%A0%84%EC%9E%90&display=100&start=1&sort=date
+https://openapi.naver.com/v1/search/news.json?query=2026%EB%85%84+4%EC%9B%94+10%EC%9D%BC+%EC%82%BC%EC%84%B1%EC%A0%84%EC%9E%90&display=100&start=1&sort=date
+

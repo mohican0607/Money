@@ -1,0 +1,42 @@
+[다시 받는 방법]
+
+
+1) 시세(OHLCV)만 다시 받기 (권장 스크립트)
+프로젝트 루트에서:
+
+Set-Location E:\Git\Money; python scripts/build_ohlcv_full_cache.py
+
+또는 구간 지정:
+Set-Location E:\Git\Money; python scripts/build_ohlcv_full_cache.py 20250101 20260410
+
+<- 이미 같은 이름의 parquet이 있으면 “비는 날짜만” 이어 받아 병합합니다.
+   통째로 새로 받으려면 먼저 해당 parquet을 지운 뒤 위 명령을 실행하세요.
+		USE_KRX_OHLCV=0 → data\cache\ohlcv_long_full.parquet     삭제
+		USE_KRX_OHLCV=1 → data\cache\ohlcv_long_krx_full.parquet 삭제
+예시:
+		Remove-Item E:\Git\Money\data\cache\ohlcv_long_full.parquet -ErrorAction SilentlyContinue python scripts/build_ohlcv_full_cache.py 20260101 20260410
+(KRX 모드면 ohlcv_long_krx_full.parquet로 바꿔서 삭제.)
+
+
+
+2) 상장 목록만 다시 받기
+  코드상 krx_listing.parquet가 있으면 다시 안 받습니다.
+  다시 받으려면 파일을 지운 뒤, OHLCV 빌드나 main을 한 번 돌리면 됩니다.
+
+  Remove-Item E:\Git\Money\data\cache\krx_listing.parquet -ErrorAction SilentlyContinue python scripts/build_ohlcv_full_cache.py 20260101 20260410
+
+
+3) main.py로 같이 돌리기
+  뉴스까지 포함한 전체 파이프라인이지만, 
+  가격 쪽은 여기서도 build_ohlcv_long이 호출되어 같은 parquet 규칙(있으면 보강, 없으면 전체 다운로드)을 씁니다.
+
+  python main.py 20260101 20260410
+
+
+  뉴스는 건드리지 않으려면 data\cache\news는 그대로 두고, 
+  위에서 말한 parquet만 선택적으로 삭제한 뒤 build_ohlcv_full_cache.py 또는 main.py를 쓰면 됩니다.
+
+요약: 비뉴스 캐시는 scripts/build_ohlcv_full_cache.py 로 채우고, 
+     “완전 재다운로드”는 해당 *.parquet 삭제 후 같은 명령을 실행하면 됩니다.
+     .env의 USE_KRX_OHLCV 에 따라 지울 OHLCV 파일 이름이 달라집니다.
+
