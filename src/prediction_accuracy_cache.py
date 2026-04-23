@@ -42,10 +42,13 @@ def _ratio(pred_ret: float | None, actual_ret: float | None) -> float | None:
 
 def _default_payload() -> dict:
     return {
-        "version": 2,
+        "version": 3,
         "t_code_ratio": {},
         "t_code_actual_pct": {},
         "high_pred_by_code": {},
+        "mid_pred_by_code": {},
+        "all_pred_by_code": {},
+        "feedback_bucket_stats": {},
     }
 
 
@@ -77,16 +80,28 @@ def _load_payload() -> dict:
     hp = raw.get("high_pred_by_code")
     if isinstance(hp, dict):
         out["high_pred_by_code"] = hp
+    mp = raw.get("mid_pred_by_code")
+    if isinstance(mp, dict):
+        out["mid_pred_by_code"] = mp
+    ap = raw.get("all_pred_by_code")
+    if isinstance(ap, dict):
+        out["all_pred_by_code"] = ap
+    fb = raw.get("feedback_bucket_stats")
+    if isinstance(fb, dict):
+        out["feedback_bucket_stats"] = fb
     return out
 
 
 def _save_payload(payload: dict) -> None:
     TRACK_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": 2,
+        "version": 3,
         "t_code_ratio": dict(payload.get("t_code_ratio") or {}),
         "t_code_actual_pct": dict(payload.get("t_code_actual_pct") or {}),
         "high_pred_by_code": dict(payload.get("high_pred_by_code") or {}),
+        "mid_pred_by_code": dict(payload.get("mid_pred_by_code") or {}),
+        "all_pred_by_code": dict(payload.get("all_pred_by_code") or {}),
+        "feedback_bucket_stats": dict(payload.get("feedback_bucket_stats") or {}),
     }
     TRACK_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -96,9 +111,9 @@ def _key(t: object, code: str) -> str:
     return f"{td}:{str(code).zfill(6)}"
 
 
-def _sync_high_pred_actuals_in_payload(p: dict) -> bool:
+def _sync_history_actuals_in_payload(p: dict) -> bool:
     """
-    ``high_pred_by_code`` 항목 중 ``actual_pct`` 가 비어 있고 ``t_code_actual_pct`` 에 값이 있으면 채웁니다.
+    이력 맵 항목 중 ``actual_pct`` 가 비어 있고 ``t_code_actual_pct`` 에 값이 있으면 채웁니다.
 
     예측 전용 실행만으로 이력이 남은 뒤, 다른 날만 재실행해 ``merge_high_pred_history`` 가 해당 T를
     건드리지 못한 경우에도 ``merge_from_day_reports`` 한 번으로 툴팁 실적%를 맞출 수 있습니다.
@@ -106,33 +121,34 @@ def _sync_high_pred_actuals_in_payload(p: dict) -> bool:
     act_map = p.get("t_code_actual_pct")
     if not isinstance(act_map, dict) or not act_map:
         return False
-    hp = p.get("high_pred_by_code")
-    if not isinstance(hp, dict):
-        return False
     changed = False
-    for code_key, lst in hp.items():
-        if not isinstance(lst, list):
+    for map_key in ("high_pred_by_code", "mid_pred_by_code", "all_pred_by_code"):
+        hp = p.get(map_key)
+        if not isinstance(hp, dict):
             continue
-        c6 = str(code_key).zfill(6)
-        new_lst: list = []
-        list_changed = False
-        for x in lst:
-            if not isinstance(x, dict):
-                new_lst.append(x)
+        for code_key, lst in hp.items():
+            if not isinstance(lst, list):
                 continue
-            t_iso = str(x.get("t") or "")
-            if x.get("actual_pct") is not None or not t_iso:
-                new_lst.append(x)
-                continue
-            v = act_map.get(f"{t_iso}:{c6}")
-            if isinstance(v, (int, float)) and math.isfinite(float(v)):
-                new_lst.append({**x, "actual_pct": float(v)})
-                list_changed = True
-                changed = True
-            else:
-                new_lst.append(x)
-        if list_changed:
-            hp[code_key] = new_lst
+            c6 = str(code_key).zfill(6)
+            new_lst: list = []
+            list_changed = False
+            for x in lst:
+                if not isinstance(x, dict):
+                    new_lst.append(x)
+                    continue
+                t_iso = str(x.get("t") or "")
+                if x.get("actual_pct") is not None or not t_iso:
+                    new_lst.append(x)
+                    continue
+                v = act_map.get(f"{t_iso}:{c6}")
+                if isinstance(v, (int, float)) and math.isfinite(float(v)):
+                    new_lst.append({**x, "actual_pct": float(v)})
+                    list_changed = True
+                    changed = True
+                else:
+                    new_lst.append(x)
+            if list_changed:
+                hp[code_key] = new_lst
     return changed
 
 
@@ -167,29 +183,39 @@ def merge_from_day_reports(day_reports: list) -> None:
     if changed:
         p["t_code_ratio"] = data
         p["t_code_actual_pct"] = act_pct
-        _sync_high_pred_actuals_in_payload(p)
+        _sync_history_actuals_in_payload(p)
         _save_payload(p)
-    elif _sync_high_pred_actuals_in_payload(p):
+    elif _sync_history_actuals_in_payload(p):
         # 이번 실행에 새 비율은 없어도, 이미 쌓인 실적% 맵으로 이력만 보정
         _save_payload(p)
 
 
-def merge_high_pred_history_from_day_reports(
-    day_reports: list, *, threshold_pct: float
+def merge_pred_history_from_day_reports(
+    day_reports: list,
+    *,
+    min_pred_pct: float,
+    max_pred_pct: float | None,
+    history_key: str,
 ) -> None:
-    """예측 수익률이 ``threshold_pct`` 이상인 행을 종목별 이력에 반영(같은 T·코드는 덮어씀)."""
+    """예측 구간(``min<=pred<max``)에 드는 행을 종목별 이력 맵 ``history_key`` 에 반영."""
     p = _load_payload()
-    hist_raw = p.get("high_pred_by_code")
+    hist_raw = p.get(history_key)
     hist: dict[str, list] = dict(hist_raw) if isinstance(hist_raw, dict) else {}
     act_map: dict[str, float] = dict(p.get("t_code_actual_pct") or {})
     changed = False
-    thr = float(threshold_pct)
+    thr_lo = float(min_pred_pct)
+    thr_hi = float(max_pred_pct) if max_pred_pct is not None else None
     for dr in day_reports:
         t = dr.trading_day
         t_iso = t.isoformat()
         for r in dr.rows_compare:
             pr = r.get("pred_ret")
-            if pr is None or float(pr) + 1e-9 < thr:
+            if pr is None:
+                continue
+            prf = float(pr)
+            if prf + 1e-9 < thr_lo:
+                continue
+            if thr_hi is not None and not (prf < thr_hi - 1e-9):
                 continue
             code = str(r.get("code", "")).zfill(6)
             k = _key(t, code)
@@ -222,7 +248,7 @@ def merge_high_pred_history_from_day_reports(
                         actual_pct = None
             entry = {
                 "t": t_iso,
-                "pred_pct": float(pr),
+                "pred_pct": prf,
                 "actual_pct": actual_pct,
             }
             lst = [x for x in hist.get(code, []) if isinstance(x, dict) and x.get("t") != t_iso]
@@ -231,11 +257,47 @@ def merge_high_pred_history_from_day_reports(
             hist[code] = lst
             changed = True
     if changed:
-        p["high_pred_by_code"] = hist
-        _sync_high_pred_actuals_in_payload(p)
+        p[history_key] = hist
+        _sync_history_actuals_in_payload(p)
         _save_payload(p)
-    elif _sync_high_pred_actuals_in_payload(p):
+    elif _sync_history_actuals_in_payload(p):
         _save_payload(p)
+
+
+def merge_high_pred_history_from_day_reports(
+    day_reports: list, *, threshold_pct: float
+) -> None:
+    """예측 수익률이 ``threshold_pct`` 이상인 행을 종목별 이력에 반영."""
+    merge_pred_history_from_day_reports(
+        day_reports,
+        min_pred_pct=float(threshold_pct),
+        max_pred_pct=None,
+        history_key="high_pred_by_code",
+    )
+
+
+def merge_mid_pred_history_from_day_reports(
+    day_reports: list, *, low_pct: float, high_pct: float
+) -> None:
+    """예측 수익률이 ``[low_pct, high_pct)`` 인 행을 종목별 이력에 반영."""
+    merge_pred_history_from_day_reports(
+        day_reports,
+        min_pred_pct=float(low_pct),
+        max_pred_pct=float(high_pct),
+        history_key="mid_pred_by_code",
+    )
+
+
+def merge_all_pred_history_from_day_reports(
+    day_reports: list, *, min_pct: float
+) -> None:
+    """예측 수익률이 ``min_pct`` 이상인 행을 종목별 이력에 반영."""
+    merge_pred_history_from_day_reports(
+        day_reports,
+        min_pred_pct=float(min_pct),
+        max_pred_pct=None,
+        history_key="all_pred_by_code",
+    )
 
 
 def _parse_hist_t_iso(t_raw: object) -> date | None:
@@ -291,13 +353,13 @@ def _backfill_closed_high_pred_actuals_from_market(day_reports: list) -> None:
     if not changed:
         return
     p["t_code_actual_pct"] = act_map
-    if _sync_high_pred_actuals_in_payload(p):
+    if _sync_history_actuals_in_payload(p):
         changed = True
     if changed:
         _save_payload(p)
 
 
-def high_pred_history_for_code(code: str) -> list[dict]:
+def _pred_history_for_code(code: str, *, history_key: str) -> list[dict]:
     """관측일 내림차순 ``[{t, pred_pct, actual_pct}, ...]``.
 
     ``high_pred_by_code`` 에 ``actual_pct`` 가 비어 있어도 ``t_code_actual_pct``(관측일·코드별 실제%)가
@@ -305,11 +367,11 @@ def high_pred_history_for_code(code: str) -> list[dict]:
     """
     c = str(code).zfill(6)
     payload = _load_payload()
-    hp = payload.get("high_pred_by_code")
     act_map: dict[str, float] = dict(payload.get("t_code_actual_pct") or {})
-    if not isinstance(hp, dict):
+    hist_obj = payload.get(history_key)
+    if not isinstance(hist_obj, dict):
         return []
-    lst = hp.get(c, [])
+    lst = hist_obj.get(c, [])
     if not isinstance(lst, list):
         return []
     out: list[dict] = []
@@ -325,6 +387,18 @@ def high_pred_history_for_code(code: str) -> list[dict]:
                 h["actual_pct"] = float(v)
         out.append(h)
     return out
+
+
+def high_pred_history_for_code(code: str) -> list[dict]:
+    return _pred_history_for_code(code, history_key="high_pred_by_code")
+
+
+def mid_pred_history_for_code(code: str) -> list[dict]:
+    return _pred_history_for_code(code, history_key="mid_pred_by_code")
+
+
+def all_pred_history_for_code(code: str) -> list[dict]:
+    return _pred_history_for_code(code, history_key="all_pred_by_code")
 
 
 def _patch_today_open_session_intraday_in_histories(day_reports: list) -> None:
@@ -365,17 +439,21 @@ def _patch_today_open_session_intraday_in_histories(day_reports: list) -> None:
 
 
 def enrich_rows_pred_high_history(day_reports: list) -> None:
-    """각 ``rows_compare`` 행에 ``pred_high_history`` 리스트를 붙입니다."""
+    """각 ``rows_compare`` 행에 구간별 예측 이력 리스트를 붙입니다."""
     for dr in day_reports:
         for r in dr.rows_compare:
             code = str(r.get("code", "")).zfill(6)
             r["pred_high_history"] = high_pred_history_for_code(code)
+            r["pred_mid_history"] = mid_pred_history_for_code(code)
+            r["pred_all_history"] = all_pred_history_for_code(code)
     _patch_today_open_session_intraday_in_histories(day_reports)
     _backfill_closed_high_pred_actuals_from_market(day_reports)
     for dr in day_reports:
         for r in dr.rows_compare:
             code = str(r.get("code", "")).zfill(6)
             r["pred_high_history"] = high_pred_history_for_code(code)
+            r["pred_mid_history"] = mid_pred_history_for_code(code)
+            r["pred_all_history"] = all_pred_history_for_code(code)
 
 
 def mean_ratio_for_code(code: str) -> float | None:
@@ -390,6 +468,117 @@ def mean_ratio_for_code(code: str) -> float | None:
     if not vals:
         return None
     return sum(vals) / len(vals)
+
+
+def build_feedback_context() -> dict[str, object]:
+    """
+    예측 보정용 오차 요약 컨텍스트를 만듭니다.
+
+    ``t_code_ratio``(= min(|실제%|/|예측%|, 1))를 종목별/전체로 집계해
+    추론 시점의 예측 수익률 보정에 사용합니다.
+    """
+    payload = _load_payload()
+    raw = payload.get("t_code_ratio")
+    if not isinstance(raw, dict):
+        return {
+            "global_mean_ratio": None,
+            "global_count": 0,
+            "by_code_mean_ratio": {},
+            "by_code_count": {},
+        }
+    by_code_vals: dict[str, list[float]] = {}
+    all_vals: list[float] = []
+    for k, v in raw.items():
+        if not isinstance(k, str) or ":" not in k:
+            continue
+        if not isinstance(v, (int, float)) or not math.isfinite(float(v)):
+            continue
+        code = k.rsplit(":", 1)[-1].zfill(6)
+        rv = min(max(abs(float(v)), 0.0), 1.0)
+        by_code_vals.setdefault(code, []).append(rv)
+        all_vals.append(rv)
+    by_code_mean = {
+        c: (sum(xs) / len(xs)) for c, xs in by_code_vals.items() if xs
+    }
+    by_code_count = {c: len(xs) for c, xs in by_code_vals.items()}
+    global_mean = (sum(all_vals) / len(all_vals)) if all_vals else None
+    return {
+        "global_mean_ratio": global_mean,
+        "global_count": len(all_vals),
+        "by_code_mean_ratio": by_code_mean,
+        "by_code_count": by_code_count,
+        "signal_bucket_stats": _signal_bucket_mean_stats(payload),
+    }
+
+
+def _signal_bucket_key(*, pred_ret: float, keyword_hits: int, mention_score: float) -> str:
+    hit_band = "h0" if keyword_hits <= 0 else ("h1_2" if keyword_hits <= 2 else ("h3_5" if keyword_hits <= 5 else "h6p"))
+    m = max(0.0, min(1.0, float(mention_score)))
+    mention_band = "m0" if m < 0.08 else ("m1" if m < 0.25 else ("m2" if m < 0.45 else "m3"))
+    p = float(pred_ret)
+    pred_band = "p10_15" if p < 15.0 else ("p15_20" if p < 20.0 else ("p20_25" if p < 25.0 else "p25p"))
+    return f"{hit_band}|{mention_band}|{pred_band}"
+
+
+def _signal_bucket_mean_stats(payload: dict) -> dict[str, dict[str, float]]:
+    raw = payload.get("feedback_bucket_stats")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict[str, float]] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str) or not isinstance(v, dict):
+            continue
+        n = int(v.get("count", 0) or 0)
+        sum_ratio = v.get("sum_ratio")
+        if n <= 0 or not isinstance(sum_ratio, (int, float)) or not math.isfinite(float(sum_ratio)):
+            continue
+        out[k] = {
+            "count": float(n),
+            "mean_ratio": float(sum_ratio) / float(n),
+        }
+    return out
+
+
+def merge_feedback_buckets_from_day_reports(day_reports: list) -> None:
+    """
+    신호 버킷별 예측-실제 달성률 통계를 누적합니다.
+
+    버킷 축: 키워드 일치 수 / 종목명 언급 강도 / 예측 수익률 구간.
+    """
+    p = _load_payload()
+    raw = p.get("feedback_bucket_stats")
+    buckets: dict[str, dict[str, float]] = dict(raw) if isinstance(raw, dict) else {}
+    changed = False
+    for dr in day_reports:
+        for r in dr.rows_compare:
+            pred_ret = r.get("pred_ret")
+            actual_ret = r.get("actual_ret")
+            if pred_ret is None or actual_ret is None:
+                continue
+            rr = _ratio(pred_ret, actual_ret)
+            if rr is None:
+                continue
+            k_hits = r.get("keyword_hits")
+            if k_hits is None:
+                k_hits = len(r.get("keywords") or [])
+            mention = r.get("mention_score")
+            if mention is None:
+                mention = 0.0
+            key = _signal_bucket_key(
+                pred_ret=float(pred_ret),
+                keyword_hits=int(k_hits),
+                mention_score=float(mention),
+            )
+            rec = dict(buckets.get(key) or {})
+            c = int(rec.get("count", 0) or 0) + 1
+            rec["count"] = float(c)
+            rec["sum_ratio"] = float(rec.get("sum_ratio", 0.0) or 0.0) + float(rr)
+            rec["sum_abs_gap"] = float(rec.get("sum_abs_gap", 0.0) or 0.0) + abs(float(pred_ret) - float(actual_ret) * 100.0)
+            buckets[key] = rec
+            changed = True
+    if changed:
+        p["feedback_bucket_stats"] = buckets
+        _save_payload(p)
 
 
 def apply_cached_cumulative_fallback(day_reports: list) -> int:

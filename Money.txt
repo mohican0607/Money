@@ -87,11 +87,14 @@ report 파일 관련하여
 * https://developers.naver.com/apps/#/myapps/91T0YGpOLvMr_Mpdztpo/overview
 
 
-* ohlcv_long_full.parquet 파일만 먼저 생성하려고 하면 어떤 명령어로 어떤 파일을 실행해야 해? 기간은 20260101 ~ 20260410
-  인자 없이 실행하면 예전처럼 TRAIN_START_DEFAULT - 10일 ~ 오늘 구간으로 받음
-  > Set-Location "e:\Git\Money"; .\.venv\Scripts\python.exe scripts\build_ohlcv_full_cache.py 20260101 20260410
-    Set-Location "e:\Git\Money"; .\.venv\Scripts\python.exe scripts\build_ohlcv_full_cache.py 20250101 20260410
-  python scripts\build_ohlcv_full_cache.py 20250101 20260414
+
+### ohlcv_long_full.parquet 파일만 먼저 생성하려고 하면 어떤 명령어로 어떤 파일을 실행해야 해? 기간은 20260101 ~ 20260410
+	인자 없이 실행하면 예전처럼 TRAIN_START_DEFAULT - 10일 ~ 오늘 구간으로 받음
+    > Set-Location "e:\Git\Money"; .\.venv\Scripts\python.exe scripts\build_ohlcv_full_cache.py 20260101 20260410
+	
+	  .\.venv\Scripts\python.exe scripts\build_ohlcv_full_cache.py 20250101 20260410
+	  .\.venv\Scripts\python.exe scripts\build_ohlcv_full_cache.py 20250101 20260422
+
 
 ### git
 	해당 폴더 마우스 오른쪽 > Git Bash Here
@@ -100,8 +103,11 @@ report 파일 관련하여
 	$ git add .
 	$ git commit -m "Initial commit"									$ git commit -m "commit message"
 	$ git remote add origin https://github.com/mohican0607/Money.git	$ git remote add origin REPOR주소
+	  1. 없는 상태에서 add : git remote set-url origin REMOTE_ADDR
+	  2. 있는 상태에서 변경 : git remote remove origin; git remote add origin REMOTE_ADDR
 	$ git remote -v													  	  git과 연결
 	$ git push origin master
+
 
 ### pykrx
 	.\.venv\Scripts\pip.exe install pykrx
@@ -121,11 +127,14 @@ report 파일 관련하여
 	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260326 20260331 --force
 
 
-### both	2025911 ~ 20260420
+### both	2025827 ~ 20260420
 	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20251001 20251102 --force
 	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260422
 	
 	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20250915 --force
+
+7376 08:00 	35
+7377 08:04 	36
 
 
 ### main.py
@@ -140,7 +149,7 @@ report 파일 관련하여
 	.\.venv\Scripts\python.exe main.py 20260401 내일
 
 	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260422
-	.\.venv\Scripts\python.exe main.py 20260410 20260423
+	.\.venv\Scripts\python.exe main.py 20260401 20260423
 
 
 	pip install pykrx
@@ -148,6 +157,12 @@ report 파일 관련하여
 	마누스
 	일품아 ?
 
+	HuggingFace
+	Kaggle
+	TensorFlow
+	PyTorch
+	LangChain
+	
 	
 	
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
-from . import config
+from . import config, prediction_accuracy_cache
 from .features import BreakoutEvent, keyword_set, name_mention_score
 
 
@@ -32,6 +32,8 @@ class PredictionRow:
     matched_keywords: list[str]
     reasons: list[str]
     ml_prob: float | None = None
+    keyword_hits: int = 0
+    mention_score: float = 0.0
 
 
 def _build_code_keyword_profile(train_events: list[BreakoutEvent]) -> dict[str, frozenset[str]]:
@@ -113,6 +115,74 @@ def _calibrate_predicted_return(
     return float(min(hi, max(lo, calibrated)))
 
 
+def _feedback_calibrated_return(
+    pred_ret: float,
+    *,
+    code: str,
+    n_hit: int,
+    mention: float,
+    feedback_ctx: dict[str, object] | None,
+) -> float:
+    """
+    누적 오차 이력 기반 보정.
+
+    ``t_code_ratio=min(|실제%|/|예측%|,1)`` 평균을 이용해 과대 예측을 점진적으로 줄인다.
+    표본이 적거나 신호(키워드/언급)가 약하면 1.0(무보정)에 더 가깝게 축소한다.
+    """
+    lo = min(config.PRED_RETURN_MIN, config.PRED_RETURN_MAX)
+    hi = max(config.PRED_RETURN_MIN, config.PRED_RETURN_MAX)
+    if not config.PRED_ERROR_FEEDBACK_ENABLED or not feedback_ctx:
+        return float(min(hi, max(lo, pred_ret)))
+
+    by_code_mean = feedback_ctx.get("by_code_mean_ratio")
+    by_code_count = feedback_ctx.get("by_code_count")
+    global_mean = feedback_ctx.get("global_mean_ratio")
+    if not isinstance(by_code_mean, dict) or not isinstance(by_code_count, dict):
+        return float(min(hi, max(lo, pred_ret)))
+    if not isinstance(global_mean, (int, float)):
+        global_mean = None
+    code_key = str(code).zfill(6)
+    c_mean = by_code_mean.get(code_key)
+    c_n = int(by_code_count.get(code_key, 0) or 0)
+    if c_n < int(config.PRED_ERROR_FEEDBACK_MIN_SAMPLES):
+        if global_mean is None:
+            return float(min(hi, max(lo, pred_ret)))
+        c_mean = float(global_mean)
+        c_n = int(feedback_ctx.get("global_count", 0) or 0)
+    if not isinstance(c_mean, (int, float)):
+        return float(min(hi, max(lo, pred_ret)))
+
+    prior = float(global_mean) if isinstance(global_mean, (int, float)) else 0.70
+    shrink = max(1.0, float(config.PRED_ERROR_FEEDBACK_SHRINK_STRENGTH))
+    mean_ratio = (float(c_mean) * c_n + prior * shrink) / (float(c_n) + shrink)
+    target_mult = max(0.78, min(1.02, mean_ratio))
+
+    bucket_stats = feedback_ctx.get("signal_bucket_stats")
+    if isinstance(bucket_stats, dict):
+        hit_band = "h0" if n_hit <= 0 else ("h1_2" if n_hit <= 2 else ("h3_5" if n_hit <= 5 else "h6p"))
+        m = max(0.0, min(1.0, float(mention)))
+        mention_band = "m0" if m < 0.08 else ("m1" if m < 0.25 else ("m2" if m < 0.45 else "m3"))
+        pred_pct = float(pred_ret) * 100.0
+        pred_band = "p10_15" if pred_pct < 15.0 else ("p15_20" if pred_pct < 20.0 else ("p20_25" if pred_pct < 25.0 else "p25p"))
+        bkey = f"{hit_band}|{mention_band}|{pred_band}"
+        b = bucket_stats.get(bkey)
+        if isinstance(b, dict):
+            bn = int(b.get("count", 0) or 0)
+            b_ratio = b.get("mean_ratio")
+            if bn >= int(config.PRED_ERROR_FEEDBACK_MIN_SAMPLES) and isinstance(b_ratio, (int, float)):
+                b_mult = max(0.78, min(1.02, float(b_ratio)))
+                w = min(0.45, bn / 80.0)
+                target_mult = target_mult * (1.0 - w) + b_mult * w
+
+    hit = max(0, int(n_hit))
+    m = max(0.0, min(1.0, float(mention)))
+    signal = 0.62 * min(1.0, hit / 7.0) + 0.38 * (min(1.0, m / 0.5) if m > 0 else 0.0)
+    sample_conf = min(1.0, float(c_n) / 20.0)
+    conf = sample_conf * (0.65 + 0.35 * signal)
+    mult = 1.0 + (target_mult - 1.0) * conf
+    return float(min(hi, max(lo, float(pred_ret) * mult)))
+
+
 # ``ml_move_rank._ML_RETURN_MAP_FLOOR_PCT`` 와 동일 의미(순환 import 피해 여기에 둠).
 _HEURISTIC_RETURN_MAP_FLOOR_PCT = 11.0
 
@@ -150,6 +220,8 @@ def prediction_row_for_code(
     news_text_blob: str,
     ctx: tuple[frozenset[str], dict[str, frozenset[str]]],
     min_keyword_hits: int,
+    *,
+    feedback_ctx: dict[str, object] | None = None,
 ) -> PredictionRow | None:
     """
     단일 종목에 대해 키워드 교집합 수 + 종목명 언급 점수로 스코어하고 ``PredictionRow`` 를 만듭니다.
@@ -186,9 +258,20 @@ def prediction_row_for_code(
         mention=mention,
         code_event_count=_count_code_events(train_events, code),
     )
+    pred_ret = _feedback_calibrated_return(
+        pred_ret,
+        code=code,
+        n_hit=n_hit,
+        mention=mention,
+        feedback_ctx=feedback_ctx,
+    )
     if config.PRED_RETURN_CALIBRATION_ENABLED:
         reasons.append(
             "예측 수익률은 신호 강도(키워드 일치·종목명 언급)에 따라 기본값 주변으로만 완만히 보정했습니다."
+        )
+    if config.PRED_ERROR_FEEDBACK_ENABLED:
+        reasons.append(
+            "추가로 누적 오차 이력(예측 대비 실제 달성률)을 반영해 과대 예측을 완만히 줄이는 자동 보정을 적용했습니다."
         )
     return PredictionRow(
         code=code,
@@ -197,6 +280,8 @@ def prediction_row_for_code(
         predicted_return_pct=pred_ret * 100,
         matched_keywords=matched,
         reasons=reasons,
+        keyword_hits=n_hit,
+        mention_score=mention,
     )
 
 
@@ -250,6 +335,7 @@ def predict_for_trading_day(
         )
 
     ctx = build_scoring_context(news_text_blob, train_events)
+    feedback_ctx = prediction_accuracy_cache.build_feedback_context()
     ranked: list[PredictionRow] = []
 
     for code in listing_codes:
@@ -260,6 +346,7 @@ def predict_for_trading_day(
             news_text_blob,
             ctx,
             min_keyword_hits,
+            feedback_ctx=feedback_ctx,
         )
         if row is not None:
             ranked.append(row)

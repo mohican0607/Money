@@ -2,7 +2,7 @@
 HTML 리포트 생성(Jinja2 템플릿 문자열 내장).
 
 - 월간/구간 배치: ``render_compact_tabbed_report`` + ``render_movers_index``
-- 단일 ``main.py N``: ``render_dated_n_report`` → ``output/report_dated_by_n.html`` 에 기준일(N) 블록 누적, 같은 N 재실행 시 해당 블록만 교체
+- 단일 ``main.py N``: ``render_dated_n_report`` → ``output/report_dated_by_MMDD.html`` 에 기준일(N) 블록 누적, 같은 N 재실행 시 해당 블록만 교체
 스타일은 다크 테마 위주의 단일 HTML 파일로 ``output/`` 에 저장합니다.
 """
 from __future__ import annotations
@@ -122,27 +122,44 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       if (!table) return;
       var tbody = table.querySelector("tbody");
       if (!tbody) return;
-      var radios = block.querySelectorAll(".market-filter-radios input[type=radio]");
-      if (!radios.length) return;
+      var marketRadios = block.querySelectorAll(".market-filter-radios input[type=radio]");
+      var riseRadios = block.querySelectorAll(".rise-filter-radios input[type=radio]");
+      if (!marketRadios.length && !riseRadios.length) return;
       function apply() {
-        var sel = "all";
-        for (var i = 0; i < radios.length; i++) {
-          if (radios[i].checked) sel = radios[i].value;
+        var marketSel = "all";
+        for (var i = 0; i < marketRadios.length; i++) {
+          if (marketRadios[i].checked) marketSel = marketRadios[i].value;
+        }
+        var riseSel = "high";
+        for (var j = 0; j < riseRadios.length; j++) {
+          if (riseRadios[j].checked) riseSel = riseRadios[j].value;
         }
         tbody.querySelectorAll("tr").forEach(function (tr) {
           var m = tr.getAttribute("data-market") || "other";
-          if (sel === "all") {
-            tr.style.removeProperty("display");
-            return;
+          var rb = tr.getAttribute("data-rise-band") || "low";
+          var marketVisible = true;
+          if (marketSel !== "all") {
+            if (m === "kospi" || m === "kosdaq") {
+              marketVisible = marketSel === m;
+            } else {
+              marketVisible = false;
+            }
           }
-          if (m === "kospi" || m === "kosdaq") {
-            tr.style.display = sel === m ? "" : "none";
+          var riseVisible = true;
+          if (riseSel === "high") {
+            riseVisible = rb === "high";
+          } else if (riseSel === "mid") {
+            riseVisible = rb === "mid";
+          }
+          if (marketVisible && riseVisible) {
+            tr.style.removeProperty("display");
           } else {
             tr.style.display = "none";
           }
         });
       }
-      radios.forEach(function (r) { r.addEventListener("change", apply); });
+      marketRadios.forEach(function (r) { r.addEventListener("change", apply); });
+      riseRadios.forEach(function (r) { r.addEventListener("change", apply); });
       apply();
     });
   }
@@ -369,13 +386,14 @@ _TEMPLATE = r"""
       .combo-tip-col:first-child { border-top: none; padding-top: 0; margin-top: 0; }
     }
     .kw-pills { display: inline-flex; flex-wrap: wrap; gap: 4px 4px; align-items: center; vertical-align: middle; }
+    .kw-pills .pill { font-size: 0.68rem; padding: 1px 6px; }
     ul.news { margin: 0; padding-left: 18px; color: var(--muted); font-size: 0.85rem; }
     .day-heading-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px 14px; margin-bottom: 6px; }
     .day-heading-row h2 { margin: 0; }
-    .market-filter-radios { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: 0.82rem; color: var(--muted); }
-    .market-filter-title { font-weight: 600; color: var(--muted); margin-right: 2px; }
-    .market-filter-label { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; margin: 0; font-weight: 500; }
-    .market-filter-label input { accent-color: var(--accent); vertical-align: middle; }
+    .market-filter-radios, .rise-filter-radios { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: 0.82rem; color: var(--muted); }
+    .market-filter-title, .rise-filter-title { font-weight: 600; color: var(--muted); margin-right: 2px; }
+    .market-filter-label, .rise-filter-label { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; margin: 0; font-weight: 500; }
+    .market-filter-label input, .rise-filter-label input { accent-color: var(--accent); vertical-align: middle; }
     .tab-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
     .tab-btn { font: inherit; cursor: pointer; padding: 8px 14px; border-radius: 8px; border: 1px solid #2a3548;
               background: #131b28; color: var(--muted); }
@@ -434,7 +452,7 @@ _TEMPLATE = r"""
 <td style="white-space:nowrap;font-variant-numeric:tabular-nums" data-sort-col="cumulative" data-sort-value="{% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}{{ r.cumulative_accuracy_avg }}{% endif %}">
   {% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
   <span class="gap-tip cumulative-hist-tip">
-    <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="누적 정확도·{{ meta.threshold }} 이상 예측 이력">{{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} ({{ r.cumulative_hit_x }} {% if r.cumulative_hit_z is defined and r.cumulative_hit_z is not none %}{{ r.cumulative_hit_z }}{% else %}0{% endif %} <span class="bad">{% if r.cumulative_hit_neg is defined and r.cumulative_hit_neg is not none %}{{ r.cumulative_hit_neg }}{% else %}0{% endif %}</span> / {{ r.cumulative_hit_y }}){% endif %}</span>
+    <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="누적 정확도·{{ meta.threshold }} 이상 예측 이력">{{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} ({{ r.cumulative_hit_x }} {% if r.cumulative_hit_z is defined and r.cumulative_hit_z is not none %}{{ r.cumulative_hit_z }}{% else %}0{% endif %} <span class="bad">{% if r.cumulative_hit_neg is defined and r.cumulative_hit_neg is not none %}{{ r.cumulative_hit_neg }}{% else %}0{% endif %}</span> / {{ r.cumulative_hit_y }}){% endif %}</span>
     <div class="gap-tip-popup cumulative-hist-popup" role="tooltip">
       <div class="combo-tip-body">
         <strong>관측일 T별 · 예측 ≥ {{ meta.threshold }}</strong>
@@ -449,7 +467,7 @@ _TEMPLATE = r"""
         {% else %}
         <p class="combo-tip-empty" style="margin:8px 0 0 0">저장된 {{ meta.threshold }} 이상 예측 이력이 없습니다.</p>
         {% endif %}
-        <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 관측일별 min(|실제%|,|예측%|) / max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%).{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
+        <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 관측일별 min(|실제%|,|예측%|) / max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%).{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제가 0% 이상인 비율.{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
       </div>
     </div>
   </span>
@@ -462,6 +480,11 @@ _TEMPLATE = r"""
   <label class="market-filter-label"><input type="radio" name="market-scope-{{ suffix }}" value="all" checked="checked"/> 전체</label>
   <label class="market-filter-label"><input type="radio" name="market-scope-{{ suffix }}" value="kospi"/> KOSPI</label>
   <label class="market-filter-label"><input type="radio" name="market-scope-{{ suffix }}" value="kosdaq"/> KOSDAQ</label>
+</div>
+<div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
+  <span class="rise-filter-title">상승률 -</span>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
 </div>
 {%- endmacro %}
 {% macro day_panel(d, meta) -%}
@@ -476,8 +499,8 @@ _TEMPLATE = r"""
       {% endfor %}
     </p>
 
-    <h3 style="font-size:1rem;color:var(--ok);margin:16px 0 8px;">실제·예측 20% 이상 포함 종목</h3>
-    <p class="sub" style="margin-top:0">당일 <strong>실제</strong> {{ meta.threshold }} 이상 급등 종목과, 모델 <strong>예측 상승률</strong>이 {{ meta.threshold }} 이상인 상위 후보(중복 제거)를 함께 표시합니다.</p>
+    <h3 style="font-size:1rem;color:var(--ok);margin:16px 0 8px;">실제·예측 10% 이상 포함 종목</h3>
+    <p class="sub" style="margin-top:0">당일 <strong>실제</strong> 10% 이상 상승 종목과, 모델 <strong>예측 상승률</strong> 10% 이상 후보(중복 제거)를 함께 표시합니다. 위 라디오로 20%이상 / 10~20% 구간을 전환할 수 있습니다.</p>
     {% if d.rows_compare %}
     <table class="rows-compare">
       <thead>
@@ -487,14 +510,16 @@ _TEMPLATE = r"""
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 일봉 확정 전이므로 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
           <th>보정(%)</th>
-          <th class="sortable-col" data-sort="cumulative" scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(달성%·a b c / d)</span></th>
+          <th class="sortable-col" data-sort="cumulative" scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(달성% vs 0%+ · a b c / d)</span></th>
+          <th>누적정확도(10~20)</th>
+          <th>누적정확도(전체)</th>
           <th>이유/차이</th>
           <th>일치 키워드</th>
         </tr>
       </thead>
       <tbody>
         {% for r in d.rows_compare %}
-        <tr data-market="{{ r.market_segment|default('other') }}">
+        <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
           <td style="white-space:nowrap;vertical-align:top" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
             {% if r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">예측≥{{ meta.threshold }}</span>{% endif %}
@@ -515,6 +540,12 @@ _TEMPLATE = r"""
             {% else %}—{% endif %}
           </td>
           {{ cumulative_accuracy_td(r, meta) | safe }}
+          <td class="num">
+            {% if r.cumulative_accuracy_10_20_avg is defined and r.cumulative_accuracy_10_20_avg is not none %}{{ "%.2f"|format(r.cumulative_accuracy_10_20_avg * 100) }}%{% else %}—{% endif %}
+          </td>
+          <td class="num">
+            {% if r.cumulative_accuracy_all_avg is defined and r.cumulative_accuracy_all_avg is not none %}{{ "%.2f"|format(r.cumulative_accuracy_all_avg * 100) }}%{% else %}—{% endif %}
+          </td>
           <td class="pred-reason">
             <span class="gap-tip combo-tip">
               <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 이유, 예측·실제 차이, 상승 이유(참고)를 함께 보기">통합 보기</span>
@@ -814,15 +845,16 @@ _COMPACT_TEMPLATE = r"""
       .combo-tip-col:first-child { border-top: none; padding-top: 0; margin-top: 0; }
     }
     .kw-pills { display: inline-flex; flex-wrap: wrap; gap: 4px 4px; align-items: center; vertical-align: middle; }
+    .kw-pills .pill { font-size: 0.68rem; padding: 1px 6px; }
     .movers-data-note { background: #2a1f18; border: 1px solid #8b5a2b; border-radius: 10px;
                         padding: 12px 14px; margin-bottom: 14px; font-size: 0.86rem; line-height: 1.55;
                         color: #e8c9a8; }
     .day-heading-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px 14px; margin-bottom: 6px; }
     .day-heading-row h2 { margin: 0; }
-    .market-filter-radios { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: 0.82rem; color: var(--muted); }
-    .market-filter-title { font-weight: 600; color: var(--muted); margin-right: 2px; }
-    .market-filter-label { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; margin: 0; font-weight: 500; }
-    .market-filter-label input { accent-color: var(--accent); vertical-align: middle; }
+    .market-filter-radios, .rise-filter-radios { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: 0.82rem; color: var(--muted); }
+    .market-filter-title, .rise-filter-title { font-weight: 600; color: var(--muted); margin-right: 2px; }
+    .market-filter-label, .rise-filter-label { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; margin: 0; font-weight: 500; }
+    .market-filter-label input, .rise-filter-label input { accent-color: var(--accent); vertical-align: middle; }
     table.rows-compare th.sortable-col { cursor: pointer; user-select: none; color: var(--accent); }
     table.rows-compare th.sortable-col:hover { text-decoration: underline; }
     table.rows-compare th.sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
@@ -872,7 +904,7 @@ _COMPACT_TEMPLATE = r"""
 <td style="white-space:nowrap;font-variant-numeric:tabular-nums" data-sort-col="cumulative" data-sort-value="{% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}{{ r.cumulative_accuracy_avg }}{% endif %}">
   {% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
   <span class="gap-tip cumulative-hist-tip">
-    <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="누적 정확도·{{ meta.threshold }} 이상 예측 이력">{{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} ({{ r.cumulative_hit_x }} {% if r.cumulative_hit_z is defined and r.cumulative_hit_z is not none %}{{ r.cumulative_hit_z }}{% else %}0{% endif %} <span class="bad">{% if r.cumulative_hit_neg is defined and r.cumulative_hit_neg is not none %}{{ r.cumulative_hit_neg }}{% else %}0{% endif %}</span> / {{ r.cumulative_hit_y }}){% endif %}</span>
+    <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="누적 정확도·{{ meta.threshold }} 이상 예측 이력">{{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} ({{ r.cumulative_hit_x }} {% if r.cumulative_hit_z is defined and r.cumulative_hit_z is not none %}{{ r.cumulative_hit_z }}{% else %}0{% endif %} <span class="bad">{% if r.cumulative_hit_neg is defined and r.cumulative_hit_neg is not none %}{{ r.cumulative_hit_neg }}{% else %}0{% endif %}</span> / {{ r.cumulative_hit_y }}){% endif %}</span>
     <div class="gap-tip-popup cumulative-hist-popup" role="tooltip">
       <div class="combo-tip-body">
         <strong>관측일 T별 · 예측 ≥ {{ meta.threshold }}</strong>
@@ -887,7 +919,7 @@ _COMPACT_TEMPLATE = r"""
         {% else %}
         <p class="combo-tip-empty" style="margin:8px 0 0 0">저장된 {{ meta.threshold }} 이상 예측 이력이 없습니다.</p>
         {% endif %}
-        <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 관측일별 min(|실제%|,|예측%|) / max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%).{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
+        <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 관측일별 min(|실제%|,|예측%|) / max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%).{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제가 0% 이상인 비율.{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
       </div>
     </div>
   </span>
@@ -901,6 +933,11 @@ _COMPACT_TEMPLATE = r"""
   <label class="market-filter-label"><input type="radio" name="market-scope-{{ suffix }}" value="kospi"/> KOSPI</label>
   <label class="market-filter-label"><input type="radio" name="market-scope-{{ suffix }}" value="kosdaq"/> KOSDAQ</label>
 </div>
+<div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
+  <span class="rise-filter-title">상승률 -</span>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+</div>
 {%- endmacro %}
 {% macro compact_day_table(d, empty_extra='') -%}
 {% if d.rows_compare %}
@@ -912,14 +949,16 @@ _COMPACT_TEMPLATE = r"""
       <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
       <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
       <th>보정(%)</th>
-      <th class="sortable-col" data-sort="cumulative" scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted)">(달성%·a b c / d)</span></th>
+      <th class="sortable-col" data-sort="cumulative" scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted)">(달성% vs 0%+ · a b c / d)</span></th>
+      <th>누적정확도(10~20)</th>
+      <th>누적정확도(전체)</th>
       <th>이유/차이</th>
       <th>일치 키워드</th>
     </tr>
   </thead>
   <tbody>
     {% for r in d.rows_compare %}
-    <tr data-market="{{ r.market_segment|default('other') }}">
+    <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
       <td style="white-space:nowrap;vertical-align:top" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
         {% if r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제</span>{% endif %}
         {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">예측</span>{% endif %}
@@ -940,6 +979,12 @@ _COMPACT_TEMPLATE = r"""
         {% else %}—{% endif %}
       </td>
       {{ compact_cumulative_td(r, meta) | safe }}
+      <td class="num">
+        {% if r.cumulative_accuracy_10_20_avg is defined and r.cumulative_accuracy_10_20_avg is not none %}{{ "%.2f"|format(r.cumulative_accuracy_10_20_avg * 100) }}%{% else %}—{% endif %}
+      </td>
+      <td class="num">
+        {% if r.cumulative_accuracy_all_avg is defined and r.cumulative_accuracy_all_avg is not none %}{{ "%.2f"|format(r.cumulative_accuracy_all_avg * 100) }}%{% else %}—{% endif %}
+      </td>
       <td class="pred-reason">
         <span class="gap-tip combo-tip">
           <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 이유, 예측·실제 차이, 상승 이유(참고)를 함께 보기">통합 보기</span>
@@ -1269,16 +1314,17 @@ _DATED_N_TEMPLATE = r"""
     .pred-reason-cell { max-width: 22em; font-size: 0.84rem; color: var(--muted); line-height: 1.45;
                         overflow-wrap: anywhere; word-break: break-word; }
     .kw-pills { display: inline-flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; vertical-align: middle; }
+    .kw-pills .pill { font-size: 0.68rem; padding: 1px 6px; }
     .news-tip-hint { font-size: 0.76rem; color: var(--muted); line-height: 1.4; margin: 0 0 8px 0; font-weight: 500; }
     .movers-data-note { background: #2a1f18; border: 1px solid #8b5a2b; border-radius: 10px;
                         padding: 12px 14px; margin-bottom: 16px; font-size: 0.86rem; line-height: 1.55;
                         color: #e8c9a8; }
     .day-heading-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 8px 14px; margin-bottom: 8px; }
     .day-heading-row h2 { margin: 0; font-size: 1.12rem; }
-    .market-filter-radios { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: 0.82rem; color: var(--muted); }
-    .market-filter-title { font-weight: 600; color: var(--muted); margin-right: 2px; }
-    .market-filter-label { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; margin: 0; font-weight: 500; }
-    .market-filter-label input { accent-color: var(--accent); vertical-align: middle; }
+    .market-filter-radios, .rise-filter-radios { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; font-size: 0.82rem; color: var(--muted); }
+    .market-filter-title, .rise-filter-title { font-weight: 600; color: var(--muted); margin-right: 2px; }
+    .market-filter-label, .rise-filter-label { cursor: pointer; display: inline-flex; align-items: center; gap: 5px; margin: 0; font-weight: 500; }
+    .market-filter-label input, .rise-filter-label input { accent-color: var(--accent); vertical-align: middle; }
     table.rows-compare th.sortable-col { cursor: pointer; user-select: none; color: var(--accent); }
     table.rows-compare th.sortable-col:hover { text-decoration: underline; }
     table.rows-compare th.sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
@@ -1319,6 +1365,11 @@ _DATED_N_TEMPLATE = r"""
   <label class="market-filter-label"><input type="radio" name="market-scope-{{ suffix }}" value="kospi"/> KOSPI</label>
   <label class="market-filter-label"><input type="radio" name="market-scope-{{ suffix }}" value="kosdaq"/> KOSDAQ</label>
 </div>
+<div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
+  <span class="rise-filter-title">상승률 -</span>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+</div>
 {%- endmacro %}
 {% macro stock_name_link(code, name) -%}
 <span class="stock-chart-tip" tabindex="0">
@@ -1351,7 +1402,7 @@ _DATED_N_TEMPLATE = r"""
   {% elif meta.prediction_only and is_live_n %}
   <div class="banner">
     <strong>당일(N) 실행 모드.</strong> 예측에는 위 시각까지 반영된 뉴스가 쓰였습니다.
-    <strong>T={{ t_day.isoformat() }}</strong> 가 예측 전용이거나 일봉이 아직 확정되지 않았으면 <strong>실제 상승률</strong>은 빈 칸이거나, 당일 장 마감 전에는 pykrx·네이버 실시간 등락률을 <strong>— (xx%)</strong> 형태로만 참고합니다. <strong>누적 정확도</strong>는 실적이 없으면 빈 칸일 수 있습니다. <strong>예측 상승률 {{ meta.threshold }} 이상 후보만</strong> 표에 올립니다(당일 시장 전체 급등 종목은 포함하지 않음).
+    <strong>T={{ t_day.isoformat() }}</strong> 가 예측 전용이거나 일봉이 아직 확정되지 않았으면 <strong>실제 상승률</strong>은 빈 칸이거나, 당일 장 마감 전에는 pykrx·네이버 실시간 등락률을 <strong>— (xx%)</strong> 형태로만 참고합니다. <strong>누적 정확도</strong>는 실적이 없으면 빈 칸일 수 있습니다. 표는 <strong>예측/실제 10% 이상 후보</strong>를 포함하며, 라디오로 20%이상 / 10~20%를 전환할 수 있습니다.
     과거 기준일로 다시 실행하면 시장 20%↑ 종목과 예측을 함께 비교할 수 있습니다.
   </div>
   {% elif meta.prediction_only %}
@@ -1382,7 +1433,9 @@ _DATED_N_TEMPLATE = r"""
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
           <th>보정(%)</th>
-          <th class="sortable-col" data-sort="cumulative" scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(달성%·a b c / d)</span></th>
+          <th class="sortable-col" data-sort="cumulative" scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(달성% vs 0%+ · a b c / d)</span></th>
+          <th>누적정확도(10~20)</th>
+          <th>누적정확도(전체)</th>
           <th>통합 보기</th>
           <th>공시</th>
           <th>이유/차이</th>
@@ -1392,7 +1445,7 @@ _DATED_N_TEMPLATE = r"""
       </thead>
       <tbody>
         {% for r in day.rows_compare %}
-        <tr id="code-{{ row_id_prefix }}{{ r.code }}" data-market="{{ r.market_segment|default('other') }}">
+        <tr id="code-{{ row_id_prefix }}{{ r.code }}" data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
           <td style="white-space:nowrap" data-sort-col="group" data-sort-value="{% if (not meta.prediction_only) and r.actual_big and (r.pred_high | default(false)) %}3{% elif (not meta.prediction_only) and r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
             {% if not meta.prediction_only and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block;color:var(--warn)">예측≥{{ meta.threshold }}</span>{% endif %}
@@ -1415,7 +1468,7 @@ _DATED_N_TEMPLATE = r"""
           <td class="num" style="white-space:nowrap;font-variant-numeric:tabular-nums" data-sort-col="cumulative" data-sort-value="{% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}{{ r.cumulative_accuracy_avg }}{% endif %}">
             {% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
             <span class="gap-tip cumulative-hist-tip">
-              <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="누적 정확도·{{ meta.threshold }} 이상 예측 이력"{% if meta.cumulative_track_hint is defined %} title="{{ meta.cumulative_track_hint | e }}"{% endif %}>{{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} : ({{ r.cumulative_hit_x }} {% if r.cumulative_hit_z is defined and r.cumulative_hit_z is not none %}{{ r.cumulative_hit_z }}{% else %}0{% endif %} <span class="bad">{% if r.cumulative_hit_neg is defined and r.cumulative_hit_neg is not none %}{{ r.cumulative_hit_neg }}{% else %}0{% endif %}</span> / {{ r.cumulative_hit_y }}){% endif %}</span>
+              <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="누적 정확도·{{ meta.threshold }} 이상 예측 이력"{% if meta.cumulative_track_hint is defined %} title="{{ meta.cumulative_track_hint | e }}"{% endif %}>{{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} : ({{ r.cumulative_hit_x }} {% if r.cumulative_hit_z is defined and r.cumulative_hit_z is not none %}{{ r.cumulative_hit_z }}{% else %}0{% endif %} <span class="bad">{% if r.cumulative_hit_neg is defined and r.cumulative_hit_neg is not none %}{{ r.cumulative_hit_neg }}{% else %}0{% endif %}</span> / {{ r.cumulative_hit_y }}){% endif %}</span>
               <div class="gap-tip-popup cumulative-hist-popup" role="tooltip">
                 <div class="combo-tip-body">
                   <strong>관측일 T별 · 예측 ≥ {{ meta.threshold }}</strong>
@@ -1430,11 +1483,17 @@ _DATED_N_TEMPLATE = r"""
                   {% else %}
                   <p class="combo-tip-empty" style="margin:8px 0 0 0">저장된 {{ meta.threshold }} 이상 예측 이력이 없습니다.</p>
                   {% endif %}
-                  <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 관측일별 min(|실제%|,|예측%|) / max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%).{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
+                  <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 관측일별 min(|실제%|,|예측%|) / max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%).{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제가 0% 이상인 비율.{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
                 </div>
               </div>
             </span>
             {% endif %}
+          </td>
+          <td class="num">
+            {% if r.cumulative_accuracy_10_20_avg is defined and r.cumulative_accuracy_10_20_avg is not none %}{{ "%.2f"|format(r.cumulative_accuracy_10_20_avg * 100) }}%{% else %}—{% endif %}
+          </td>
+          <td class="num">
+            {% if r.cumulative_accuracy_all_avg is defined and r.cumulative_accuracy_all_avg is not none %}{{ "%.2f"|format(r.cumulative_accuracy_all_avg * 100) }}%{% else %}—{% endif %}
           </td>
           <td class="td-center">
             <span class="gap-tip combo-tip integrate-tip">

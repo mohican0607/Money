@@ -120,3 +120,33 @@ def save_snapshot(
     }
     with open(p, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=0)
+
+
+def merge_snapshot_fields(
+    fields: dict[str, Any],
+    *,
+    path: Path | None = None,
+) -> bool:
+    """
+    기존 스냅샷 JSON 최상위에 ``fields`` 를 병합해 다시 저장합니다.
+
+    ``--rebuild-train-snapshot`` + From~To 구간 실행 말미에 예측–실제 괴리 누적 분석 등을 붙일 때 사용합니다.
+    파일이 없거나 ``format_version`` 이 맞지 않으면 ``False`` 를 돌려줍니다.
+    """
+    p = path or config.TRAIN_SNAPSHOT_PATH
+    if not p.is_file():
+        return False
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if int(data.get("format_version", 0)) != FORMAT_VERSION:
+        return False
+    data.update(fields)
+    try:
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=0)
+    except OSError:
+        return False
+    return True

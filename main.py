@@ -4,12 +4,13 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
 실행 (프로젝트 루트, 출력: output/):
 
   python main.py
-    → 오늘이 거래일 N일 때, N+1 거래일(T) 급등 후보. output/report_dated_by_n.html 에 해당 N 블록 갱신(표는 예측 후보만)
+    → 오늘이 거래일 N일 때, N+1 거래일(T) 급등 후보. output/report_dated_by_MMDD.html 에 해당 N 블록 갱신(표는 예측 후보만)
     → 거래일 15:00 자동 실행·리포트 열기: scripts/run_daily_1500.ps1 (등록 예: scripts/register_task_scheduler_example.ps1)
 
   python main.py 20260401
-    → N=2026-04-01, T=N+1 거래일 후보. output/report_dated_by_n.html 에 20260401 블록 추가·재실행 시 해당 블록만 갱신
-    → N이 오늘이면 예측 후보만 표시. N이 과거면 pykrx로 시장 20%↑와 예측을 함께 표시(OHLCV 샘플 밖 급등 포함).
+    → 관측일 T=2026-04-01 지정, 기준일 N은 T 직전 거래일로 자동 계산.
+      output/report_dated_by_0401.html 에 해당 T 블록 추가·재실행 시 해당 블록만 갱신
+    → T가 오늘/미래면 예측 후보 중심, T가 과거면 pykrx로 시장 20%↑와 예측을 함께 표시(OHLCV 샘플 밖 급등 포함).
 
   python main.py 20260102 20260410
     → 관측 거래일 T가 위 구간에 있는 날만 배치, 월별 HTML·목차 (--weekly 와 동일 형식)
@@ -211,9 +212,10 @@ def _print_usage() -> None:
     print(
         """사용법:
   python main.py
-      오늘(N) 기준 → N+1 거래일(T) 후보, output/report_dated_by_n.html (해당 N 블록)
+      오늘(N) 기준 → N+1 거래일(T) 후보, output/report_dated_by_MMDD.html (해당 N 블록)
   python main.py YYYYMMDD
-      지정 N → T=N+1 거래일 후보, 동일 파일에서 해당 N 블록만 추가·갱신
+      지정 관측일 T(YYYYMMDD), 기준일 N은 T 직전 거래일로 자동 계산.
+      output/report_dated_by_MMDD.html 에 해당 T 블록만 추가·갱신
   python main.py YYYYMMDD YYYYMMDD
       From~To 거래일 구간 배치, report_YYYY.MM.html 및 report_index_monthly.html
   python main.py --weekly
@@ -229,6 +231,9 @@ def _print_usage() -> None:
       기본과 동일(명시용·호환).
   --rebuild-train-snapshot
       항상 전체 재계산 후 스냅샷을 새로 저장(이 플래그가 최우선).
+      From~To 구간과 함께 쓰면 실행 말미에 일자별 뉴스 규모·예측%−실제% 괴리·
+      누적 MAE·pred_high 적중 누적을 breakout_train_snapshot.json 의 rebuild_learning 에 기록하고,
+      ML 랭커 joblib 은 재학습해 덮어씁니다.
 
   예: python main.py 20260401 20260414
 """
@@ -429,13 +434,174 @@ def _enrich_cumulative_actual_over_pred_from_history(day_reports: list) -> None:
             r["cumulative_accuracy_from_hist"] = True
 
 
+def _enrich_cumulative_actual_over_pred_from_history_for_field(
+    day_reports: list[report.DayReport],
+    *,
+    history_field: str,
+    out_field: str,
+) -> None:
+    """지정 이력 필드 기준 누적 달성률 평균(0~1)을 ``out_field`` 에 씁니다."""
+    for dr in day_reports:
+        for r in dr.rows_compare:
+            hist = r.get(history_field) or []
+            items = sorted(
+                (h for h in hist if isinstance(h, dict)),
+                key=lambda h: str(h.get("t", "")),
+            )
+            n = len(items)
+            if n == 0:
+                r[out_field] = None
+                continue
+            acc = 0.0
+            for h in items:
+                pr = h.get("pred_pct")
+                ap = h.get("actual_pct")
+                if ap is None or pr is None:
+                    continue
+                prf = abs(float(pr))
+                apv = float(ap)
+                if apv < 0:
+                    continue
+                apf = abs(apv)
+                den = max(prf, apf)
+                if den >= 1e-9:
+                    acc += min(prf, apf) / den
+            r[out_field] = acc / n
+
+
+def _rise_band_for_row(
+    pred_ret_pct: float | None,
+    actual_ret_ratio: float | None,
+) -> str:
+    """표시 구간: ``high``(>=20), ``mid``(10~20), ``low``(<10 또는 값 없음)."""
+    max_pct = float("-inf")
+    if pred_ret_pct is not None and math.isfinite(float(pred_ret_pct)):
+        max_pct = max(max_pct, float(pred_ret_pct))
+    if actual_ret_ratio is not None and math.isfinite(float(actual_ret_ratio)):
+        max_pct = max(max_pct, float(actual_ret_ratio) * 100.0)
+    if max_pct >= config.BIG_MOVE_THRESHOLD * 100.0 - 1e-9:
+        return "high"
+    if 10.0 - 1e-9 <= max_pct < config.BIG_MOVE_THRESHOLD * 100.0 - 1e-9:
+        return "mid"
+    return "low"
+
+
+def _build_rebuild_learning_payload(
+    day_reports: list[report.DayReport],
+    s0: date,
+    s1: date,
+) -> dict[str, object]:
+    """
+    From~To(포함) 캘린더 구간에 해당하는 ``DayReport`` 만 골라,
+    일자별 뉴스 샘플 규모·예측%−실제% 괴리·누적 MAE·pred_high 적중 누적을 만듭니다.
+
+    ``train_snapshot.merge_snapshot_fields`` 에 넣을 단일 키 ``rebuild_learning`` dict 를 돌려줍니다.
+    """
+    thr = float(config.BIG_MOVE_THRESHOLD)
+    in_range = [dr for dr in day_reports if s0 <= dr.trading_day <= s1]
+    in_range.sort(key=lambda dr: dr.trading_day)
+
+    cum_abs_gap = 0.0
+    cum_gap_n = 0
+    cum_ph_hits = 0
+    cum_ph_den = 0
+
+    daily: list[dict[str, object]] = []
+    for dr in in_range:
+        gaps: list[float] = []
+        for r in dr.rows_compare:
+            pr = r.get("pred_ret")
+            ar = r.get("actual_ret")
+            if pr is None or ar is None:
+                continue
+            g = float(pr) - float(ar) * 100.0
+            if math.isfinite(g):
+                gaps.append(g)
+
+        n_both = len(gaps)
+        day_mae = sum(abs(x) for x in gaps) / n_both if n_both else None
+        day_mean_gap = sum(gaps) / n_both if n_both else None
+
+        cum_abs_gap += sum(abs(x) for x in gaps)
+        cum_gap_n += n_both
+        cum_mae = cum_abs_gap / cum_gap_n if cum_gap_n else None
+
+        ph_hits = 0
+        ph_den = 0
+        for r in dr.rows_compare:
+            if not r.get("pred_high"):
+                continue
+            ar = r.get("actual_ret")
+            if ar is None:
+                continue
+            ph_den += 1
+            if float(ar) >= thr:
+                ph_hits += 1
+        cum_ph_hits += ph_hits
+        cum_ph_den += ph_den
+        day_prec = ph_hits / ph_den if ph_den else None
+        cum_prec = cum_ph_hits / cum_ph_den if cum_ph_den else None
+
+        titles = dr.news_titles_sample or []
+        terms = dr.news_highlight_terms or []
+
+        daily.append(
+            {
+                "trading_day": dr.trading_day.isoformat(),
+                "news_titles_count": len(titles),
+                "news_highlight_terms_count": len(terms),
+                "news_highlight_terms_sample": terms[:12],
+                "compare_rows": len(dr.rows_compare),
+                "rows_pred_actual_both": n_both,
+                "mean_abs_gap_pred_minus_actual_pct": round(day_mae, 4)
+                if day_mae is not None
+                else None,
+                "mean_gap_pred_minus_actual_pct": round(day_mean_gap, 4)
+                if day_mean_gap is not None
+                else None,
+                "cum_through_mean_abs_gap_pct": round(cum_mae, 4)
+                if cum_mae is not None
+                else None,
+                "pred_high_precision_today": round(day_prec, 4)
+                if day_prec is not None
+                else None,
+                "pred_high_precision_cumulative": round(cum_prec, 4)
+                if cum_prec is not None
+                else None,
+                "pred_high_n_with_actual_today": ph_den,
+                "pred_high_n_with_actual_cumulative": cum_ph_den,
+            }
+        )
+
+    return {
+        "rebuild_learning": {
+            "calendar_from": s0.isoformat(),
+            "calendar_to": s1.isoformat(),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "big_move_threshold": thr,
+            "daily": daily,
+            "summary": {
+                "days": len(daily),
+                "final_cum_mean_abs_gap_pct": round(cum_abs_gap / cum_gap_n, 4)
+                if cum_gap_n
+                else None,
+                "final_pred_high_precision": round(cum_ph_hits / cum_ph_den, 4)
+                if cum_ph_den
+                else None,
+                "pred_high_total_with_actual": cum_ph_den,
+            },
+        }
+    }
+
+
 def _enrich_cumulative_hit_rate(
     day_reports: list[report.DayReport], *, threshold_pct: float
 ) -> None:
     """
     ``pred_high_history`` 기준으로, 예측이 ``threshold_pct`` 이상이었던 날의 실제 분포를 집계합니다.
     괄호 표기용으로 ``cumulative_hit_x``(실제≥threshold 건수), ``cumulative_hit_z``(0<실제<threshold 건수),
-    ``cumulative_hit_neg``(실제<0 건수), ``cumulative_hit_y``(실적 확정·예측≥임계 전체)를 넣습니다.
+    ``cumulative_hit_neg``(실제<0 건수), ``cumulative_hit_y``(실적 확정·예측≥임계 전체)와
+    ``cumulative_nonneg_rate_pct``(실제>=0 비율, 0~100)를 넣습니다.
     """
     thr = float(threshold_pct)
     for dr in day_reports:
@@ -446,11 +612,13 @@ def _enrich_cumulative_hit_rate(
                 r["cumulative_hit_z"] = None
                 r["cumulative_hit_neg"] = None
                 r["cumulative_hit_y"] = None
+                r["cumulative_nonneg_rate_pct"] = None
                 continue
             hist = r.get("pred_high_history") or []
             hits = 0
             mid_band = 0
             neg_band = 0
+            nonneg_band = 0
             n_known = 0
             for h in hist:
                 if not isinstance(h, dict):
@@ -463,6 +631,8 @@ def _enrich_cumulative_hit_rate(
                     continue
                 n_known += 1
                 apf = float(ap)
+                if apf >= -1e-9:
+                    nonneg_band += 1
                 if apf >= thr - 1e-9:
                     hits += 1
                 elif apf > 1e-9 and apf < thr - 1e-9:
@@ -474,6 +644,9 @@ def _enrich_cumulative_hit_rate(
             r["cumulative_hit_z"] = mid_band if n_known else None
             r["cumulative_hit_neg"] = neg_band if n_known else None
             r["cumulative_hit_y"] = n_known if n_known else None
+            r["cumulative_nonneg_rate_pct"] = (
+                100.0 * nonneg_band / n_known
+            ) if n_known else None
 
 
 def _enrich_cumulative_accuracy_avg(day_reports: list[report.DayReport]) -> None:
@@ -727,6 +900,8 @@ def _run_pipeline(
         omit_target_calendar_days: 뉴스 fetch 시 해당 관측일 T의 **캘린더 일** 본문은 내려받지 않음( N 미마감 등).
         train_snapshot_mode: ``none`` | ``use`` | ``rebuild`` — 학습 스냅샷 재사용·갱신·전체 재생성.
         train_snapshot_cal_scope: ``(시작, 끝)`` 캘린더 일(포함) — ``use`` 모드에서 미반영 판단만 이 구간으로 한정.
+            ``rebuild`` 모드이고 이 값이 있으면(구간 ``YYYYMMDD YYYYMMDD`` 실행) 파이프라인 말미에
+            일자별 예측–실제 괴리 누적 분석을 ``breakout_train_snapshot.json`` 의 ``rebuild_learning`` 에 병합합니다.
             ``None`` 이면 이번 실행에 필요한 전체 캘린더 일자를 기준으로 병합합니다.
         skip_ohlcv_gap_download: True면 캐시 최신일 이후를 채우는 우측 보강 다운로드를 생략.
         skip_news_fetch_after: 지정 시 해당 일자를 초과한 미래 캘린더일 뉴스 조회를 생략한다.
@@ -903,6 +1078,7 @@ def _run_pipeline(
                 news_by_calendar=news_by_calendar,
                 listing_names=names,
                 fp=fp_snap,
+                force_retrain=train_snapshot_mode == "rebuild",
             )
         except Exception as e:
             print(f"ML 랭커 초기화 실패(휴리스틱만 사용): {e}", flush=True)
@@ -912,7 +1088,6 @@ def _run_pipeline(
 
     day_reports: list[report.DayReport] = []
     late_below_n = late_below_kw = late_gte_n = late_gte_kw = 0
-    krx_fallback_warned = False
     krx_movers_unavailable_any = False
 
     for T in tqdm(test_days, desc="테스트일별 예측"):
@@ -963,9 +1138,26 @@ def _run_pipeline(
             # 당일 실행에서는 장중/장마감 직후 참고 표시를 위해 pykrx 스냅샷을 시도합니다.
             if is_today_t:
                 krx_pct_by_code = stocks.try_krx_change_pct_by_code(T, returns_df=returns)
+                if not krx_pct_by_code:
+                    # pykrx 전종목 맵이 비면 종목별 pykrx·네이버 순으로 보강.
+                    krx_pct_by_code = stocks.best_effort_intraday_pct_by_code(
+                        T, codes, returns_df=returns
+                    )
         else:
             krx_pct_by_code = stocks.try_krx_change_pct_by_code(T, returns_df=returns)
-            if krx_pct_by_code is not None:
+            # 오늘(T) 장중에는 일봉이 아직 없을 수 있어 best-effort 실시간 맵으로 한 번 더 보강.
+            if (
+                (not krx_pct_by_code)
+                and is_today_t
+                and trading_calendar.is_trading_day(T)
+                and not trading_calendar.is_krx_daily_bar_effective_closed(
+                    T, now_kst=now_kst_td
+                )
+            ):
+                krx_pct_by_code = stocks.best_effort_intraday_pct_by_code(
+                    T, codes, returns_df=returns
+                )
+            if krx_pct_by_code:
                 actual_big_movers = stocks.big_movers_from_krx_pct_map(
                     krx_pct_by_code, config.BIG_MOVE_THRESHOLD, names
                 )
@@ -980,19 +1172,8 @@ def _run_pipeline(
                     }
                     for _, r in movers.iterrows()
                 ]
-                if not krx_fallback_warned:
-                    msg = (
-                        "참고: pykrx·KRX 전종목 등락률 조회에 실패했습니다. "
-                        "실제 20%↑는 OHLCV에 있는 종목 범위에서만 집계합니다."
-                    )
-                    if config.SAMPLE_TICKERS_N:
-                        msg += (
-                            f" SAMPLE_TICKERS={config.SAMPLE_TICKERS_N}(으)로 표본이 좁습니다. "
-                            "비우면 전상장 일봉 기준에 가깝게 맞출 수 있습니다."
-                        )
-                    msg += " (pip install pykrx, 네트워크·영업일 확인)"
-                    print(msg)
-                    krx_fallback_warned = True
+                # 경고 문구는 콘솔에 반복 노이즈를 만들어 비활성화.
+                # 실제 집계는 아래 OHLCV 폴백(actual_big_movers)로 계속 진행합니다.
 
         def _actual_ret_for_code(code: str) -> float | None:
             a = stocks.actual_return_on_date(returns, code, T)
@@ -1009,10 +1190,30 @@ def _run_pipeline(
         rows_compare: list[dict] = []
         false_negatives: list[dict] = []
         pred_pct_min = config.BIG_MOVE_THRESHOLD * 100.0
+        pred_pct_mid_min = 10.0
+        actual_10up_by_code: dict[str, dict] = {}
+        if not forward_prediction_only:
+            if krx_pct_by_code:
+                actual_10up_rows = stocks.big_movers_from_krx_pct_map(
+                    krx_pct_by_code, pred_pct_mid_min / 100.0, names
+                )
+            else:
+                movers_10up = stocks.big_movers_on_date(returns, T, pred_pct_mid_min / 100.0)
+                actual_10up_rows = [
+                    {
+                        "code": str(r["Code"]).zfill(6),
+                        "name": str(r["Name"]),
+                        "ret_pct": float(r["return_pct"]) * 100.0,
+                    }
+                    for _, r in movers_10up.iterrows()
+                ]
+            actual_10up_by_code = {
+                str(x.get("code", "")).zfill(6): x for x in actual_10up_rows if x.get("code")
+            }
 
         if not forward_prediction_only:
             preds_by_code: dict[str, predict.PredictionRow] = {pr.code: pr for pr in preds}
-            for m in actual_big_movers:
+            for m in actual_10up_by_code.values():
                 code = m["code"]
                 act = float(m["ret_pct"]) / 100.0
                 pr = preds_by_code.get(code)
@@ -1030,16 +1231,24 @@ def _run_pipeline(
                     pred_ret = None
 
                 pred_high = pred_ret is not None and pred_ret >= pred_pct_min
+                pred_mid = (
+                    pred_ret is not None
+                    and pred_pct_mid_min <= pred_ret < pred_pct_min
+                )
                 row_d = {
                     "code": code,
                     "market_segment": market_by_code.get(str(code).zfill(6), "other"),
                     "name": m["name"],
                     "reasons_html": reasons_html,
                     "keywords": keywords,
+                    "keyword_hits": (pr.keyword_hits if pr is not None else len(keywords)),
+                    "mention_score": (pr.mention_score if pr is not None else 0.0),
                     "pred_ret": pred_ret,
                     "actual_ret": act,
-                    "actual_big": True,
+                    "actual_big": act >= config.BIG_MOVE_THRESHOLD,
                     "pred_high": pred_high,
+                    "pred_mid": pred_mid,
+                    "rise_band": _rise_band_for_row(pred_ret, act),
                     "gap_analysis_html": _gap_analysis_html_for_row(
                         pred_ret, act, pr, keywords, blob, kospi_hint, late_blob
                     ),
@@ -1060,8 +1269,8 @@ def _run_pipeline(
 
         seen_row_codes = {r["code"] for r in rows_compare}
         for pr in preds:
-            # 예측 20% 이상 후보만 표에 반영(장중/장후 동일).
-            if pr.predicted_return_pct < pred_pct_min:
+            # 예측 10% 이상 후보를 표에 반영(필터 라디오로 20%+/10~20 전환).
+            if pr.predicted_return_pct < pred_pct_mid_min:
                 continue
             if pr.code in seen_row_codes:
                 continue
@@ -1073,6 +1282,7 @@ def _run_pipeline(
                     f"<mark>{w}</mark>" for w in pr.matched_keywords[:10]
                 )
             ph = pr.predicted_return_pct >= pred_pct_min
+            pm = pred_pct_mid_min <= pr.predicted_return_pct < pred_pct_min
             rows_compare.append(
                 {
                     "code": pr.code,
@@ -1080,10 +1290,14 @@ def _run_pipeline(
                     "name": pr.name,
                     "reasons_html": reasons_html,
                     "keywords": pr.matched_keywords,
+                    "keyword_hits": pr.keyword_hits,
+                    "mention_score": pr.mention_score,
                     "pred_ret": pr.predicted_return_pct,
                     "actual_ret": act,
                     "actual_big": act is not None and act >= config.BIG_MOVE_THRESHOLD,
                     "pred_high": ph,
+                    "pred_mid": pm,
+                    "rise_band": _rise_band_for_row(pr.predicted_return_pct, act),
                     "gap_analysis_html": _gap_analysis_html_for_row(
                         pr.predicted_return_pct,
                         act,
@@ -1161,6 +1375,7 @@ def _run_pipeline(
                 disclosure_hits=r.get("disclosure_hits"),
                 news_evidence_collected=include_target_calendar_news,
             )
+            r["rise_band"] = _rise_band_for_row(r.get("pred_ret"), r.get("actual_ret"))
 
         for pr in preds:
             act = None if forward_prediction_only else _actual_ret_for_code(pr.code)
@@ -1237,8 +1452,15 @@ def _run_pipeline(
 
     _enrich_cumulative_accuracy_avg(day_reports)
     prediction_accuracy_cache.merge_from_day_reports(day_reports)
+    prediction_accuracy_cache.merge_feedback_buckets_from_day_reports(day_reports)
     prediction_accuracy_cache.merge_high_pred_history_from_day_reports(
         day_reports, threshold_pct=config.BIG_MOVE_THRESHOLD * 100.0
+    )
+    prediction_accuracy_cache.merge_mid_pred_history_from_day_reports(
+        day_reports, low_pct=10.0, high_pct=config.BIG_MOVE_THRESHOLD * 100.0
+    )
+    prediction_accuracy_cache.merge_all_pred_history_from_day_reports(
+        day_reports, min_pct=10.0
     )
     prediction_accuracy_cache.apply_cached_cumulative_fallback(day_reports)
     prediction_accuracy_cache.enrich_rows_pred_high_history(day_reports)
@@ -1246,6 +1468,29 @@ def _run_pipeline(
         day_reports, threshold_pct=config.BIG_MOVE_THRESHOLD * 100.0
     )
     _enrich_cumulative_actual_over_pred_from_history(day_reports)
+    _enrich_cumulative_actual_over_pred_from_history_for_field(
+        day_reports,
+        history_field="pred_mid_history",
+        out_field="cumulative_accuracy_10_20_avg",
+    )
+    _enrich_cumulative_actual_over_pred_from_history_for_field(
+        day_reports,
+        history_field="pred_all_history",
+        out_field="cumulative_accuracy_all_avg",
+    )
+
+    if (
+        train_snapshot_mode == "rebuild"
+        and train_snapshot_cal_scope is not None
+        and not forward_prediction_only
+    ):
+        s0, s1 = train_snapshot_cal_scope
+        payload = _build_rebuild_learning_payload(day_reports, s0, s1)
+        if train_snapshot.merge_snapshot_fields(payload):
+            print(
+                "학습 스냅샷: 구간 일자별 뉴스·예측–실제 괴리 누적(rebuild_learning) JSON 에 병합 저장.",
+                flush=True,
+            )
 
     return PipelineOut(
         day_reports=day_reports,
@@ -1270,7 +1515,7 @@ def _omit_target_calendar_before_close(
     now_kst: datetime,
 ) -> frozenset[date]:
     """
-    관측 거래일 ``T`` 가 KST ``오늘`` 이고 정규장(15:30) 전이면, 해당 ``T`` 캘린더 뉴스는 받지 않습니다.
+    관측 거래일 ``T`` 가 KST ``오늘`` 이고 15:00 전이면, 해당 ``T`` 캘린더 뉴스는 받지 않습니다.
 
     예측 입력은 직전 거래일 ``NEWS_CUTOFF_*`` 까지이므로 당일 ``T`` 본장 전 종목·시장 뉴스는 불필요합니다.
     """
@@ -1280,7 +1525,7 @@ def _omit_target_calendar_before_close(
         if (
             t == today
             and trading_calendar.is_trading_day(t)
-            and trading_calendar.is_before_krx_regular_close_kst(t, now_kst=now_kst)
+            and (now_kst.hour, now_kst.minute) < (15, 0)
         ):
             out.append(t)
     return frozenset(out)
@@ -1415,7 +1660,7 @@ def main() -> None:
         if omit_t_cal:
             for t in sorted(omit_t_cal):
                 print(
-                    f"관측일 T={t} 장 마감 전: 해당일 캘린더 뉴스는 수집하지 않습니다.",
+                    f"관측일 T={t} 15:00 전: 해당일 캘린더 뉴스는 수집하지 않습니다.",
                     flush=True,
                 )
 
@@ -1448,7 +1693,7 @@ def main() -> None:
         if omit_t_cal:
             for t in sorted(omit_t_cal):
                 print(
-                    f"관측일 T={t} 장 마감 전: 해당일 캘린더 뉴스는 수집하지 않습니다.",
+                    f"관측일 T={t} 15:00 전: 해당일 캘린더 뉴스는 수집하지 않습니다.",
                     flush=True,
                 )
 
@@ -1469,21 +1714,29 @@ def main() -> None:
         _open_report_outputs(out_files)
         return
 
-    # daily / dated: N → T = next trading day after N
+    # daily: N=today → T=next trading day
+    # dated: argv YYYYMMDD 를 관측일 T로 해석, 기준일 N은 T 직전 거래일
     if mode == "daily":
         n_day = today
         if not trading_calendar.is_trading_day(n_day):
             print(f"{n_day} 은(는) 거래일이 아닙니다. 거래일에 15:00 스케줄로 실행하세요.")
             return
+        try:
+            t_day = trading_calendar.next_trading_day_after(n_day)
+        except ValueError as e:
+            print(e)
+            return
     else:
         assert arg_date is not None
-        n_day = arg_date  # dated
-
-    try:
-        t_day = trading_calendar.next_trading_day_after(n_day)
-    except ValueError as e:
-        print(e)
-        return
+        t_day = arg_date  # dated: target observation day
+        if not trading_calendar.is_trading_day(t_day):
+            print(f"지정한 관측일 T={t_day} 은(는) 거래일이 아닙니다.")
+            return
+        try:
+            n_day = trading_calendar.last_trading_day_before(t_day)
+        except ValueError as e:
+            print(e)
+            return
 
     end_date = max(today, t_day)
     end_date = min(end_date, date(2026, 12, 31))
@@ -1493,9 +1746,7 @@ def main() -> None:
         print(f"관측일 {t_day} 이(가) 캘린더 범위에 없습니다. end_date={end_date}")
         return
 
-    forward_prediction_only = n_day == today or (
-        not trading_calendar.is_trading_day(n_day)
-    )
+    forward_prediction_only = t_day >= today
     before_open_n = (
         n_day == today
         and trading_calendar.is_trading_day(n_day)
@@ -1528,6 +1779,14 @@ def main() -> None:
         omit_target_calendar_days=omit_t_calendar,
         skip_news_fetch_after=skip_news_fetch_after,
     )
+    if po.day_reports and po.day_reports[0].trading_day != t_day:
+        actual_t = po.day_reports[0].trading_day
+        print(
+            f"관측일 보정: 계산된 T={t_day.isoformat()} 대신 "
+            f"리포트 데이터 T={actual_t.isoformat()} 를 사용합니다.",
+            flush=True,
+        )
+        t_day = actual_t
 
     meta_compact = {
         "train_range": f"{po.train_start} ~ {po.test_start - timedelta(days=1)}",
@@ -1551,7 +1810,7 @@ def main() -> None:
             "이번 T 확정 후 같은 종목이 다시 표에 오면 캐시가 갱신됩니다."
         )
 
-    rollup_path = config.REPORT_DATED_ROLLUP_HTML
+    rollup_path = config.OUTPUT_DIR / f"report_dated_by_{t_day.strftime('%m%d')}.html"
     report.render_dated_n_report(
         n_day=n_day,
         t_day=t_day,
@@ -1562,7 +1821,10 @@ def main() -> None:
         rollup_path=rollup_path,
         row_id_prefix=f"n{n_day.strftime('%Y%m%d')}-",
     )
-    print(f"완료: {rollup_path} (N={n_day.isoformat()} 블록 반영)")
+    print(
+        f"완료: {rollup_path} "
+        f"(기준일 N={n_day.isoformat()} · 관측일 T={t_day.isoformat()} 블록 반영)"
+    )
     _open_report_outputs([rollup_path])
 
 

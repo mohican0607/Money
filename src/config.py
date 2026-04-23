@@ -87,6 +87,15 @@ INCLUDE_ACTUAL_BIG_MOVERS_IN_ROWS_COMPARE = os.getenv(
 PRED_RETURN_CALIBRATION_ENABLED = os.getenv(
     "PRED_RETURN_CALIBRATION_ENABLED", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
+# 예측-실제 누적 오차(t_code_ratio) 기반 자동 보정 루프.
+PRED_ERROR_FEEDBACK_ENABLED = os.getenv("PRED_ERROR_FEEDBACK_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+PRED_ERROR_FEEDBACK_MIN_SAMPLES = _positive_int_env("PRED_ERROR_FEEDBACK_MIN_SAMPLES", 6)
+PRED_ERROR_FEEDBACK_SHRINK_STRENGTH = _float_env("PRED_ERROR_FEEDBACK_SHRINK_STRENGTH", 12.0)
 # 감독학습 랭커(scikit-learn HistGradientBoosting)로 후보 종목 순위를 확률 기반 정렬(0이면 휴리스틱만).
 PRED_USE_ML_RANKER = os.getenv("PRED_USE_ML_RANKER", "1").strip().lower() in (
     "1",

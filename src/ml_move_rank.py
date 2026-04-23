@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import config, news, predict, trading_calendar
+from . import config, news, predict, prediction_accuracy_cache, trading_calendar
 from .features import BreakoutEvent, keyword_set, name_mention_score
 
 try:
@@ -39,6 +39,9 @@ FEATURE_NAMES = (
     "base_ret",
     "log1p_events",
     "heuristic_score",
+    "mention_x_hit",
+    "news_kw_count",
+    "news_blob_len_log",
     "ret_lag1",
     "log_vol_lag1",
     "ret_roll_std5",
@@ -46,7 +49,7 @@ FEATURE_NAMES = (
     "close_ma20_ratio",
 )
 
-ML_MODEL_VERSION = 2
+ML_MODEL_VERSION = 3
 MAX_NEG_PER_DAY = 360
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
@@ -139,6 +142,9 @@ def _feat_vector(
         float(base_ret),
         float(math.log1p(ce)),
         float(score),
+        float(mention * math.sqrt(max(0, n_hit))),
+        float(len(kw_news)),
+        float(math.log1p(max(0, len(news_blob)))),
     ]
     return base + _price_feats_row(ohlcv_idx, code, before_exclusive)
 
@@ -226,9 +232,13 @@ def fit_or_load_classifier(
     news_by_calendar: dict[date, list[dict[str, str]]],
     listing_names: dict[str, str],
     fp: str,
+    force_retrain: bool = False,
 ) -> dict[str, Any] | None:
     """
     스냅샷 지문 ``fp`` 단위로 모델을 캐시에 두고, 없으면 학습 후 저장합니다.
+
+    ``force_retrain=True`` 이면 기존 joblib 을 읽지 않고 항상 재학습해 덮어씁니다
+    (``--rebuild-train-snapshot`` 과 함께 최신 ``BreakoutEvent`` 로 랭커를 맞출 때).
 
     Returns:
         ``{"pipeline": sklearn Pipeline | None, "fp": str, "feature_names": tuple}`` 또는
@@ -247,7 +257,7 @@ def fit_or_load_classifier(
         "feature_names": FEATURE_NAMES,
         "version": ML_MODEL_VERSION,
     }
-    if path.is_file():
+    if path.is_file() and not force_retrain:
         try:
             loaded = joblib.load(path)
             if (
@@ -325,6 +335,7 @@ def rank_predictions_ml(
 ) -> list[predict.PredictionRow]:
     """전 종목에 대해 급등 확률을 매기고 상위 ``top_n`` ``PredictionRow`` 를 만듭니다."""
     ctx = predict.build_scoring_context(news_text_blob, train_events)
+    feedback_ctx = prediction_accuracy_cache.build_feedback_context()
     kw_news, _ = ctx
     ohlcv_idx = _ohlcv_lookup(returns_ml)
     feats: list[list[float]] = []
@@ -358,12 +369,25 @@ def rank_predictions_ml(
             news_text_blob,
             ctx,
             min_keyword_hits,
+            feedback_ctx=feedback_ctx,
         )
         if pr is None:
             continue
         p = float(proba[i])
         pr.ml_prob = p
-        pr.predicted_return_pct = _display_return_pct_from_ml_prob(p)
+        pred_pct = _display_return_pct_from_ml_prob(p)
+        n_hit = int(max(0.0, feats[i][0])) if i < len(feats) and len(feats[i]) > 0 else 0
+        mention = float(max(0.0, feats[i][1])) if i < len(feats) and len(feats[i]) > 1 else 0.0
+        pr.predicted_return_pct = (
+            predict._feedback_calibrated_return(
+                pred_pct / 100.0,
+                code=code,
+                n_hit=n_hit,
+                mention=mention,
+                feedback_ctx=feedback_ctx,
+            )
+            * 100.0
+        )
         pr.reasons = [
             f"감독학습 랭커(HistGradientBoosting)가 당일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) "
             f"추정 확률 {p * 100:.1f}% (뉴스·급등이력·시세 피처 {len(FEATURE_NAMES)}개). "
