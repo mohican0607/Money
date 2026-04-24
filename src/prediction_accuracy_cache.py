@@ -470,6 +470,63 @@ def mean_ratio_for_code(code: str) -> float | None:
     return sum(vals) / len(vals)
 
 
+def export_gap_rollup_for_calendar_range(s0: date, s1: date) -> dict[str, object]:
+    """
+    ``--rebuild-train-snapshot`` 구간 병합용: 구간 내 관측일 T의 달성률·버킷 통계 스냅샷.
+
+    ``train_snapshot`` JSON 의 ``prediction_gap_rollup`` 에 넣습니다.
+    """
+    p = _load_payload()
+    ratios_raw = p.get("t_code_ratio") or {}
+    ratios_in: dict[str, float] = {}
+    vals: list[float] = []
+    if isinstance(ratios_raw, dict):
+        for k, v in ratios_raw.items():
+            if not isinstance(k, str) or ":" not in k:
+                continue
+            t_s, _code = k.rsplit(":", 1)
+            try:
+                t_d = date.fromisoformat(t_s)
+            except ValueError:
+                continue
+            if s0 <= t_d <= s1 and isinstance(v, (int, float)) and math.isfinite(float(v)):
+                ratios_in[k] = min(abs(float(v)), 1.0)
+                vals.append(ratios_in[k])
+    fb = p.get("feedback_bucket_stats") if isinstance(p.get("feedback_bucket_stats"), dict) else {}
+    fb_summary: list[dict[str, object]] = []
+    for bkey, rec in fb.items():
+        if not isinstance(rec, dict):
+            continue
+        c = int(rec.get("count", 0) or 0)
+        if c <= 0:
+            continue
+        sr = rec.get("sum_ratio")
+        if not isinstance(sr, (int, float)):
+            continue
+        fb_summary.append(
+            {
+                "bucket": str(bkey),
+                "count": c,
+                "mean_ratio": round(float(sr) / float(c), 6),
+                "mean_abs_gap_pct": round(
+                    float(rec.get("sum_abs_gap", 0.0) or 0.0) / float(c), 4,
+                ),
+            }
+        )
+    fb_summary.sort(key=lambda x: -int(x.get("count", 0)))
+    mean_ratio = sum(vals) / len(vals) if vals else None
+    return {
+        "calendar_from": s0.isoformat(),
+        "calendar_to": s1.isoformat(),
+        "exported_at": datetime.now().isoformat(timespec="seconds"),
+        "t_code_ratio_keys_in_range": len(ratios_in),
+        "mean_achievement_ratio_in_range": round(mean_ratio, 6) if mean_ratio is not None else None,
+        "t_code_ratio_slice": ratios_in,
+        "feedback_bucket_top": fb_summary[:40],
+        "feedback_bucket_stats_full": fb,
+    }
+
+
 def build_feedback_context() -> dict[str, object]:
     """
     예측 보정용 오차 요약 컨텍스트를 만듭니다.

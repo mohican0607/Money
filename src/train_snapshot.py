@@ -102,6 +102,13 @@ def load_snapshot(path: Path | None = None) -> TrainSnapshot | None:
     return TrainSnapshot(fingerprint=fp, events=evs, calendar_days_covered=cov)
 
 
+_SNAPSHOT_PRESERVE_KEYS = (
+    "rebuild_learning",
+    "market_theme_flow",
+    "prediction_gap_rollup",
+)
+
+
 def save_snapshot(
     events: list[BreakoutEvent],
     calendar_days_covered: set[date],
@@ -112,12 +119,24 @@ def save_snapshot(
     p = path or config.TRAIN_SNAPSHOT_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
     fp_use = fp if fp is not None else fingerprint()
-    out = {
+    preserved: dict[str, Any] = {}
+    if p.is_file():
+        try:
+            with open(p, encoding="utf-8") as f:
+                old = json.load(f)
+            if int(old.get("format_version", 0)) == FORMAT_VERSION:
+                for k in _SNAPSHOT_PRESERVE_KEYS:
+                    if k in old and old[k] is not None:
+                        preserved[k] = old[k]
+        except (OSError, json.JSONDecodeError, TypeError):
+            pass
+    out: dict[str, Any] = {
         "format_version": FORMAT_VERSION,
         "fingerprint": fp_use,
         "calendar_days_covered": sorted(d.isoformat() for d in calendar_days_covered),
         "train_events": [_event_to_json(e) for e in events],
     }
+    out.update(preserved)
     with open(p, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=0)
 

@@ -127,14 +127,11 @@ report 파일 관련하여
 	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260326 20260331 --force
 
 
-### both	2025827 ~ 20260420
-	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20251001 20251102 --force
-	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260422
-	
-	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20250915 --force
+### both	2025706 ~ 20260423
+	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260424 --force
 
-7376 08:00 	35
-7377 08:04 	36
+	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20250701 20250715 --force
+
 
 
 ### main.py
@@ -142,14 +139,14 @@ report 파일 관련하여
 	--no-train-snapshot			스냅샷 미사용 (매번 전부 메모리에서만 계산, 파일 읽기/쓰기 없음)
 	--use-train-snapshot		생략 가능. 기본과 동일(호환·명시용)
 
-	.\.venv\Scripts\python.exe main.py --use-train-snapshot     20260301 20260414	
-	.\.venv\Scripts\python.exe main.py --rebuild-train-snapshot 20250409 20260423
+	.\.venv\Scripts\python.exe main.py 20260301 20260414 --use-train-snapshot
+	.\.venv\Scripts\python.exe main.py 20250409 20260423 --rebuild-train-snapshot
 
 	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 오늘
 	.\.venv\Scripts\python.exe main.py 20260401 내일
 
 	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260422
-	.\.venv\Scripts\python.exe main.py 20260401 20260423
+	.\.venv\Scripts\python.exe main.py 20260401 20260427
 
 
 	pip install pykrx

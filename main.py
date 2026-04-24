@@ -33,6 +33,7 @@ import math
 import re
 import sys
 import time
+import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter, defaultdict
 from collections.abc import Sequence
@@ -56,10 +57,77 @@ from src import (
     predict,
     prediction_accuracy_cache,
     report,
+    snapshot_rebuild_learning,
     stocks,
     train_snapshot,
     trading_calendar,
 )
+
+
+def _load_prediction_freeze_payload() -> dict[str, list[dict]]:
+    path = config.PREDICTION_FREEZE_PATH
+    if not path.is_file():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, list[dict]] = {}
+    for k, v in raw.items():
+        if isinstance(k, str) and isinstance(v, list):
+            out[k] = [x for x in v if isinstance(x, dict)]
+    return out
+
+
+def _save_prediction_freeze_payload(payload: dict[str, list[dict]]) -> None:
+    path = config.PREDICTION_FREEZE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.PredictionRow]:
+    rows: list[predict.PredictionRow] = []
+    for x in items:
+        try:
+            rows.append(
+                predict.PredictionRow(
+                    code=str(x.get("code", "")).zfill(6),
+                    name=str(x.get("name", "")),
+                    score=float(x.get("score", 0.0) or 0.0),
+                    predicted_return_pct=float(x.get("predicted_return_pct", 0.0) or 0.0),
+                    matched_keywords=[str(k) for k in (x.get("matched_keywords") or [])],
+                    reasons=[str(r) for r in (x.get("reasons") or [])],
+                    ml_prob=(
+                        float(x["ml_prob"])
+                        if x.get("ml_prob") is not None
+                        else None
+                    ),
+                    keyword_hits=int(x.get("keyword_hits", 0) or 0),
+                    mention_score=float(x.get("mention_score", 0.0) or 0.0),
+                )
+            )
+        except (TypeError, ValueError):
+            continue
+    return rows
+
+
+def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[dict]:
+    return [
+        {
+            "code": str(r.code).zfill(6),
+            "name": r.name,
+            "score": float(r.score),
+            "predicted_return_pct": float(r.predicted_return_pct),
+            "matched_keywords": list(r.matched_keywords),
+            "reasons": list(r.reasons),
+            "ml_prob": (None if r.ml_prob is None else float(r.ml_prob)),
+            "keyword_hits": int(getattr(r, "keyword_hits", 0) or 0),
+            "mention_score": float(getattr(r, "mention_score", 0.0) or 0.0),
+        }
+        for r in rows
+    ]
 
 
 def _collect_calendar_days_for_trading_range(
@@ -231,8 +299,10 @@ def _print_usage() -> None:
       기본과 동일(명시용·호환).
   --rebuild-train-snapshot
       항상 전체 재계산 후 스냅샷을 새로 저장(이 플래그가 최우선).
-      From~To 구간과 함께 쓰면 실행 말미에 일자별 뉴스 규모·예측%−실제% 괴리·
-      누적 MAE·pred_high 적중 누적을 breakout_train_snapshot.json 의 rebuild_learning 에 기록하고,
+      From~To 구간과 함께 쓰면 실행 말미에 breakout_train_snapshot.json 에
+      rebuild_learning(일자별 괴리·적중 누적, 기존 일자와 병합)·
+      market_theme_flow(일자별 early 뉴스·테마 시드·급등 다발 요약)·
+      prediction_gap_rollup(예측–실제 달성률·버킷 통계 스냅샷)을 병합 저장하고,
       ML 랭커 joblib 은 재학습해 덮어씁니다.
 
   예: python main.py 20260401 20260414
@@ -495,7 +565,8 @@ def _build_rebuild_learning_payload(
     From~To(포함) 캘린더 구간에 해당하는 ``DayReport`` 만 골라,
     일자별 뉴스 샘플 규모·예측%−실제% 괴리·누적 MAE·pred_high 적중 누적을 만듭니다.
 
-    ``train_snapshot.merge_snapshot_fields`` 에 넣을 단일 키 ``rebuild_learning`` dict 를 돌려줍니다.
+    ``snapshot_rebuild_learning.merge_extended_rebuild_into_snapshot`` 에 넘길
+    ``rebuild_learning`` 하위 dict(``daily``·``summary`` 등)를 만듭니다.
     """
     thr = float(config.BIG_MOVE_THRESHOLD)
     in_range = [dr for dr in day_reports if s0 <= dr.trading_day <= s1]
@@ -1089,6 +1160,10 @@ def _run_pipeline(
     day_reports: list[report.DayReport] = []
     late_below_n = late_below_kw = late_gte_n = late_gte_kw = 0
     krx_movers_unavailable_any = False
+    freeze_payload = (
+        _load_prediction_freeze_payload() if config.PREDICTION_FREEZE_ENABLED else {}
+    )
+    freeze_changed = False
 
     for T in tqdm(test_days, desc="테스트일별 예측"):
         if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
@@ -1112,17 +1187,25 @@ def _run_pipeline(
             actual_ctx_rows = news.rows_for_actual_context(news_by_calendar, T)
 
         min_hits = 1 if train_events else 0
-        preds = predict.predict_for_trading_day(
-            T,
-            codes,
-            names,
-            train_events,
-            blob,
-            top_n=40,
-            min_keyword_hits=min_hits,
-            ml_bundle=ml_bundle,
-            returns_ml=returns_ml,
-        )
+        t_key = T.isoformat()
+        if config.PREDICTION_FREEZE_ENABLED and t_key in freeze_payload:
+            preds = _prediction_rows_from_frozen_items(freeze_payload[t_key])
+            print(f"예측 고정 캐시 재사용: T={t_key} ({len(preds)}건)", flush=True)
+        else:
+            preds = predict.predict_for_trading_day(
+                T,
+                codes,
+                names,
+                train_events,
+                blob,
+                top_n=40,
+                min_keyword_hits=min_hits,
+                ml_bundle=ml_bundle,
+                returns_ml=returns_ml,
+            )
+            if config.PREDICTION_FREEZE_ENABLED:
+                freeze_payload[t_key] = _prediction_rows_to_frozen_items(preds)
+                freeze_changed = True
         scoring_ctx = predict.build_scoring_context(blob, train_events)
 
         kospi_r = market_index.index_daily_return_pct(ks11, T)
@@ -1485,12 +1568,28 @@ def _run_pipeline(
         and not forward_prediction_only
     ):
         s0, s1 = train_snapshot_cal_scope
-        payload = _build_rebuild_learning_payload(day_reports, s0, s1)
-        if train_snapshot.merge_snapshot_fields(payload):
+        rl = _build_rebuild_learning_payload(day_reports, s0, s1)["rebuild_learning"]
+        theme_days = sorted(
+            {dr.trading_day for dr in day_reports if s0 <= dr.trading_day <= s1}
+        )
+        theme = snapshot_rebuild_learning.build_market_theme_flow(
+            theme_days,
+            news_by_calendar,
+            returns,
+            names,
+        )
+        gap = prediction_accuracy_cache.export_gap_rollup_for_calendar_range(s0, s1)
+        if snapshot_rebuild_learning.merge_extended_rebuild_into_snapshot(
+            rebuild_learning=rl,
+            market_theme_flow=theme,
+            prediction_gap_rollup=gap,
+        ):
             print(
-                "학습 스냅샷: 구간 일자별 뉴스·예측–실제 괴리 누적(rebuild_learning) JSON 에 병합 저장.",
+                "학습 스냅샷: rebuild_learning + market_theme_flow + prediction_gap_rollup 병합 저장.",
                 flush=True,
             )
+    if config.PREDICTION_FREEZE_ENABLED and freeze_changed:
+        _save_prediction_freeze_payload(freeze_payload)
 
     return PipelineOut(
         day_reports=day_reports,
@@ -1624,6 +1723,50 @@ def _render_monthly_batch(po: PipelineOut, *, test_range_label: str) -> list[Pat
     return written_paths
 
 
+def _expand_range_test_days_with_existing_report_days(
+    test_days: list[date],
+    *,
+    all_sessions: list[date],
+) -> list[date]:
+    """
+    구간 실행 시, 기존 월간 리포트에 이미 들어 있는 날짜만 추가로 포함합니다.
+
+    즉, ``test_days``(이번 실행 범위) + ``기존 파일에 이미 있던 day-YYYY-MM-DD`` 집합으로
+    재계산 범위를 구성합니다. 월 전체 강제 확장은 하지 않습니다.
+    """
+    if not test_days:
+        return test_days
+    session_set = set(all_sessions)
+    months = {(d.year, d.month) for d in test_days}
+    expanded: set[date] = set(test_days)
+    for y, m in months:
+        report_path = config.OUTPUT_DIR / f"report_{y}.{m:02d}.html"
+        if not report_path.is_file():
+            continue
+        try:
+            html = report_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        hits = re.findall(r'id="day-(\d{4}-\d{2}-\d{2})"', html)
+        old_days: set[date] = set()
+        for s in hits:
+            try:
+                yy, mm, dd = s.split("-")
+                d = date(int(yy), int(mm), int(dd))
+            except ValueError:
+                continue
+            if d.year == y and d.month == m and d in session_set:
+                old_days.add(d)
+        expanded.update(old_days)
+        if old_days:
+            print(
+                f"기존 월간 리포트 감지: {report_path.name} → "
+                f"기존 포함일 {len(old_days)}일 + 이번 범위를 병합해 갱신합니다.",
+                flush=True,
+            )
+    return sorted(expanded)
+
+
 def main() -> None:
     """
     CLI 진입점: ``_parse_cli`` 결과에 따라 주간/구간/단일일 모드로 파이프라인 실행 후 HTML 저장.
@@ -1688,6 +1831,10 @@ def main() -> None:
         if not test_days:
             print(f"구간 {d_from} ~ {d_to} 에 포함되는 거래일이 없습니다. (데이터 상한 {end_date})")
             return
+        test_days = _expand_range_test_days_with_existing_report_days(
+            test_days,
+            all_sessions=sessions,
+        )
 
         omit_t_cal = _omit_target_calendar_before_close(test_days, now_kst=now_kst)
         if omit_t_cal:

@@ -63,6 +63,8 @@ OUTPUT_DIR = ROOT / "output"
 REPORT_DATED_ROLLUP_HTML = OUTPUT_DIR / "report_dated_by_n.html"
 # 과거 급등–뉴스 ``BreakoutEvent`` 학습 스냅샷(JSON). ``main.py`` 기본이 로드·증분 병합, ``--no-train-snapshot`` 로 끔.
 TRAIN_SNAPSHOT_PATH = CACHE_DIR / "train" / "breakout_train_snapshot.json"
+# 관측일(T)별 예측 후보 고정 캐시: 같은 T 재실행 시 예측 종목/예측수익률을 동일하게 유지.
+PREDICTION_FREEZE_PATH = CACHE_DIR / "train" / "prediction_freeze_by_t.json"
 
 NAVER_CLIENT_ID = _env_str("NAVER_CLIENT_ID")
 NAVER_CLIENT_SECRET = _env_str("NAVER_CLIENT_SECRET")
@@ -96,6 +98,12 @@ PRED_ERROR_FEEDBACK_ENABLED = os.getenv("PRED_ERROR_FEEDBACK_ENABLED", "1").stri
 )
 PRED_ERROR_FEEDBACK_MIN_SAMPLES = _positive_int_env("PRED_ERROR_FEEDBACK_MIN_SAMPLES", 6)
 PRED_ERROR_FEEDBACK_SHRINK_STRENGTH = _float_env("PRED_ERROR_FEEDBACK_SHRINK_STRENGTH", 12.0)
+PREDICTION_FREEZE_ENABLED = os.getenv("PREDICTION_FREEZE_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 # 감독학습 랭커(scikit-learn HistGradientBoosting)로 후보 종목 순위를 확률 기반 정렬(0이면 휴리스틱만).
 PRED_USE_ML_RANKER = os.getenv("PRED_USE_ML_RANKER", "1").strip().lower() in (
     "1",
