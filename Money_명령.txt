@@ -62,15 +62,15 @@
   그러나 장마감 이후에 다시 main.py를 실행해서 생성된 Report파일에는 '누적 정확도'가 1에 가까운 종목들이 상당히 많음.
   장마감 이전에는 없던 종목들이 왜 장마감 이후에는 추가가 되지?
   20260414의 뉴스는 같은 내용인데 말이야. 
-  이렇게 되면 금일 15:00까지의 뉴스를 토대로 익일 상승할 것으로 예측되는 종목을 찾을 수가 없음.
+  이렇게 되면 금일 14:30까지의 뉴스를 토대로 익일 상승할 것으로 예측되는 종목을 찾을 수가 없음.
 
 * 'python main.py --rebuild-train-snapshot 20250409 20260420' 명령어를 실행하면,
   20260420의 종목뉴스를 다운로드 받음.
   20260420의 경우 주식시장이 아직 마무리된 상태가 아니기에(주식시장은 15:30에 종료), 종목뉴스를 다운로드 받을 필요가 없음.
-  20260420의 예측은 20260417 15:00까지의 뉴스를 토대로 예측하는 것임.
-  즉 N일의 주식예측은 N-1일 15:00까지의 뉴스를 토대로 예측함.
+  20260420의 예측은 20260417 14:30까지의 뉴스를 토대로 예측하는 것임.
+  즉 N일의 주식예측은 N-1일 14:30까지의 뉴스를 토대로 예측함.
   중요한 것은 N-1일은 단순히 1일이전이 아닌, 주식시장이 열리는 이전일을 뜻하는 것임.
-  (ex: 20260420일의 주식예측은 바로 이전 주식장이 열렸던 20260417일의 15:00 까지의 뉴스를 토대로 예측하는 것임)
+  (ex: 20260420일의 주식예측은 바로 이전 주식장이 열렸던 20260417일의 14:30 까지의 뉴스를 토대로 예측하는 것임)
 
 * Report파일에서 금일이고 주식시장이 아직 마감되지 않은 경우, 
   '실제 상승률' 부분에 현재는 — 로 보여주고 있는데
@@ -135,17 +135,41 @@
   매일매일 누적되는 종목뉴스들과 예측/실제 수익률의 차이점 발생원인 등에 대해서도 정확한 학습을 해서,
   예측의 정확도가 점점 100%에 가까워질 수 있도록 학습의 효율성을 극도로 높여줘.
 
-* 
+* 아래의 수정사항은 이미 반영이 되어있을텐데, 검토후 수정이 필요한 부분 존재하면 변경해줘.
   1. '전체시장의 흐름' 즉 테마주들의 분석도 train-snapshot에 들어가야 함.
   2. '--rebuild-train-snapshot' option으로 main.py를 실행하면,
      일자From ~ 일자To 까지의 종목뉴스 / 
      '전체시장의 흐름' 즉 테마주들의 분석 / 
-     매일매일 누적되는 예측수익률과 실제수익률간의 괴리 등을 분석해서   
+     일자From ~ 일자To 까지의 예측수익률과 실제수익률간의 괴리 등을 분석해서 누적하고 원인도 파악하여
      점점 예측률이 향상되는 snapshot을 만들어야 함.
   너의 능력의 최대치를 발현하여 적용해줘.
 
 
 
+
+
+[python main.py 일자From 일자To --rebuild-train-snapshot] 실행 후 
+data/cache/train/breakout_train_snapshot.json에
+train_events 외에 rebuild_learning, market_theme_flow, prediction_gap_rollup 이 쌓임.
+참고: prediction_gap_rollup은 
+      prediction_accuracy_track.json에 이미 쌓인 데이터를 구간으로 잘라 씀.
+	  구간 전에 리포트를 돌려 괴리가 트랙에 반영되어 있어야 함
+----------------------------------------------------------------------------------------------------
+1. save_snapshot이 학습 확장 필드를 지우지 않도록 수정 (train_snapshot.py)
+   rebuild_learning, market_theme_flow, prediction_gap_rollup 은 이후 save_snapshot 호출 시에도 유지됨
+
+2. snapshot_rebuild_learning.py (신규)
+   market_theme_flow    : 구간 각 관측일 T마다 early 뉴스 blob, 상위 키워드, NEWS_QUERY_SEEDS·GOOGLE_NEWS_RSS_QUERY_SEEDS_EXTRA 와의 테마 시드 교차, 20%/10~20% 급등 수, 10% 이상 종목 샘플(종목명 키워드와 뉴스 키워드 교집합).
+   rebuild_learning 병합: 기존 daily와 이번 구간 daily를 trading_day 기준으로 합치고, 누적 MAE·pred_high 누적을 다시 계산**합니다. merge_runs에 실행 이력을 남김
+   prediction_gap_rollup: 구간별 export를 range_exports에 쌓고, latest에 최근 스냅샷을 둠
+
+3. prediction_accuracy_cache.py
+   export_gap_rollup_for_calendar_range(s0, s1): 구간 내 t_code_ratio 슬라이스, 구간 평균 달성률, feedback_bucket_stats 요약/전체.
+
+4. main.py
+   --rebuild-train-snapshot + From~To 일 때, 
+   위 세 블록을 merge_extended_rebuild_into_snapshot 한 번으로 스냅샷에 기록
+   (이전처럼 merge_snapshot_fields만 쓰면 일자 병합이 안 되므로 교체)
 
 
 
@@ -219,7 +243,7 @@ KOSDAQ
 * 각 함수명 윗부분에 함수기능에 대한 주석을 달아줘.
 
 * 현재 USE_DECISION_NEWS_INTRADAY_CUTOFF 관련하여,
-  main.py 실행 시 수행시간이 너무 오래걸려서 15:00 이전에 예측결과를 토대로 주식을 매수하기가 너무 어려움.
+  main.py 실행 시 수행시간이 너무 오래걸려서 14:30 이전에 예측결과를 토대로 주식을 매수하기가 너무 어려움.
   예측에 쓰이는 뉴스는 'N−1 거래일 14:30(KST)까지'로 되어있는 부분을 'N−1 거래일 14:00(KST)까지'로 변경해줘.
   그리고 'python main.py 20260413'처럼 인자값을 오늘날짜로 주는 경우는, 
   

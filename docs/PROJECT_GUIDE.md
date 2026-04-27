@@ -60,7 +60,7 @@ DayReport → HTML
 
 - 사용자가 **기준일 N**을 고르면(예: `python main.py 20260410`), **관측 거래일 T**는 `next_trading_day_after(N)` 입니다.
 - 시나리오: **N일 장 마감 전**에 주문을 넣고 **T일 급등**을 노리는 경우.
-- 예측에 쓰는 뉴스는 **N−1 거래일 15:00(KST)까지**(early)로 자르는 옵션이 기본입니다(`USE_DECISION_NEWS_INTRADAY_CUTOFF`).
+- 예측에 쓰는 뉴스는 **N−1 거래일 14:30(KST)까지**(early)로 자르는 옵션이 기본입니다(`USE_DECISION_NEWS_INTRADAY_CUTOFF`).
 
 ### 2.2 훈련 vs 테스트
 
@@ -107,7 +107,7 @@ python main.py
 | `MOCK_NEWS` | 1이면 API 없이 모의 뉴스 |
 | `SAMPLE_TICKERS` | 숫자 N이면 상장 리스트 상위 N종만 OHLCV(빠른 디버그). 과거 전시장 비교 시 비우는 것을 권장 |
 | `USE_KRX_OHLCV` | 1이면 KRX 일봉 우선, 캐시 파일명 `ohlcv_long_krx_*.parquet` |
-| `USE_DECISION_NEWS_INTRADAY_CUTOFF` | 1이면 N−1 15:00 KST early/late 분리(기본 1) |
+| `USE_DECISION_NEWS_INTRADAY_CUTOFF` | 1이면 N−1 14:30 KST early/late 분리(기본 1) |
 | `MAX_TEST_DAYS` | 월간 모드에서 테스트 거래일 수 상한(0이면 제한 없음) |
 | `NO_AUTO_OPEN_OUTPUT` | 1이면 실행 후 `output` 폴더/HTML 자동 열기 안 함 |
 | `OHLCV_MAX_WORKERS` | 전종목 일봉 다운로드 동시 스레드 수(기본 12). 느리면 네트워크·CPU에 맞게 조정 |

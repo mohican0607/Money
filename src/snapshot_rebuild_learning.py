@@ -116,6 +116,14 @@ def _recompute_rebuild_learning_daily_and_summary(
     cum_gap_n = 0
     cum_ph_hits = 0
     cum_ph_den = 0
+    total_over_pred = 0
+    total_under_pred = 0
+    total_false_high = 0
+    total_false_high_neg = 0
+    total_false_high_low = 0
+    total_false_high_late_hit = 0
+    total_false_high_weak_signal = 0
+    false_high_kw_counter: dict[str, int] = {}
     fixed: list[dict[str, Any]] = []
     for d in daily:
         row = dict(d)
@@ -129,6 +137,27 @@ def _recompute_rebuild_learning_daily_and_summary(
         if ph_den > 0 and ph_prec is not None:
             cum_ph_hits += int(round(float(ph_prec) * ph_den))
             cum_ph_den += ph_den
+        total_over_pred += int(row.get("over_pred_count_today") or 0)
+        total_under_pred += int(row.get("under_pred_count_today") or 0)
+        total_false_high += int(row.get("false_positive_high_today") or 0)
+        total_false_high_neg += int(row.get("false_positive_high_negative_today") or 0)
+        total_false_high_low += int(row.get("false_positive_high_low_return_today") or 0)
+        total_false_high_late_hit += int(
+            row.get("false_positive_high_late_news_hit_today") or 0
+        )
+        total_false_high_weak_signal += int(
+            row.get("false_positive_high_weak_signal_today") or 0
+        )
+        kw_rows = row.get("false_positive_high_top_keywords_today")
+        if isinstance(kw_rows, list):
+            for item in kw_rows:
+                if not isinstance(item, dict):
+                    continue
+                k = str(item.get("keyword") or "").strip()
+                c = int(item.get("count") or 0)
+                if not k or c <= 0:
+                    continue
+                false_high_kw_counter[k] = false_high_kw_counter.get(k, 0) + c
         row["cum_through_mean_abs_gap_pct"] = (
             round(cum_abs_gap / cum_gap_n, 4) if cum_gap_n else None
         )
@@ -136,6 +165,9 @@ def _recompute_rebuild_learning_daily_and_summary(
             round(cum_ph_hits / cum_ph_den, 4) if cum_ph_den else None
         )
         row["pred_high_n_with_actual_cumulative"] = cum_ph_den
+        row["over_pred_count_cumulative"] = total_over_pred
+        row["under_pred_count_cumulative"] = total_under_pred
+        row["false_positive_high_cumulative"] = total_false_high
         fixed.append(row)
     summary = {
         "days": len(fixed),
@@ -143,6 +175,20 @@ def _recompute_rebuild_learning_daily_and_summary(
         "final_pred_high_precision": round(cum_ph_hits / cum_ph_den, 4) if cum_ph_den else None,
         "pred_high_total_with_actual": cum_ph_den,
         "big_move_threshold": thr,
+        "over_pred_count_total": total_over_pred,
+        "under_pred_count_total": total_under_pred,
+        "false_positive_high_total": total_false_high,
+        "false_positive_high_negative_total": total_false_high_neg,
+        "false_positive_high_low_return_total": total_false_high_low,
+        "false_positive_high_late_news_hit_total": total_false_high_late_hit,
+        "false_positive_high_weak_signal_total": total_false_high_weak_signal,
+        "false_positive_high_top_keywords_total": [
+            {"keyword": k, "count": int(v)}
+            for k, v in sorted(
+                false_high_kw_counter.items(),
+                key=lambda x: (-int(x[1]), x[0]),
+            )[:20]
+        ],
     }
     return fixed, summary
 

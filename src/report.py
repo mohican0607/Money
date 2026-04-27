@@ -624,7 +624,7 @@ _TEMPLATE = r"""
     <h2>주의사항 · 매수 시나리오와 뉴스 시각</h2>
     {% if meta.use_decision_cutoff %}
     <ul class="news" style="margin-top:8px;line-height:1.6">
-      <li>한국 현물시장은 <strong>15:00</strong>에 장이 마감됩니다. 본 리포트는 <strong>N 거래일 장 마감 직전(약 14:00~14:50)</strong>에 매수 주문을 넣어 <strong>N+1 거래일</strong>에 20% 이상 상승할 종목을 고르는 전제에 맞춥니다.</li>
+      <li>한국 현물시장은 <strong>14:30</strong>에 장이 마감됩니다. 본 리포트는 <strong>N 거래일 장 마감 직전(약 14:00~14:50)</strong>에 매수 주문을 넣어 <strong>N+1 거래일</strong>에 20% 이상 상승할 종목을 고르는 전제에 맞춥니다.</li>
       <li>그에 따라 예측·훈련에 쓰는 뉴스는 <strong>N-1 거래일 {{ meta.cutoff_kst }}(KST)까지</strong>로 제한합니다. (N = 익일 T의 직전 거래일, N-1은 그 이전 거래일.) <strong>N-1일 {{ meta.cutoff_kst }} 이후</strong> 기사와 <strong>N일·주말</strong> 등 그 다음 캘린더 구간 뉴스는 예측 입력에서 빠집니다.</li>
       <li><strong>N-1일 {{ meta.cutoff_kst }} 이후</strong> 뉴스와, 예측 종목이 <strong>실제로 20% 미만</strong>으로 마감한 경우의 겹침(간단 문자열 매칭)은 아래 &quot;탐색&quot; 표로 따로 집계합니다. 인과 검증이 아니라 후속 분석용입니다.</li>
       <li>기사에 시각이 없거나 옛 캐시면 해당 캘린더일은 <strong>09:00 KST</strong>로 간주해 early/late를 나눕니다. 시각이 중요하면 <code>data/cache/news/naver</code> 또는 <code>…/google</code> 아래 해당 월·일 JSON 삭제 후 재수집을 권장합니다.</li>

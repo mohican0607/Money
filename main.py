@@ -5,7 +5,7 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
 
   python main.py
     → 오늘이 거래일 N일 때, N+1 거래일(T) 급등 후보. output/report_dated_by_MMDD.html 에 해당 N 블록 갱신(표는 예측 후보만)
-    → 거래일 15:00 자동 실행·리포트 열기: scripts/run_daily_1500.ps1 (등록 예: scripts/register_task_scheduler_example.ps1)
+    → 거래일 14:30 자동 실행·리포트 열기: scripts/run_daily_1500.ps1 (등록 예: scripts/register_task_scheduler_example.ps1)
 
   python main.py 20260401
     → 관측일 T=2026-04-01 지정, 기준일 N은 T 직전 거래일로 자동 계산.
@@ -577,6 +577,16 @@ def _build_rebuild_learning_payload(
     cum_ph_hits = 0
     cum_ph_den = 0
 
+    # 구간 전체 원인 누적(예측 과대/과소, 고확신 오판, 지연뉴스 관여, 약신호 관여 등)
+    total_over_pred = 0
+    total_under_pred = 0
+    total_false_high = 0
+    total_false_high_neg = 0
+    total_false_high_low = 0
+    total_false_high_late_hit = 0
+    total_false_high_weak_signal = 0
+    false_high_kw_counter: Counter[str] = Counter()
+
     daily: list[dict[str, object]] = []
     for dr in in_range:
         gaps: list[float] = []
@@ -599,15 +609,47 @@ def _build_rebuild_learning_payload(
 
         ph_hits = 0
         ph_den = 0
+        over_pred = 0
+        under_pred = 0
+        false_high = 0
+        false_high_neg = 0
+        false_high_low = 0
+        false_high_late_hit = 0
+        false_high_weak_signal = 0
+        day_false_high_kw_counter: Counter[str] = Counter()
         for r in dr.rows_compare:
+            pr = r.get("pred_ret")
+            ar = r.get("actual_ret")
+            if pr is not None and ar is not None:
+                g = float(pr) - float(ar) * 100.0
+                if math.isfinite(g):
+                    if g > 1e-9:
+                        over_pred += 1
+                    elif g < -1e-9:
+                        under_pred += 1
             if not r.get("pred_high"):
                 continue
-            ar = r.get("actual_ret")
             if ar is None:
                 continue
             ph_den += 1
             if float(ar) >= thr:
                 ph_hits += 1
+            else:
+                false_high += 1
+                ar_f = float(ar)
+                if ar_f < 0:
+                    false_high_neg += 1
+                elif ar_f < thr:
+                    false_high_low += 1
+                if bool(r.get("late_news_hit")):
+                    false_high_late_hit += 1
+                if int(r.get("keyword_hits", 0) or 0) <= 1 or float(
+                    r.get("mention_score", 0.0) or 0.0
+                ) < 0.10:
+                    false_high_weak_signal += 1
+                for kw in (r.get("keywords") or [])[:12]:
+                    if isinstance(kw, str) and kw.strip():
+                        day_false_high_kw_counter[kw.strip()] += 1
         cum_ph_hits += ph_hits
         cum_ph_den += ph_den
         day_prec = ph_hits / ph_den if ph_den else None
@@ -615,6 +657,15 @@ def _build_rebuild_learning_payload(
 
         titles = dr.news_titles_sample or []
         terms = dr.news_highlight_terms or []
+
+        total_over_pred += over_pred
+        total_under_pred += under_pred
+        total_false_high += false_high
+        total_false_high_neg += false_high_neg
+        total_false_high_low += false_high_low
+        total_false_high_late_hit += false_high_late_hit
+        total_false_high_weak_signal += false_high_weak_signal
+        false_high_kw_counter.update(day_false_high_kw_counter)
 
         daily.append(
             {
@@ -641,6 +692,17 @@ def _build_rebuild_learning_payload(
                 else None,
                 "pred_high_n_with_actual_today": ph_den,
                 "pred_high_n_with_actual_cumulative": cum_ph_den,
+                "over_pred_count_today": over_pred,
+                "under_pred_count_today": under_pred,
+                "false_positive_high_today": false_high,
+                "false_positive_high_negative_today": false_high_neg,
+                "false_positive_high_low_return_today": false_high_low,
+                "false_positive_high_late_news_hit_today": false_high_late_hit,
+                "false_positive_high_weak_signal_today": false_high_weak_signal,
+                "false_positive_high_top_keywords_today": [
+                    {"keyword": k, "count": int(v)}
+                    for k, v in day_false_high_kw_counter.most_common(10)
+                ],
             }
         )
 
@@ -660,6 +722,17 @@ def _build_rebuild_learning_payload(
                 if cum_ph_den
                 else None,
                 "pred_high_total_with_actual": cum_ph_den,
+                "over_pred_count_total": total_over_pred,
+                "under_pred_count_total": total_under_pred,
+                "false_positive_high_total": total_false_high,
+                "false_positive_high_negative_total": total_false_high_neg,
+                "false_positive_high_low_return_total": total_false_high_low,
+                "false_positive_high_late_news_hit_total": total_false_high_late_hit,
+                "false_positive_high_weak_signal_total": total_false_high_weak_signal,
+                "false_positive_high_top_keywords_total": [
+                    {"keyword": k, "count": int(v)}
+                    for k, v in false_high_kw_counter.most_common(20)
+                ],
             },
         }
     }
@@ -1349,6 +1422,9 @@ def _run_pipeline(
                     late_gte_n += 1
                     if late_hit:
                         late_gte_kw += 1
+                    row_d["late_news_hit"] = bool(late_hit)
+                else:
+                    row_d["late_news_hit"] = None
 
         seen_row_codes = {r["code"] for r in rows_compare}
         for pr in preds:
@@ -1389,6 +1465,15 @@ def _run_pipeline(
                         blob,
                         kospi_hint,
                         late_blob,
+                    ),
+                    "late_news_hit": (
+                        news.late_blob_covers_keywords(late_blob, list(pr.matched_keywords))
+                        if (
+                            config.USE_DECISION_NEWS_INTRADAY_CUTOFF
+                            and late_blob
+                            and pr.matched_keywords
+                        )
+                        else None
                     ),
                     **_pred_reason_fields(pr, reasons_html),
                 }
@@ -1614,7 +1699,7 @@ def _omit_target_calendar_before_close(
     now_kst: datetime,
 ) -> frozenset[date]:
     """
-    관측 거래일 ``T`` 가 KST ``오늘`` 이고 15:00 전이면, 해당 ``T`` 캘린더 뉴스는 받지 않습니다.
+    관측 거래일 ``T`` 가 KST ``오늘`` 이고 14:30 전이면, 해당 ``T`` 캘린더 뉴스는 받지 않습니다.
 
     예측 입력은 직전 거래일 ``NEWS_CUTOFF_*`` 까지이므로 당일 ``T`` 본장 전 종목·시장 뉴스는 불필요합니다.
     """
@@ -1624,7 +1709,7 @@ def _omit_target_calendar_before_close(
         if (
             t == today
             and trading_calendar.is_trading_day(t)
-            and (now_kst.hour, now_kst.minute) < (15, 0)
+            and (now_kst.hour, now_kst.minute) < (14, 30)
         ):
             out.append(t)
     return frozenset(out)
@@ -1803,7 +1888,7 @@ def main() -> None:
         if omit_t_cal:
             for t in sorted(omit_t_cal):
                 print(
-                    f"관측일 T={t} 15:00 전: 해당일 캘린더 뉴스는 수집하지 않습니다.",
+                    f"관측일 T={t} 14:30 전: 해당일 캘린더 뉴스는 수집하지 않습니다.",
                     flush=True,
                 )
 
@@ -1840,7 +1925,7 @@ def main() -> None:
         if omit_t_cal:
             for t in sorted(omit_t_cal):
                 print(
-                    f"관측일 T={t} 15:00 전: 해당일 캘린더 뉴스는 수집하지 않습니다.",
+                    f"관측일 T={t} 14:30 전: 해당일 캘린더 뉴스는 수집하지 않습니다.",
                     flush=True,
                 )
 
@@ -1866,7 +1951,7 @@ def main() -> None:
     if mode == "daily":
         n_day = today
         if not trading_calendar.is_trading_day(n_day):
-            print(f"{n_day} 은(는) 거래일이 아닙니다. 거래일에 15:00 스케줄로 실행하세요.")
+            print(f"{n_day} 은(는) 거래일이 아닙니다. 거래일에 14:30 스케줄로 실행하세요.")
             return
         try:
             t_day = trading_calendar.next_trading_day_after(n_day)

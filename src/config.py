@@ -119,15 +119,15 @@ TRAIN_START_DEFAULT = date(2025, 4, 11)  # 약 1년 전(실행일 기준 조정�
 TEST_START = date(2026, 1, 1)
 
 # 매수 시나리오: N거래일 장마감 전(약 14:00~14:50)에 주문해 N+1일 급등을 노릴 때,
-# 예측·훈련에 쓰는 뉴스는 'N-1 거래일' 15:00(KST)까지로 제한한다. (N = T 직전 거래일, T = 수익률 관측일)
+# 예측·훈련에 쓰는 뉴스는 'N-1 거래일' 14:30(KST)까지로 제한한다. (N = T 직전 거래일, T = 수익률 관측일)
 USE_DECISION_NEWS_INTRADAY_CUTOFF = os.getenv("USE_DECISION_NEWS_INTRADAY_CUTOFF", "1").strip() in (
     "1",
     "true",
     "True",
     "yes",
 )
-NEWS_CUTOFF_KST_HOUR = 15
-NEWS_CUTOFF_KST_MINUTE = 0
+NEWS_CUTOFF_KST_HOUR = 14
+NEWS_CUTOFF_KST_MINUTE = 30
 
 # HTML 리포트에 포함할 테스트 거래일(이 범위가 설정되면 MAX_TEST_DAYS는 무시)
 REPORT_TEST_DAY_START = date(2026, 1, 2)

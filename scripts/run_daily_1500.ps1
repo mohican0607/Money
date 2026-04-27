@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  KRX 거래일 15:00 자동 실행용: MOCK_NEWS=0 으로 main.py 실행 후(기본) 생성 리포트 HTML만 자동 오픈(main.py 동작).
+  KRX 거래일 14:30 자동 실행용: MOCK_NEWS=0 으로 main.py 실행 후(기본) 생성 리포트 HTML만 자동 오픈(main.py 동작).
 
 .DESCRIPTION
   - 오늘이 XKRX 거래일이 아니면 종료(스케줄러는 성공 코드).

@@ -17,7 +17,7 @@
   * 위의 주식수익률 20%이상 될 것으로 예상되는 종목들 중 실제로는 마이너스 수익률 된것들은 특별히 정리되어야 하고
     왜 차이점이 발생하였는지 분석내용 보여줘야 함
   * N일이 휴일 또는 공휴일 이후인 경우는 뉴스정보는 직전 주식개장일부터 N-1일까지 찾아봐야 함
-  * 한국의 주식장은 15:00에 마감되기에
+  * 한국의 주식장은 14:30에 마감되기에
     N일 장이 완료되기 전인 14:00 ~ 14:50분까지 N+1일에 20%이상 상승할 종목을 매수하기 위함임.
     그렇기에 N+1일 주식수익률 20%이상 될 것으로 예상되는 종목들의 대상 뉴스는 N-1일 14:30까지만 대상으로 해야함.
     14:30이후의 뉴스와 매수대상 종목의 실제수익률이 20%미만인 경우와의 상관관계도 조사해야 함
@@ -123,14 +123,15 @@ report 파일 관련하여
 관리자 권한이 필요하면 관리자 PowerShell에서:
 
 
-### ticker	20260301 ~ 20260419	
+### ticker	20250601 ~ 20260424	
 	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260326 20260331 --force
 
 
-### both	2025706 ~ 20260423
-	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260424 --force
+### both	20250101 ~ 20260423
+	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20250101 20250120 --force
 
-	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20250701 20250715 --force
+	https://developers.naver.com/apps/#/myapps/iUys6RmSvjnsZ35oFwVP/overview
+	
 
 
 
@@ -141,13 +142,21 @@ report 파일 관련하여
 
 	.\.venv\Scripts\python.exe main.py 20260301 20260414 --use-train-snapshot
 	.\.venv\Scripts\python.exe main.py 20250409 20260423 --rebuild-train-snapshot
+	.\.venv\Scripts\python.exe main.py 20250101 20260427 --rebuild-train-snapshot
 
 	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 오늘
 	.\.venv\Scripts\python.exe main.py 20260401 내일
 
-	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260422
-	.\.venv\Scripts\python.exe main.py 20260401 20260427
-
+	.\.venv\Scripts\python.exe scripts/fetch_news_naver_day.py 20260427
+	.\.venv\Scripts\python.exe main.py                         20260427
+	
+	
+[방산]
+미국
+프랑스
+이스라엘
+대한민국
+러시아
 
 	pip install pykrx
 	
