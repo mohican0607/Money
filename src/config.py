@@ -111,6 +111,14 @@ PRED_USE_ML_RANKER = os.getenv("PRED_USE_ML_RANKER", "1").strip().lower() in (
     "yes",
     "on",
 )
+# 전일 급등·뉴스 테마 가중치를 익일 예측에 반영(B안: JSON 스냅샷 + 휴리스틱·ML 피처 1개).
+THEME_CARRYOVER_ENABLED = os.getenv("THEME_CARRYOVER_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 # 캘리브레이션 후 최종 예측 수익률(소수) 클램프 범위 (BIG_MOVE 20%와 맞춤)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 #PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.35)

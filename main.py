@@ -59,6 +59,7 @@ from src import (
     report,
     snapshot_rebuild_learning,
     stocks,
+    theme_carryover,
     train_snapshot,
     trading_calendar,
 )
@@ -537,6 +538,24 @@ def _enrich_cumulative_actual_over_pred_from_history_for_field(
                 if den >= 1e-9:
                     acc += min(prf, apf) / den
             r[out_field] = acc / n
+
+
+def _enrich_rows_actual_ret_prev_day(
+    rows: list[dict], returns, t_day: date
+) -> None:
+    """각 행에 관측일 T 직전 KRX 영업일의 일봉 수익률(소수, ``actual_ret`` 와 동일)을 붙입니다."""
+    try:
+        prev_td = trading_calendar.last_trading_day_before(t_day)
+    except ValueError:
+        for r in rows:
+            r["actual_ret_prev_day"] = None
+        return
+    for r in rows:
+        code = str(r.get("code", "")).zfill(6)
+        if not code:
+            r["actual_ret_prev_day"] = None
+            continue
+        r["actual_ret_prev_day"] = stocks.actual_return_on_date(returns, code, prev_td)
 
 
 def _rise_band_for_row(
@@ -1260,6 +1279,18 @@ def _run_pipeline(
             actual_ctx_rows = news.rows_for_actual_context(news_by_calendar, T)
 
         min_hits = 1 if train_events else 0
+        theme_w: dict[str, float] = {}
+        if config.THEME_CARRYOVER_ENABLED:
+            try:
+                theme_w = theme_carryover.weights_for_observation_day(
+                    T,
+                    train_events=train_events,
+                    news_by_calendar=news_by_calendar,
+                    returns_df=returns,
+                    threshold=config.BIG_MOVE_THRESHOLD,
+                )
+            except (ValueError, TypeError, OSError):
+                theme_w = {}
         t_key = T.isoformat()
         if config.PREDICTION_FREEZE_ENABLED and t_key in freeze_payload:
             preds = _prediction_rows_from_frozen_items(freeze_payload[t_key])
@@ -1275,6 +1306,7 @@ def _run_pipeline(
                 min_keyword_hits=min_hits,
                 ml_bundle=ml_bundle,
                 returns_ml=returns_ml,
+                theme_weights=theme_w or None,
             )
             if config.PREDICTION_FREEZE_ENABLED:
                 freeze_payload[t_key] = _prediction_rows_to_frozen_items(preds)
@@ -1575,6 +1607,17 @@ def _run_pipeline(
                         "analysis": predict.explain_miss(pr, act, blob, kospi_hint),
                     }
                 )
+
+        _enrich_rows_actual_ret_prev_day(rows_compare, returns, T)
+
+        if config.THEME_CARRYOVER_ENABLED and rows_compare:
+            theme_carryover.persist_rich_snapshot(
+                T,
+                actual_big_movers=actual_big_movers,
+                rows_compare=rows_compare,
+                highlight_terms=hl_terms,
+                threshold=config.BIG_MOVE_THRESHOLD,
+            )
 
         day_reports.append(
             report.DayReport(

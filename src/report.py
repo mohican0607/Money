@@ -445,8 +445,11 @@ _TEMPLATE = r"""
   </span>
 </span>
 {%- endmacro %}
+{% macro actual_ret_prev_suffix(r) -%}
+{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% endif %}
+{%- endmacro %}
 {% macro actual_ret_cell(r) -%}
-{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){% else %}—{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){% else %}—{% endif %}
+{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}
 {%- endmacro %}
 {% macro cumulative_accuracy_td(r, meta) -%}
 <td style="white-space:nowrap;font-variant-numeric:tabular-nums" data-sort-col="cumulative" data-sort-value="{% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}{{ r.cumulative_accuracy_avg }}{% endif %}">
@@ -897,8 +900,11 @@ _COMPACT_TEMPLATE = r"""
   </span>
 </span>
 {%- endmacro %}
+{% macro actual_ret_prev_suffix(r) -%}
+{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% endif %}
+{%- endmacro %}
 {% macro actual_ret_cell_monthly(r) -%}
-{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){% else %}—{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){% else %}—{% endif %}
+{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}
 {%- endmacro %}
 {% macro compact_cumulative_td(r, meta) -%}
 <td style="white-space:nowrap;font-variant-numeric:tabular-nums" data-sort-col="cumulative" data-sort-value="{% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}{{ r.cumulative_accuracy_avg }}{% endif %}">
@@ -1380,8 +1386,11 @@ _DATED_N_TEMPLATE = r"""
   </span>
 </span>
 {%- endmacro %}
+{% macro actual_ret_prev_suffix(r) -%}
+{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% endif %}
+{%- endmacro %}
 {% macro actual_ret_cell_dated(r) -%}
-{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){% else %}—{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){% else %}—{% endif %}
+{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}
 {%- endmacro %}
   <h1>기준일 N={{ n_day.isoformat() }} → 관측일 T={{ t_day.isoformat() }}</h1>
   <p class="sub">

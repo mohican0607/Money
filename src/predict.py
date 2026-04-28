@@ -222,6 +222,7 @@ def prediction_row_for_code(
     min_keyword_hits: int,
     *,
     feedback_ctx: dict[str, object] | None = None,
+    theme_weights: dict[str, float] | None = None,
 ) -> PredictionRow | None:
     """
     단일 종목에 대해 키워드 교집합 수 + 종목명 언급 점수로 스코어하고 ``PredictionRow`` 를 만듭니다.
@@ -238,10 +239,24 @@ def prediction_row_for_code(
     n_hit = len(inter)
     mention = name_mention_score(news_text_blob, name)
     score = n_hit * 1.0 + mention * 5.0
+    tw = theme_weights or {}
+    theme_hit = 0.0
+    if tw:
+        for k in kw_news:
+            v = tw.get(k)
+            if v is not None and math.isfinite(float(v)):
+                theme_hit += float(v)
+        theme_hit = min(theme_hit, 12.0)
+        if config.THEME_CARRYOVER_ENABLED:
+            score += float(config.THEME_CARRYOVER_SCORE_SCALE) * theme_hit
     if n_hit < min_keyword_hits and mention < 0.2:
         return None
     matched = sorted(inter, key=len, reverse=True)[:25]
     reasons: list[str] = []
+    if theme_hit >= 0.06 and config.THEME_CARRYOVER_ENABLED:
+        reasons.append(
+            f"전일 급등·뉴스 테마 키워드와 당일 뉴스 가중 일치 약 {theme_hit:.2f}(익일 테마 캐리오버)"
+        )
     if n_hit:
         reasons.append(f"과거 20% 이상 급등일 뉴스 키워드와 {n_hit}개 일치")
     if mention >= 0.2:
@@ -296,6 +311,7 @@ def predict_for_trading_day(
     *,
     ml_bundle: dict[str, Any] | None = None,
     returns_ml: Any = None,
+    theme_weights: dict[str, float] | None = None,
 ) -> list[PredictionRow]:
     """
     상장 전 종목(또는 리스트)에 대해 스코어를 매기고 상위 ``top_n`` 만 반환합니다.
@@ -327,6 +343,7 @@ def predict_for_trading_day(
             pipeline=ml_bundle["pipeline"],
             top_n=top_n,
             min_keyword_hits=min_keyword_hits,
+            theme_weights=theme_weights,
         )
     if ml_bundle is not None and ml_bundle.get("pipeline") is not None and returns_ml is None:
         print(
@@ -347,6 +364,7 @@ def predict_for_trading_day(
             ctx,
             min_keyword_hits,
             feedback_ctx=feedback_ctx,
+            theme_weights=theme_weights,
         )
         if row is not None:
             ranked.append(row)

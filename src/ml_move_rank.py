@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import config, news, predict, prediction_accuracy_cache, trading_calendar
+from . import config, news, predict, prediction_accuracy_cache, theme_carryover, trading_calendar
 from .features import BreakoutEvent, keyword_set, name_mention_score
 
 try:
@@ -42,6 +42,7 @@ FEATURE_NAMES = (
     "mention_x_hit",
     "news_kw_count",
     "news_blob_len_log",
+    "theme_kw_overlap",
     "ret_lag1",
     "log_vol_lag1",
     "ret_roll_std5",
@@ -49,7 +50,7 @@ FEATURE_NAMES = (
     "close_ma20_ratio",
 )
 
-ML_MODEL_VERSION = 3
+ML_MODEL_VERSION = 4
 MAX_NEG_PER_DAY = 360
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
@@ -122,6 +123,7 @@ def _feat_vector(
     before_exclusive: date,
     *,
     ohlcv_idx: pd.DataFrame | None = None,
+    theme_weights: dict[str, float] | None = None,
 ) -> list[float]:
     """뉴스·이력 피터 + (선택) 시세 피처. ``ohlcv_idx`` 가 있으면 ``before_exclusive`` 거래일 행을 붙입니다."""
     sub = [e for e in train_events if e.trading_day < before_exclusive]
@@ -135,6 +137,7 @@ def _feat_vector(
     score = n_hit * 1.0 + mention * 5.0
     base_ret = predict._historical_mean_return(sub, code)
     ce = sum(1 for e in sub if e.code == code)
+    overlap = theme_carryover.theme_kw_overlap_score(kw_news, theme_weights)
     base = [
         float(n_hit),
         float(mention),
@@ -145,6 +148,7 @@ def _feat_vector(
         float(mention * math.sqrt(max(0, n_hit))),
         float(len(kw_news)),
         float(math.log1p(max(0, len(news_blob)))),
+        float(overlap),
     ]
     return base + _price_feats_row(ohlcv_idx, code, before_exclusive)
 
@@ -171,6 +175,13 @@ def _build_training_arrays(
         if not blob.strip():
             continue
         kw_news = keyword_set(blob, k=100)
+        tw = theme_carryover.weights_for_observation_day(
+            d,
+            train_events=train_events,
+            news_by_calendar=news_by_calendar,
+            returns_df=returns_ml,
+            threshold=threshold,
+        )
         day_slice = returns_ml[returns_ml["Date"] == pd.Timestamp(d)]
         if day_slice.empty:
             continue
@@ -192,6 +203,7 @@ def _build_training_arrays(
                     kw_news,
                     before_exclusive=d,
                     ohlcv_idx=ohlcv_idx,
+                    theme_weights=tw,
                 )
             )
             rows_y.append(1)
@@ -212,6 +224,7 @@ def _build_training_arrays(
                     kw_news,
                     before_exclusive=d,
                     ohlcv_idx=ohlcv_idx,
+                    theme_weights=tw,
                 )
             )
             rows_y.append(0)
@@ -332,11 +345,13 @@ def rank_predictions_ml(
     pipeline: Any,
     top_n: int = 40,
     min_keyword_hits: int = 0,
+    theme_weights: dict[str, float] | None = None,
 ) -> list[predict.PredictionRow]:
     """전 종목에 대해 급등 확률을 매기고 상위 ``top_n`` ``PredictionRow`` 를 만듭니다."""
     ctx = predict.build_scoring_context(news_text_blob, train_events)
     feedback_ctx = prediction_accuracy_cache.build_feedback_context()
     kw_news, _ = ctx
+    tw = theme_weights or {}
     ohlcv_idx = _ohlcv_lookup(returns_ml)
     feats: list[list[float]] = []
     for code in listing_codes:
@@ -350,6 +365,7 @@ def rank_predictions_ml(
                 kw_news,
                 before_exclusive=target_day,
                 ohlcv_idx=ohlcv_idx,
+                theme_weights=tw,
             )
         )
     X = np.asarray(feats, dtype=np.float64)
@@ -370,6 +386,7 @@ def rank_predictions_ml(
             ctx,
             min_keyword_hits,
             feedback_ctx=feedback_ctx,
+            theme_weights=tw,
         )
         if pr is None:
             continue
@@ -390,7 +407,7 @@ def rank_predictions_ml(
         )
         pr.reasons = [
             f"감독학습 랭커(HistGradientBoosting)가 당일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) "
-            f"추정 확률 {p * 100:.1f}% (뉴스·급등이력·시세 피처 {len(FEATURE_NAMES)}개). "
+            f"추정 확률 {p * 100:.1f}% (뉴스·급등이력·시세·전일테마 피처 {len(FEATURE_NAMES)}개). "
             f"표시 예측 상승률은 이 확률을 {_ML_RETURN_MAP_FLOOR_PCT:.0f}~{config.PRED_RETURN_MAX * 100:.0f}% 구간에 선형 정렬한 값입니다."
         ] + list(pr.reasons)
         out.append(pr)
