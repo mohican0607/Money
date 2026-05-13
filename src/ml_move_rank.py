@@ -402,6 +402,8 @@ def rank_predictions_ml(
                 n_hit=n_hit,
                 mention=mention,
                 feedback_ctx=feedback_ctx,
+                clamp_lo=_ML_RETURN_MAP_FLOOR_PCT / 100.0,
+                clamp_hi=float(config.PRED_RETURN_MAX),
             )
             * 100.0
         )

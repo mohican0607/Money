@@ -64,30 +64,26 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     return String(v).toLowerCase();
   }
   function cellSortValue(tr, col) {
-    var td = tr.querySelector('td[data-sort-col="' + col + '"]');
-    if (!td) return null;
-    return td.getAttribute("data-sort-value");
+    var el = tr.querySelector('[data-sort-col="' + col + '"]');
+    if (!el) return null;
+    return el.getAttribute("data-sort-value");
   }
   function bindSortTable(table) {
     var tbody = table.querySelector("tbody");
     if (!tbody) return;
-    var ths = table.querySelectorAll("th.sortable-col");
+    var ths = table.querySelectorAll("th.sortable-col, th .sortable-col");
     if (!ths.length) return;
     ths.forEach(function (th) {
       th.addEventListener("click", function () {
         var col = th.getAttribute("data-sort");
         if (!col) return;
         var descending = th.getAttribute("data-sort-dir") !== "desc";
-        table.querySelectorAll("th.sortable-col").forEach(function (h) {
+        table.querySelectorAll("th.sortable-col, th .sortable-col").forEach(function (h) {
           h.removeAttribute("data-sort-dir");
           h.classList.remove("sort-asc", "sort-desc");
         });
         th.setAttribute("data-sort-dir", descending ? "desc" : "asc");
-        if (col === "cumulative") {
-          th.classList.add(descending ? "sort-asc" : "sort-desc");
-        } else {
-          th.classList.add(descending ? "sort-desc" : "sort-asc");
-        }
+        th.classList.add(descending ? "sort-desc" : "sort-asc");
         var rows = Array.prototype.slice.call(tbody.querySelectorAll("tr"));
         rows.sort(function (a, b) {
           var va = cellSortValue(a, col);
@@ -105,11 +101,6 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
           if (na == null && nb == null) return 0;
           if (na == null) return 1;
           if (nb == null) return -1;
-          if (col === "cumulative") {
-            var da = Math.abs(na - 1);
-            var db = Math.abs(nb - 1);
-            return descending ? da - db : db - da;
-          }
           return descending ? nb - na : na - nb;
         });
         rows.forEach(function (r) { tbody.appendChild(r); });
@@ -407,6 +398,12 @@ _TEMPLATE = r"""
     table.rows-compare th.sortable-col:hover { text-decoration: underline; }
     table.rows-compare th.sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
     table.rows-compare th.sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
+    table.rows-compare th .sortable-col { cursor: pointer; user-select: none; color: var(--accent); }
+    table.rows-compare th .sortable-col:hover { text-decoration: underline; }
+    table.rows-compare th .sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
+    table.rows-compare th .sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
+    .cumulative-accuracy-td { position: relative; }
+    .cumulative-accuracy-td .cumulative-sort-keys { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; overflow: hidden; }
     .gap-tip.cumulative-hist-tip { margin-top: 0; vertical-align: middle; }
     .gap-tip.cumulative-hist-tip .gap-tip-trigger {
       font-size: inherit;
@@ -452,8 +449,14 @@ _TEMPLATE = r"""
 {% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}
 {%- endmacro %}
 {% macro cumulative_accuracy_td(r, meta) -%}
-<td style="white-space:nowrap;font-variant-numeric:tabular-nums" data-sort-col="cumulative" data-sort-value="{% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}{{ r.cumulative_accuracy_avg }}{% endif %}">
+<td class="cumulative-accuracy-td" style="white-space:nowrap;font-variant-numeric:tabular-nums">
   {% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
+  <span class="cumulative-sort-keys" aria-hidden="true">
+    <span data-sort-col="cumulative_a" data-sort-value="{{ r.cumulative_accuracy_avg }}"></span>
+    {% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %}
+    <span data-sort-col="cumulative_b" data-sort-value="{{ r.cumulative_nonneg_rate_pct }}"></span>
+    {% endif %}
+  </span>
   <span class="gap-tip cumulative-hist-tip">
     <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="누적 정확도·{{ meta.threshold }} 이상 예측 이력">{{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} ({{ r.cumulative_hit_x }} {% if r.cumulative_hit_z is defined and r.cumulative_hit_z is not none %}{{ r.cumulative_hit_z }}{% else %}0{% endif %} <span class="bad">{% if r.cumulative_hit_neg is defined and r.cumulative_hit_neg is not none %}{{ r.cumulative_hit_neg }}{% else %}0{% endif %}</span> / {{ r.cumulative_hit_y }}){% endif %}</span>
     <div class="gap-tip-popup cumulative-hist-popup" role="tooltip">
@@ -513,7 +516,7 @@ _TEMPLATE = r"""
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 일봉 확정 전이므로 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
           <th>보정(%)</th>
-          <th class="sortable-col" data-sort="cumulative" scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(달성% vs 0%+ · a b c / d)</span></th>
+          <th scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="달성% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
           <th>누적정확도(10~20)</th>
           <th>누적정확도(전체)</th>
           <th>이유/차이</th>
@@ -862,6 +865,12 @@ _COMPACT_TEMPLATE = r"""
     table.rows-compare th.sortable-col:hover { text-decoration: underline; }
     table.rows-compare th.sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
     table.rows-compare th.sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
+    table.rows-compare th .sortable-col { cursor: pointer; user-select: none; color: var(--accent); }
+    table.rows-compare th .sortable-col:hover { text-decoration: underline; }
+    table.rows-compare th .sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
+    table.rows-compare th .sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
+    .cumulative-accuracy-td { position: relative; }
+    .cumulative-accuracy-td .cumulative-sort-keys { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; overflow: hidden; }
     .gap-tip.cumulative-hist-tip { margin-top: 0; vertical-align: middle; }
     .gap-tip.cumulative-hist-tip .gap-tip-trigger {
       font-size: inherit;
@@ -907,8 +916,14 @@ _COMPACT_TEMPLATE = r"""
 {% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}
 {%- endmacro %}
 {% macro compact_cumulative_td(r, meta) -%}
-<td style="white-space:nowrap;font-variant-numeric:tabular-nums" data-sort-col="cumulative" data-sort-value="{% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}{{ r.cumulative_accuracy_avg }}{% endif %}">
+<td class="cumulative-accuracy-td" style="white-space:nowrap;font-variant-numeric:tabular-nums">
   {% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
+  <span class="cumulative-sort-keys" aria-hidden="true">
+    <span data-sort-col="cumulative_a" data-sort-value="{{ r.cumulative_accuracy_avg }}"></span>
+    {% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %}
+    <span data-sort-col="cumulative_b" data-sort-value="{{ r.cumulative_nonneg_rate_pct }}"></span>
+    {% endif %}
+  </span>
   <span class="gap-tip cumulative-hist-tip">
     <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="누적 정확도·{{ meta.threshold }} 이상 예측 이력">{{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} ({{ r.cumulative_hit_x }} {% if r.cumulative_hit_z is defined and r.cumulative_hit_z is not none %}{{ r.cumulative_hit_z }}{% else %}0{% endif %} <span class="bad">{% if r.cumulative_hit_neg is defined and r.cumulative_hit_neg is not none %}{{ r.cumulative_hit_neg }}{% else %}0{% endif %}</span> / {{ r.cumulative_hit_y }}){% endif %}</span>
     <div class="gap-tip-popup cumulative-hist-popup" role="tooltip">
@@ -955,7 +970,7 @@ _COMPACT_TEMPLATE = r"""
       <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
       <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
       <th>보정(%)</th>
-      <th class="sortable-col" data-sort="cumulative" scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted)">(달성% vs 0%+ · a b c / d)</span></th>
+      <th scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="달성% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
       <th>누적정확도(10~20)</th>
       <th>누적정확도(전체)</th>
       <th>이유/차이</th>
@@ -1335,6 +1350,12 @@ _DATED_N_TEMPLATE = r"""
     table.rows-compare th.sortable-col:hover { text-decoration: underline; }
     table.rows-compare th.sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
     table.rows-compare th.sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
+    table.rows-compare th .sortable-col { cursor: pointer; user-select: none; color: var(--accent); }
+    table.rows-compare th .sortable-col:hover { text-decoration: underline; }
+    table.rows-compare th .sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
+    table.rows-compare th .sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
+    .cumulative-accuracy-td { position: relative; }
+    .cumulative-accuracy-td .cumulative-sort-keys { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; overflow: hidden; }
     .gap-tip.cumulative-hist-tip { margin-top: 0; vertical-align: middle; }
     .gap-tip.cumulative-hist-tip .gap-tip-trigger {
       font-size: inherit;
@@ -1442,7 +1463,7 @@ _DATED_N_TEMPLATE = r"""
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
           <th>보정(%)</th>
-          <th class="sortable-col" data-sort="cumulative" scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(달성% vs 0%+ · a b c / d)</span></th>
+          <th scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="달성% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
           <th>누적정확도(10~20)</th>
           <th>누적정확도(전체)</th>
           <th>통합 보기</th>
@@ -1474,8 +1495,14 @@ _DATED_N_TEMPLATE = r"""
             {% if r.cumulative_accuracy_from_hist | default(false) %}—{% else %}{{ "%.2f"|format(r.pred_ret * r.cumulative_accuracy_avg) }}{% endif %}
             {% else %}—{% endif %}
           </td>
-          <td class="num" style="white-space:nowrap;font-variant-numeric:tabular-nums" data-sort-col="cumulative" data-sort-value="{% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}{{ r.cumulative_accuracy_avg }}{% endif %}">
+          <td class="num cumulative-accuracy-td" style="white-space:nowrap;font-variant-numeric:tabular-nums">
             {% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
+            <span class="cumulative-sort-keys" aria-hidden="true">
+              <span data-sort-col="cumulative_a" data-sort-value="{{ r.cumulative_accuracy_avg }}"></span>
+              {% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %}
+              <span data-sort-col="cumulative_b" data-sort-value="{{ r.cumulative_nonneg_rate_pct }}"></span>
+              {% endif %}
+            </span>
             <span class="gap-tip cumulative-hist-tip">
               <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="누적 정확도·{{ meta.threshold }} 이상 예측 이력"{% if meta.cumulative_track_hint is defined %} title="{{ meta.cumulative_track_hint | e }}"{% endif %}>{{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} : ({{ r.cumulative_hit_x }} {% if r.cumulative_hit_z is defined and r.cumulative_hit_z is not none %}{{ r.cumulative_hit_z }}{% else %}0{% endif %} <span class="bad">{% if r.cumulative_hit_neg is defined and r.cumulative_hit_neg is not none %}{{ r.cumulative_hit_neg }}{% else %}0{% endif %}</span> / {{ r.cumulative_hit_y }}){% endif %}</span>
               <div class="gap-tip-popup cumulative-hist-popup" role="tooltip">

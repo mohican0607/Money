@@ -122,15 +122,24 @@ def _feedback_calibrated_return(
     n_hit: int,
     mention: float,
     feedback_ctx: dict[str, object] | None,
+    clamp_lo: float | None = None,
+    clamp_hi: float | None = None,
 ) -> float:
     """
     누적 오차 이력 기반 보정.
 
     ``t_code_ratio=min(|실제%|/|예측%|,1)`` 평균을 이용해 과대 예측을 점진적으로 줄인다.
     표본이 적거나 신호(키워드/언급)가 약하면 1.0(무보정)에 더 가깝게 축소한다.
+
+    ``clamp_lo``·``clamp_hi`` 는 예측값이 **소수 단위**(0.2 = 20%)일 때 최종 클램프 구간.
+    ML 표시 매핑(약 11~30%)처럼 휴리스틱 기본 구간과 다르면 둘 다 넘겨 동일 보정을 적용한다.
     """
-    lo = min(config.PRED_RETURN_MIN, config.PRED_RETURN_MAX)
-    hi = max(config.PRED_RETURN_MIN, config.PRED_RETURN_MAX)
+    if clamp_lo is not None and clamp_hi is not None:
+        lo = float(min(clamp_lo, clamp_hi))
+        hi = float(max(clamp_lo, clamp_hi))
+    else:
+        lo = min(config.PRED_RETURN_MIN, config.PRED_RETURN_MAX)
+        hi = max(config.PRED_RETURN_MIN, config.PRED_RETURN_MAX)
     if not config.PRED_ERROR_FEEDBACK_ENABLED or not feedback_ctx:
         return float(min(hi, max(lo, pred_ret)))
 
