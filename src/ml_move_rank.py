@@ -15,7 +15,15 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from . import config, news, predict, prediction_accuracy_cache, theme_carryover, trading_calendar
+from . import (
+    config,
+    news,
+    predict,
+    prediction_accuracy_cache,
+    snapshot_miss_diagnosis,
+    theme_carryover,
+    trading_calendar,
+)
 from .features import BreakoutEvent, keyword_set, name_mention_score
 
 try:
@@ -161,11 +169,16 @@ def _build_training_arrays(
     threshold: float,
     train_start: date,
     test_start: date,
+    *,
+    pos_boost_keys: set[tuple[str, str]] | None = None,
+    neg_boost_keys: set[tuple[str, str]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
     rng = np.random.default_rng(42)
     rows_x: list[list[float]] = []
     rows_y: list[int] = []
     ohlcv_idx = _ohlcv_lookup(returns_ml)
+    pos_boost = pos_boost_keys or set()
+    neg_boost = neg_boost_keys or set()
 
     days = sorted(
         d for d in returns_ml["Date"].dt.date.unique() if train_start <= d < test_start
@@ -191,43 +204,76 @@ def _build_training_arrays(
         if pos_df.empty:
             continue
 
+        d_iso = d.isoformat()
         for _, r in pos_df.iterrows():
             code = str(r["Code"]).zfill(6)
             name = str(names.get(code, r.get("Name", "")))
-            rows_x.append(
-                _feat_vector(
-                    train_events,
-                    code,
-                    name,
-                    blob,
-                    kw_news,
-                    before_exclusive=d,
-                    ohlcv_idx=ohlcv_idx,
-                    theme_weights=tw,
-                )
+            fv = _feat_vector(
+                train_events,
+                code,
+                name,
+                blob,
+                kw_news,
+                before_exclusive=d,
+                ohlcv_idx=ohlcv_idx,
+                theme_weights=tw,
             )
+            rows_x.append(fv)
             rows_y.append(1)
+            if (d_iso, code) in pos_boost:
+                for _ in range(2):
+                    rows_x.append(fv)
+                    rows_y.append(1)
 
         neg_codes = neg_df["Code"].astype(str).str.zfill(6).tolist()
         n_pos = int(pos_df.shape[0])
         n_neg = min(MAX_NEG_PER_DAY, max(30, 6 * n_pos))
         if len(neg_codes) > n_neg:
             neg_codes = list(rng.choice(np.array(neg_codes), size=n_neg, replace=False))
+        neg_seen: set[str] = set()
         for code in neg_codes:
             name = str(names.get(code, ""))
-            rows_x.append(
-                _feat_vector(
-                    train_events,
-                    code,
-                    name,
-                    blob,
-                    kw_news,
-                    before_exclusive=d,
-                    ohlcv_idx=ohlcv_idx,
-                    theme_weights=tw,
-                )
+            fv = _feat_vector(
+                train_events,
+                code,
+                name,
+                blob,
+                kw_news,
+                before_exclusive=d,
+                ohlcv_idx=ohlcv_idx,
+                theme_weights=tw,
             )
+            rows_x.append(fv)
             rows_y.append(0)
+            neg_seen.add(code)
+            if (d_iso, code) in neg_boost:
+                for _ in range(2):
+                    rows_x.append(fv)
+                    rows_y.append(0)
+
+        for t_iso, code6 in neg_boost:
+            if t_iso != d_iso or code6 in neg_seen:
+                continue
+            sub = neg_df[neg_df["Code"].astype(str).str.zfill(6) == code6]
+            if sub.empty:
+                continue
+            rr = sub.iloc[0]
+            name = str(names.get(code6, rr.get("Name", "")))
+            fv = _feat_vector(
+                train_events,
+                code6,
+                name,
+                blob,
+                kw_news,
+                before_exclusive=d,
+                ohlcv_idx=ohlcv_idx,
+                theme_weights=tw,
+            )
+            rows_x.append(fv)
+            rows_y.append(0)
+            rows_x.append(fv)
+            rows_y.append(0)
+            neg_seen.add(code6)
 
     if len(rows_y) < MIN_TOTAL_SAMPLES or sum(rows_y) < MIN_POS_SAMPLES:
         return None
@@ -285,6 +331,13 @@ def fit_or_load_classifier(
         except Exception:
             pass
 
+    pos_boost, neg_boost = snapshot_miss_diagnosis.load_ml_boost_sets_from_snapshot()
+    if pos_boost or neg_boost:
+        print(
+            f"ML 랭커: 스냅샷 miss_diagnosis 가중 — 급등 보강 {len(pos_boost)}건·오판 보강 {len(neg_boost)}건",
+            flush=True,
+        )
+
     xy = _build_training_arrays(
         returns_ml,
         train_events,
@@ -293,6 +346,8 @@ def fit_or_load_classifier(
         config.BIG_MOVE_THRESHOLD,
         config.TRAIN_START_DEFAULT,
         config.TEST_START,
+        pos_boost_keys=pos_boost,
+        neg_boost_keys=neg_boost,
     )
     if xy is None:
         print(

@@ -4,6 +4,8 @@
 - ``market_theme_flow``: 관측일 T별 early 뉴스 기반 시장 키워드·테마 시드 교차·급등/준급등 다발 구간 요약.
 - ``prediction_gap_rollup``: ``prediction_accuracy_track.json`` 에서 구간별 괴리·버킷 통계 스냅샷.
 - ``rebuild_learning``: 기존 일자와 병합(동일 ``trading_day`` 는 최신 실행으로 덮어씀) 후 요약 재계산.
+  일자별 ``missed_big_movers_today``·``pred_high_misses_today``(원인 태그·한글 힌트)는 ``snapshot_miss_diagnosis`` 가 채우며,
+  ML 재학습 시 스냅샷의 진단을 읽어 어려운 급등·오판 샘플을 소폭 복제 가중합니다.
 """
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ from typing import Any
 
 import pandas as pd
 
-from . import config, features, news, predict, trading_calendar, train_snapshot
+from . import config, features, news, predict, trading_calendar, train_snapshot, snapshot_miss_diagnosis
 
 
 def _news_blob_for_trading_day(
@@ -205,6 +207,7 @@ def merge_rebuild_learning_dict(old: dict[str, Any] | None, new: dict[str, Any])
         new.get("daily") if isinstance(new.get("daily"), list) else [],
     )
     fixed_daily, summary = _recompute_rebuild_learning_daily_and_summary(merged_daily, thr)
+    summary = {**summary, **snapshot_miss_diagnosis.recompute_miss_summary_from_daily(fixed_daily)}
     runs = list(old.get("merge_runs") or [])
     runs.append(
         {

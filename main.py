@@ -57,6 +57,7 @@ from src import (
     predict,
     prediction_accuracy_cache,
     report,
+    snapshot_miss_diagnosis,
     snapshot_rebuild_learning,
     stocks,
     theme_carryover,
@@ -301,10 +302,12 @@ def _print_usage() -> None:
   --rebuild-train-snapshot
       항상 전체 재계산 후 스냅샷을 새로 저장(이 플래그가 최우선).
       From~To 구간과 함께 쓰면 실행 말미에 breakout_train_snapshot.json 에
-      rebuild_learning(일자별 괴리·적중 누적, 기존 일자와 병합)·
+      rebuild_learning(일자별 괴리·적중 누적, 기존 일자와 병합·
+      미예측 급등 missed_big_movers_today / 고예측 실패 pred_high_misses_today 원인 태그·한글 힌트)·
       market_theme_flow(일자별 early 뉴스·테마 시드·급등 다발 요약)·
       prediction_gap_rollup(예측–실제 달성률·버킷 통계 스냅샷)을 병합 저장하고,
-      ML 랭커 joblib 은 재학습해 덮어씁니다.
+      ML 랭커 joblib 은 재학습해 덮어씁니다(스냅샷에 쌓인 miss 진단으로 어려운 급등·오판 샘플 가중).
+      다음 구간 재실행 시 갱신된 miss_diagnosis 가 재학습에 반영됩니다.
 
   예: python main.py 20260401 20260414
 """
@@ -686,6 +689,8 @@ def _build_rebuild_learning_payload(
         total_false_high_weak_signal += false_high_weak_signal
         false_high_kw_counter.update(day_false_high_kw_counter)
 
+        missed_rows, pred_miss_rows = snapshot_miss_diagnosis.build_miss_rows_for_day(dr)
+
         daily.append(
             {
                 "trading_day": dr.trading_day.isoformat(),
@@ -722,8 +727,12 @@ def _build_rebuild_learning_payload(
                     {"keyword": k, "count": int(v)}
                     for k, v in day_false_high_kw_counter.most_common(10)
                 ],
+                "missed_big_movers_today": missed_rows,
+                "pred_high_misses_today": pred_miss_rows,
             }
         )
+
+    miss_summary = snapshot_miss_diagnosis.recompute_miss_summary_from_daily(daily)
 
     return {
         "rebuild_learning": {
@@ -752,6 +761,7 @@ def _build_rebuild_learning_payload(
                     {"keyword": k, "count": int(v)}
                     for k, v in false_high_kw_counter.most_common(20)
                 ],
+                **miss_summary,
             },
         }
     }
@@ -1713,7 +1723,8 @@ def _run_pipeline(
             prediction_gap_rollup=gap,
         ):
             print(
-                "학습 스냅샷: rebuild_learning + market_theme_flow + prediction_gap_rollup 병합 저장.",
+                "학습 스냅샷: rebuild_learning(미예측 급등·고예측 실패 진단 포함) + "
+                "market_theme_flow + prediction_gap_rollup 병합 저장.",
                 flush=True,
             )
     if config.PREDICTION_FREEZE_ENABLED and freeze_changed:
