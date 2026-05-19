@@ -80,15 +80,18 @@ def _fetch_one_code_on_day(
             break
 
         soup = BeautifulSoup(r.text, "html.parser")
-        rows = soup.select("table.type5 tr")
-        if not rows:
+        table = soup.select_one("table.type6") or soup.select_one("table.type5")
+        if table is None:
+            break
+        rows = table.select("tr")
+        if len(rows) <= 1:
             break
 
         stop_old = False
         page_hit = 0
         for tr in rows:
-            a = tr.select_one("a")
             dtd = tr.select_one("td.date")
+            a = tr.select_one("td.title a") or tr.select_one("a")
             if a is None or dtd is None:
                 continue
             pub_d = _parse_ymd_dot(dtd.get_text(" ", strip=True))
@@ -142,8 +145,12 @@ def fetch_disclosures_for_codes_on_day(target: date, codes: list[str]) -> dict[s
         except Exception:
             cached_rows = []
 
-    cached_codes = {str(r.get("code", "")).zfill(6) for r in cached_rows if r.get("code")}
-    miss_codes = [c for c in uniq_codes if c not in cached_codes]
+    # code가 캐시에 있어도 당일 공시 0건이면 행이 없으므로, 요청 code 중
+    # 해당 일자 행이 하나도 없으면 다시 조회한다(과거 파서 오류·빈 캐시 복구).
+    cached_codes_with_rows = {
+        str(r.get("code", "")).zfill(6) for r in cached_rows if r.get("code")
+    }
+    miss_codes = [c for c in uniq_codes if c not in cached_codes_with_rows]
 
     new_rows: list[dict] = []
     if miss_codes:

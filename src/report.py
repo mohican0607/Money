@@ -29,6 +29,7 @@ class DayReport:
     news_titles_sample: list[str]
     news_highlight_terms: list[str]
     actual_big_movers: list[dict]
+    forward_observation: bool = False
 
 
 def naver_chart_url(code: str) -> str:
@@ -137,7 +138,9 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
             }
           }
           var riseVisible = true;
-          if (riseSel === "high") {
+          if (riseSel === "all") {
+            riseVisible = true;
+          } else if (riseSel === "high") {
             riseVisible = rb === "high";
           } else if (riseSel === "mid") {
             riseVisible = rb === "mid";
@@ -362,6 +365,10 @@ _TEMPLATE = r"""
     }
     .combo-tip-body p { margin: 0 0 6px 0; }
     .combo-tip-empty { margin: 0; color: var(--muted); font-style: italic; font-size: 0.82rem; }
+    .disclosure-tip-popup { min-width: 300px; max-width: min(560px, 92vw) !important; width: auto !important; }
+    .disclosure-tip-list { margin: 6px 0 0; padding-left: 0; list-style: none; }
+    .disclosure-tip-list li { margin-bottom: 8px; line-height: 1.45; }
+    .disc-kind { font-size: 0.75rem; color: #9fd3ff; margin-right: 4px; }
     .combo-tip-rise {
       grid-column: 1 / -1;
       margin-top: 14px;
@@ -480,7 +487,7 @@ _TEMPLATE = r"""
   {% else %}—{% endif %}
 </td>
 {%- endmacro %}
-{% macro market_filter_radios(suffix) -%}
+{% macro market_filter_radios(suffix, forward_day=false) -%}
 <div class="market-filter-radios" role="radiogroup" aria-label="표 시장 구분">
   <span class="market-filter-title">시장 -</span>
   <label class="market-filter-label"><input type="radio" name="market-scope-{{ suffix }}" value="all" checked="checked"/> 전체</label>
@@ -489,15 +496,44 @@ _TEMPLATE = r"""
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
+  {% if forward_day %}
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 예측후보 전체</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+  {% else %}
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+  {% endif %}
 </div>
+{%- endmacro %}
+{% macro disclosure_tip(r, trading_day=none) -%}
+<span class="gap-tip combo-tip disclosure-tip{% if trading_day is not none %} gap-tip-end{% endif %}">
+  <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="당일 종목 공시 목록 보기">공시</span>
+  <div class="gap-tip-popup combo-tip-popup disclosure-tip-popup" role="tooltip">
+    <h4 class="combo-tip-h">{% if trading_day is not none %}종목 공시 · {{ trading_day.isoformat() }}{% else %}종목 공시{% endif %}</h4>
+    <ul class="nl disclosure-tip-list">
+    {% for h in r.disclosure_hits|default([]) %}
+      <li>
+        {% if h.day %}<span class="pill">{{ h.day }}</span>{% endif %}
+        <code class="disc-kind">{{ h.kind }}</code>
+        {% if h.link %}
+        <a href="{{ h.link }}" target="_blank" rel="noopener">{{ h.title }}</a>
+        {% else %}
+        {{ h.title }}
+        {% endif %}
+      </li>
+    {% else %}
+      <li class="muted">{% if trading_day is not none %}이 거래일({{ trading_day.isoformat() }})에 등록된 공시가 없습니다.{% else %}공시 목록이 없습니다.{% endif %}</li>
+    {% endfor %}
+    </ul>
+  </div>
+</span>
 {%- endmacro %}
 {% macro day_panel(d, meta) -%}
   <section id="day-{{ d.trading_day.isoformat() }}" class="day-market-block">
     <div class="day-heading-row">
       <h2>{{ d.trading_day.isoformat() }} (거래일)</h2>
-      {{ market_filter_radios(d.trading_day.isoformat()) }}
+      {{ market_filter_radios(d.trading_day.isoformat(), d.forward_observation | default(false)) }}
     </div>
     <p class="sub">{% if meta.use_decision_cutoff %}N-1 거래일 {{ meta.cutoff_kst }}(KST)까지 반영한 {% endif %}예측 입력 뉴스 하이라이트 키워드 예시:
       {% for t in d.news_highlight_terms[:20] %}
@@ -578,9 +614,7 @@ _TEMPLATE = r"""
                 </div>
               </div>
             </span>
-            <span class="combo-tip" style="margin-left:10px">
-              <a class="gap-tip-trigger" target="_blank" rel="noopener" href="{{ naver_disclosure_url(r.code) }}">공시</a>
-            </span>
+            <span style="margin-left:10px">{{ disclosure_tip(r, d.trading_day) }}</span>
             <span class="pred-reason-plain" style="margin-left:10px">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') }}</span>
           </td>
           <td>
@@ -836,6 +870,10 @@ _COMPACT_TEMPLATE = r"""
     }
     .combo-tip-body p { margin: 0 0 6px 0; }
     .combo-tip-empty { margin: 0; color: var(--muted); font-style: italic; font-size: 0.8rem; }
+    .disclosure-tip-popup { min-width: 300px; max-width: min(560px, 92vw) !important; width: auto !important; }
+    .disclosure-tip-list { margin: 6px 0 0; padding-left: 0; list-style: none; }
+    .disclosure-tip-list li { margin-bottom: 8px; line-height: 1.45; }
+    .disc-kind { font-size: 0.75rem; color: #9fd3ff; margin-right: 4px; }
     .combo-tip-rise {
       grid-column: 1 / -1;
       margin-top: 14px;
@@ -947,7 +985,7 @@ _COMPACT_TEMPLATE = r"""
   {% else %}—{% endif %}
 </td>
 {%- endmacro %}
-{% macro market_filter_radios(suffix) -%}
+{% macro market_filter_radios(suffix, forward_day=false) -%}
 <div class="market-filter-radios" role="radiogroup" aria-label="표 시장 구분">
   <span class="market-filter-title">시장 -</span>
   <label class="market-filter-label"><input type="radio" name="market-scope-{{ suffix }}" value="all" checked="checked"/> 전체</label>
@@ -956,9 +994,38 @@ _COMPACT_TEMPLATE = r"""
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
+  {% if forward_day %}
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 예측후보 전체</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+  {% else %}
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+  {% endif %}
 </div>
+{%- endmacro %}
+{% macro disclosure_tip(r, trading_day=none) -%}
+<span class="gap-tip combo-tip disclosure-tip{% if trading_day is not none %} gap-tip-end{% endif %}">
+  <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="당일 종목 공시 목록 보기">공시</span>
+  <div class="gap-tip-popup combo-tip-popup disclosure-tip-popup" role="tooltip">
+    <h4 class="combo-tip-h">{% if trading_day is not none %}종목 공시 · {{ trading_day.isoformat() }}{% else %}종목 공시{% endif %}</h4>
+    <ul class="nl disclosure-tip-list">
+    {% for h in r.disclosure_hits|default([]) %}
+      <li>
+        {% if h.day %}<span class="pill">{{ h.day }}</span>{% endif %}
+        <code class="disc-kind">{{ h.kind }}</code>
+        {% if h.link %}
+        <a href="{{ h.link }}" target="_blank" rel="noopener">{{ h.title }}</a>
+        {% else %}
+        {{ h.title }}
+        {% endif %}
+      </li>
+    {% else %}
+      <li class="muted">{% if trading_day is not none %}이 거래일({{ trading_day.isoformat() }})에 등록된 공시가 없습니다.{% else %}공시 목록이 없습니다.{% endif %}</li>
+    {% endfor %}
+    </ul>
+  </div>
+</span>
 {%- endmacro %}
 {% macro compact_day_table(d, empty_extra='') -%}
 {% if d.rows_compare %}
@@ -1032,9 +1099,7 @@ _COMPACT_TEMPLATE = r"""
             </div>
           </div>
         </span>
-        <span class="combo-tip" style="margin-left:10px">
-          <a class="gap-tip-trigger" target="_blank" rel="noopener" href="{{ naver_disclosure_url(r.code) }}">공시</a>
-        </span>
+        <span style="margin-left:10px">{{ disclosure_tip(r, d.trading_day) }}</span>
         <span class="pred-reason-plain" style="margin-left:10px">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') }}</span>
       </td>
       <td>
@@ -1047,7 +1112,7 @@ _COMPACT_TEMPLATE = r"""
   </tbody>
 </table>
 {% else %}
-<p class="sub">해당일 실제·예측 {{ meta.threshold }} 이상 해당 종목 없음{% if empty_extra %} ({{ empty_extra }}){% endif %}.</p>
+<p class="sub">{% if d.forward_observation | default(false) %}예측 전용 거래일 — 상위 예측 후보가 없습니다(모델·키워드 필터 결과).{% else %}해당일 실제·예측 {{ meta.threshold }} 이상 해당 종목 없음{% endif %}{% if empty_extra %} ({{ empty_extra }}){% endif %}.</p>
 {% endif %}
 {%- endmacro %}
 
@@ -1079,10 +1144,10 @@ _COMPACT_TEMPLATE = r"""
     {% for w in week_panels %}
     <div class="tab-panel{% if loop.first %} active{% endif %}" role="tabpanel" data-tab-panel="{{ loop.index0 }}">
       {% for d in w.days %}
-      <section class="day-stack day-market-block" id="day-{{ d.trading_day.isoformat() }}">
+      <section class="day-stack day-market-block{% if d.forward_observation | default(false) %} day-forward-obs{% endif %}" id="day-{{ d.trading_day.isoformat() }}">
         <div class="day-heading-row">
-          <h2>{{ d.trading_day.isoformat() }}</h2>
-          {{ market_filter_radios(d.trading_day.isoformat() ~ "-" ~ w.monday.isoformat()) }}
+          <h2>{{ d.trading_day.isoformat() }}{% if d.forward_observation | default(false) %} <span class="pill" style="font-size:0.72rem;font-weight:500;color:var(--warn)">예측 전용</span>{% endif %}</h2>
+          {{ market_filter_radios(d.trading_day.isoformat() ~ "-" ~ w.monday.isoformat(), d.forward_observation | default(false)) }}
         </div>
         {{ compact_day_table(d) }}
       </section>
@@ -1319,6 +1384,10 @@ _DATED_N_TEMPLATE = r"""
     }
     .combo-tip-body p { margin: 0 0 8px 0; }
     .combo-tip-empty { margin: 0; color: var(--muted); font-style: italic; font-size: 0.84rem; }
+    .disclosure-tip-popup { min-width: 300px; max-width: min(560px, 92vw) !important; width: auto !important; }
+    .disclosure-tip-list { margin: 6px 0 0; padding-left: 0; list-style: none; }
+    .disclosure-tip-list li { margin-bottom: 8px; line-height: 1.45; }
+    .disc-kind { font-size: 0.75rem; color: #9fd3ff; margin-right: 4px; }
     .combo-tip-rise {
       grid-column: 1 / -1;
       margin-top: 14px;
@@ -1385,7 +1454,7 @@ _DATED_N_TEMPLATE = r"""
   </style>
 </head>
 <body>
-{% macro market_filter_radios(suffix) -%}
+{% macro market_filter_radios(suffix, forward_day=false) -%}
 <div class="market-filter-radios" role="radiogroup" aria-label="표 시장 구분">
   <span class="market-filter-title">시장 -</span>
   <label class="market-filter-label"><input type="radio" name="market-scope-{{ suffix }}" value="all" checked="checked"/> 전체</label>
@@ -1394,9 +1463,38 @@ _DATED_N_TEMPLATE = r"""
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
+  {% if forward_day %}
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 예측후보 전체</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+  {% else %}
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+  {% endif %}
 </div>
+{%- endmacro %}
+{% macro disclosure_tip(r, trading_day=none) -%}
+<span class="gap-tip combo-tip disclosure-tip gap-tip-end">
+  <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="당일 종목 공시 목록 보기">공시</span>
+  <div class="gap-tip-popup combo-tip-popup disclosure-tip-popup" role="tooltip">
+    <h4 class="combo-tip-h">{% if trading_day is not none %}종목 공시 · {{ trading_day.isoformat() }}{% else %}종목 공시{% endif %}</h4>
+    <ul class="nl disclosure-tip-list">
+    {% for h in r.disclosure_hits|default([]) %}
+      <li>
+        {% if h.day %}<span class="pill">{{ h.day }}</span>{% endif %}
+        <code class="disc-kind">{{ h.kind }}</code>
+        {% if h.link %}
+        <a href="{{ h.link }}" target="_blank" rel="noopener">{{ h.title }}</a>
+        {% else %}
+        {{ h.title }}
+        {% endif %}
+      </li>
+    {% else %}
+      <li class="muted">{% if trading_day is not none %}이 거래일({{ trading_day.isoformat() }})에 등록된 공시가 없습니다.{% else %}공시 목록이 없습니다.{% endif %}</li>
+    {% endfor %}
+    </ul>
+  </div>
+</span>
 {%- endmacro %}
 {% macro stock_name_link(code, name) -%}
 <span class="stock-chart-tip" tabindex="0">
@@ -1452,7 +1550,7 @@ _DATED_N_TEMPLATE = r"""
       <h2>종목별 상세 <span style="font-size:0.82rem;font-weight:500;color:var(--muted)">(관측일 {{ t_day.isoformat() }})</span></h2>
       {{ market_filter_radios(n_day.strftime("%Y%m%d")) }}
     </div>
-    <p class="sub" style="margin-top:0">한 줄이 한 종목입니다. <strong>통합 보기</strong>·<strong>공시</strong>·<strong>이유/차이</strong>·<strong>뉴스</strong> 순으로 보시면 됩니다. 키워드는 과거 20%↑ 사례와의 문자열 일치입니다.</p>
+    <p class="sub" style="margin-top:0">한 줄이 한 종목입니다. <strong>통합 보기</strong>·<strong>공시</strong>·<strong>이유/차이</strong>·<strong>뉴스</strong>에 마우스를 올리면 상세를 볼 수 있습니다. 키워드는 과거 20%↑ 사례와의 문자열 일치입니다.</p>
     {% if day.rows_compare|length > 0 %}
     <div class="table-wrap">
     <table class="rows-compare">
@@ -1559,7 +1657,7 @@ _DATED_N_TEMPLATE = r"""
             </span>
           </td>
           <td class="td-center">
-            <a class="gap-tip-trigger" target="_blank" rel="noopener" href="{{ naver_disclosure_url(r.code) }}">공시</a>
+            {{ disclosure_tip(r, t_day) }}
           </td>
           <td class="pred-reason-cell">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') }}</td>
           <td class="td-center">
@@ -1598,21 +1696,6 @@ _DATED_N_TEMPLATE = r"""
                       </li>
                     {% else %}
                       <li class="muted">매칭된 기사 없음.</li>
-                    {% endfor %}
-                    </ul>
-                    <h4 class="combo-tip-h" style="margin-top:12px">네이버 종목 공시(당일)</h4>
-                    <ul class="nl">
-                    {% for h in r.disclosure_hits|default([]) %}
-                      <li>
-                        <code style="font-size:0.75rem;color:#9fd3ff">{{ h.kind }}</code>
-                        {% if h.link %}
-                        <a href="{{ h.link }}" target="_blank" rel="noopener">{{ h.title }}</a>
-                        {% else %}
-                        {{ h.title }}
-                        {% endif %}
-                      </li>
-                    {% else %}
-                      <li class="muted">당일 공시 매칭 없음.</li>
                     {% endfor %}
                     </ul>
                   </div>

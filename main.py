@@ -89,16 +89,42 @@ def _save_prediction_freeze_payload(payload: dict[str, list[dict]]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _frozen_predicted_return_pct(item: dict) -> float | None:
+    raw = item.get("predicted_return_pct")
+    if raw is None:
+        raw = item.get("pred_ret")
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def _freeze_items_look_valid(items: list[dict], *, min_valid: int = 3) -> bool:
+    """고정 캐시에 유효한 예측 %%(0 초과)가 충분히 있을 때만 재사용."""
+    ok = 0
+    for x in items:
+        p = _frozen_predicted_return_pct(x)
+        if p is not None and p > 0.5:
+            ok += 1
+    return ok >= min_valid
+
+
 def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.PredictionRow]:
     rows: list[predict.PredictionRow] = []
     for x in items:
         try:
+            pct = _frozen_predicted_return_pct(x)
+            if pct is None:
+                pct = 0.0
             rows.append(
                 predict.PredictionRow(
                     code=str(x.get("code", "")).zfill(6),
                     name=str(x.get("name", "")),
                     score=float(x.get("score", 0.0) or 0.0),
-                    predicted_return_pct=float(x.get("predicted_return_pct", 0.0) or 0.0),
+                    predicted_return_pct=pct,
                     matched_keywords=[str(k) for k in (x.get("matched_keywords") or [])],
                     reasons=[str(r) for r in (x.get("reasons") or [])],
                     ml_prob=(
@@ -130,6 +156,105 @@ def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[
         }
         for r in rows
     ]
+
+
+def _append_compare_row_from_prediction(
+    rows_compare: list[dict],
+    pr: predict.PredictionRow,
+    *,
+    market_by_code: dict[str, str],
+    pred_pct_min: float,
+    pred_pct_mid_min: float,
+    actual_ret: float | None,
+    reasons_html: str,
+    blob: str,
+    kospi_hint: str | None,
+    late_blob: str,
+    pr_for_gap: predict.PredictionRow | None,
+) -> None:
+    ph = pr.predicted_return_pct >= pred_pct_min
+    pm = pred_pct_mid_min <= pr.predicted_return_pct < pred_pct_min
+    rows_compare.append(
+        {
+            "code": pr.code,
+            "market_segment": market_by_code.get(str(pr.code).zfill(6), "other"),
+            "name": pr.name,
+            "reasons_html": reasons_html,
+            "keywords": pr.matched_keywords,
+            "keyword_hits": pr.keyword_hits,
+            "mention_score": pr.mention_score,
+            "pred_ret": pr.predicted_return_pct,
+            "actual_ret": actual_ret,
+            "actual_big": actual_ret is not None and actual_ret >= config.BIG_MOVE_THRESHOLD,
+            "pred_high": ph,
+            "pred_mid": pm,
+            "rise_band": _rise_band_for_row(pr.predicted_return_pct, actual_ret),
+            "gap_analysis_html": _gap_analysis_html_for_row(
+                pr.predicted_return_pct,
+                actual_ret,
+                pr_for_gap or pr,
+                pr.matched_keywords,
+                blob,
+                kospi_hint,
+                late_blob,
+            ),
+            "late_news_hit": None,
+            **_pred_reason_fields(pr_for_gap or pr, reasons_html),
+        }
+    )
+
+
+def _sync_forward_day_rows_from_predictions(
+    rows_compare: list[dict],
+    preds: list[predict.PredictionRow],
+    *,
+    market_by_code: dict[str, str],
+    pred_pct_min: float,
+    pred_pct_mid_min: float,
+    blob: str,
+    kospi_hint: str | None,
+    late_blob: str,
+) -> None:
+    """예측 전용일: 상위 후보 전부 표에 넣고, 빠진 ``pred_ret`` 를 보강."""
+    by_code = {str(r.get("code", "")).zfill(6): r for r in rows_compare if r.get("code")}
+    for pr in preds:
+        if not math.isfinite(float(pr.predicted_return_pct)):
+            continue
+        code = str(pr.code).zfill(6)
+        reasons_html = "<br/>".join(pr.reasons)
+        if pr.matched_keywords:
+            reasons_html += "<br/><em>일치 키워드</em> " + ", ".join(
+                f"<mark>{w}</mark>" for w in pr.matched_keywords[:10]
+            )
+        existing = by_code.get(code)
+        if existing is not None:
+            existing["pred_ret"] = pr.predicted_return_pct
+            existing["pred_high"] = pr.predicted_return_pct >= pred_pct_min
+            existing["pred_mid"] = (
+                pred_pct_mid_min <= pr.predicted_return_pct < pred_pct_min
+            )
+            existing["rise_band"] = _rise_band_for_row(
+                pr.predicted_return_pct, existing.get("actual_ret")
+            )
+            if not existing.get("reasons_html"):
+                existing["reasons_html"] = reasons_html
+            if not existing.get("keywords"):
+                existing["keywords"] = list(pr.matched_keywords)
+            continue
+        _append_compare_row_from_prediction(
+            rows_compare,
+            pr,
+            market_by_code=market_by_code,
+            pred_pct_min=pred_pct_min,
+            pred_pct_mid_min=pred_pct_mid_min,
+            actual_ret=None,
+            reasons_html=reasons_html,
+            blob=blob,
+            kospi_hint=kospi_hint,
+            late_blob=late_blob,
+            pr_for_gap=pr,
+        )
+        by_code[code] = rows_compare[-1]
 
 
 def _collect_calendar_days_for_trading_range(
@@ -1069,7 +1194,8 @@ def _run_pipeline(
         end_date: 가격·뉴스 달력 상한(오늘과 설정에 맞게 잘림).
         include_target_calendar_news: True면 각 **테스트 관측일 T** 캘린더 뉴스를 받고,
             비교 표 row에 뉴스·공시 매칭·상승 이유(참고)를 채웁니다.
-        forward_prediction_only: True면 실제 급등(pykrx/OHLCV) 채우기·과거 비교 일부 생략(라이브 N=오늘).
+        forward_prediction_only: True면 모든 관측일을 예측 전용으로 처리(라이브 N=오늘).
+            False여도 ``T`` 가 KST 오늘 이후이거나 일봉 상한 이후면 해당 일만 예측 전용(구간 종료일이 미래일 때).
         omit_target_calendar_days: 뉴스 fetch 시 해당 관측일 T의 **캘린더 일** 본문은 내려받지 않음( N 미마감 등).
         train_snapshot_mode: ``none`` | ``use`` | ``rebuild`` — 학습 스냅샷 재사용·갱신·전체 재생성.
         train_snapshot_cal_scope: ``(시작, 끝)`` 캘린더 일(포함) — ``use`` 모드에서 미반영 판단만 이 구간으로 한정.
@@ -1088,14 +1214,21 @@ def _run_pipeline(
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
     config.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    today_kst = datetime.now(trading_calendar.KST).date()
-    # 당일 장 마감 전·미래 일봉은 소스에 없을 수 있어 항상 OHLCV 요청 끝을 상한과 맞춤
+    now_kst_pipe = datetime.now(trading_calendar.KST)
+    today_kst = now_kst_pipe.date()
     ohlcv_cap = trading_calendar.ohlcv_request_end_cap_today()
-    ohlcv_end = min(end_date, ohlcv_cap)
+    ohlcv_end = _resolve_pipeline_ohlcv_end(
+        end_date, test_days, now_kst=now_kst_pipe
+    )
     if ohlcv_end < end_date:
         print(
             f"가격 데이터: 일봉 상한을 {ohlcv_end} 로 둡니다 "
-            f"(요청 끝 {end_date}, 장 마감 전·미확정 봉 제외).",
+            f"(요청 끝 {end_date}, 미래·미확정 봉 제외).",
+            flush=True,
+        )
+    elif ohlcv_end > min(end_date, ohlcv_cap):
+        print(
+            f"가격 데이터: 마감 확정된 관측 거래일 반영으로 일봉 요청 끝을 {ohlcv_end} 로 합니다.",
             flush=True,
         )
 
@@ -1268,6 +1401,16 @@ def _run_pipeline(
     freeze_changed = False
 
     for T in tqdm(test_days, desc="테스트일별 예측"):
+        day_forward = _observation_day_forward_mode(
+            T,
+            today=today_kst,
+            pipeline_forward_only=forward_prediction_only,
+        )
+        if day_forward and not forward_prediction_only and T > today_kst:
+            print(
+                f"관측일 T={T.isoformat()}: 예측 전용(KST 오늘={today_kst} 이후 거래일)",
+                flush=True,
+            )
         if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
             blob, late_blob = news.aggregate_early_late_for_target(news_by_calendar, T)
             news_titles = news.sample_titles_early_for_target(news_by_calendar, T, limit=12)
@@ -1302,10 +1445,26 @@ def _run_pipeline(
             except (ValueError, TypeError, OSError):
                 theme_w = {}
         t_key = T.isoformat()
-        if config.PREDICTION_FREEZE_ENABLED and t_key in freeze_payload:
-            preds = _prediction_rows_from_frozen_items(freeze_payload[t_key])
+        frozen_items = freeze_payload.get(t_key) if config.PREDICTION_FREEZE_ENABLED else None
+        use_frozen = (
+            isinstance(frozen_items, list)
+            and not day_forward
+            and _freeze_items_look_valid(frozen_items)
+        )
+        if use_frozen:
+            preds = _prediction_rows_from_frozen_items(frozen_items)
             print(f"예측 고정 캐시 재사용: T={t_key} ({len(preds)}건)", flush=True)
         else:
+            if (
+                day_forward
+                and config.PREDICTION_FREEZE_ENABLED
+                and isinstance(frozen_items, list)
+                and frozen_items
+            ):
+                print(
+                    f"관측일 T={t_key}: 예측 전용 — 고정 캐시 무시 후 당일 뉴스로 재예측합니다.",
+                    flush=True,
+                )
             preds = predict.predict_for_trading_day(
                 T,
                 codes,
@@ -1331,7 +1490,7 @@ def _run_pipeline(
         now_kst_td = datetime.now(trading_calendar.KST)
         is_today_t = T == now_kst_td.date()
         krx_pct_by_code: dict[str, float] | None = None
-        if forward_prediction_only:
+        if day_forward:
             actual_big_movers: list[dict] = []
             # 당일 실행에서는 장중/장마감 직후 참고 표시를 위해 pykrx 스냅샷을 시도합니다.
             if is_today_t:
@@ -1389,8 +1548,9 @@ def _run_pipeline(
         false_negatives: list[dict] = []
         pred_pct_min = config.BIG_MOVE_THRESHOLD * 100.0
         pred_pct_mid_min = 10.0
+        row_pred_min = 0.0 if day_forward else pred_pct_mid_min
         actual_10up_by_code: dict[str, dict] = {}
-        if not forward_prediction_only:
+        if not day_forward:
             if krx_pct_by_code:
                 actual_10up_rows = stocks.big_movers_from_krx_pct_map(
                     krx_pct_by_code, pred_pct_mid_min / 100.0, names
@@ -1409,7 +1569,7 @@ def _run_pipeline(
                 str(x.get("code", "")).zfill(6): x for x in actual_10up_rows if x.get("code")
             }
 
-        if not forward_prediction_only:
+        if not day_forward:
             preds_by_code: dict[str, predict.PredictionRow] = {pr.code: pr for pr in preds}
             for m in actual_10up_by_code.values():
                 code = m["code"]
@@ -1471,12 +1631,12 @@ def _run_pipeline(
         seen_row_codes = {r["code"] for r in rows_compare}
         for pr in preds:
             # 예측 10% 이상 후보를 표에 반영(필터 라디오로 20%+/10~20 전환).
-            if pr.predicted_return_pct < pred_pct_mid_min:
+            if pr.predicted_return_pct < row_pred_min:
                 continue
             if pr.code in seen_row_codes:
                 continue
             seen_row_codes.add(pr.code)
-            act = None if forward_prediction_only else _actual_ret_for_code(pr.code)
+            act = None if day_forward else _actual_ret_for_code(pr.code)
             reasons_html = "<br/>".join(pr.reasons)
             if pr.matched_keywords:
                 reasons_html += "<br/><em>일치 키워드</em> " + ", ".join(
@@ -1521,6 +1681,18 @@ def _run_pipeline(
                 }
             )
 
+        if day_forward and preds:
+            _sync_forward_day_rows_from_predictions(
+                rows_compare,
+                preds,
+                market_by_code=market_by_code,
+                pred_pct_min=pred_pct_min,
+                pred_pct_mid_min=pred_pct_mid_min,
+                blob=blob,
+                kospi_hint=kospi_hint,
+                late_blob=late_blob,
+            )
+
         rows_compare.sort(key=lambda r: (not r["actual_big"], not r["pred_high"], r["code"]))
 
         today_td = now_kst_td.date()
@@ -1558,9 +1730,9 @@ def _run_pipeline(
                 threshold=config.BIG_MOVE_THRESHOLD,
             )
 
+        _enrich_rows_disclosure_hits(rows_compare, T)
         if include_target_calendar_news:
             _enrich_rows_news_evidence(rows_compare, early_rows, actual_ctx_rows)
-            _enrich_rows_disclosure_hits(rows_compare, T)
         for r in rows_compare:
             code_r = str(r.get("code", ""))
             pr_row = _prediction_row_strict_or_loose(
@@ -1588,9 +1760,9 @@ def _run_pipeline(
             r["rise_band"] = _rise_band_for_row(r.get("pred_ret"), r.get("actual_ret"))
 
         for pr in preds:
-            act = None if forward_prediction_only else _actual_ret_for_code(pr.code)
+            act = None if day_forward else _actual_ret_for_code(pr.code)
             if (
-                not forward_prediction_only
+                not day_forward
                 and act is not None
                 and act < config.BIG_MOVE_THRESHOLD
                 and config.USE_DECISION_NEWS_INTRADAY_CUTOFF
@@ -1603,7 +1775,7 @@ def _run_pipeline(
                     late_below_kw += 1
 
             if (
-                not forward_prediction_only
+                not day_forward
                 and act is not None
                 and act < 0
             ):
@@ -1638,38 +1810,43 @@ def _run_pipeline(
                 news_titles_sample=news_titles,
                 news_highlight_terms=hl_terms,
                 actual_big_movers=actual_big_movers,
+                forward_observation=day_forward,
             )
         )
 
-    # 장중 시작 실행이 장마감 이후까지 이어진 경우: 오늘(T) 일봉을 한번 더 읽어 실제값을 보정.
+    # 장중 시작 실행이 장마감 이후까지 이어진 경우: 확정된 관측 거래일 일봉을 다시 읽어 실제값 보정.
     now_end_kst = datetime.now(trading_calendar.KST)
-    today_end = now_end_kst.date()
-    if (
-        ohlcv_end < today_end <= end_date
-        and any(dr.trading_day == today_end for dr in day_reports)
-        and trading_calendar.is_trading_day(today_end)
-        and not trading_calendar.is_before_krx_regular_close_kst(today_end, now_kst=now_end_kst)
-    ):
+    refresh_ohlcv_end = _resolve_pipeline_ohlcv_end(
+        end_date, test_days, now_kst=now_end_kst
+    )
+    if refresh_ohlcv_end > ohlcv_end:
         print(
-            f"장 마감 반영 재조회: 오늘({today_end}) 일봉 실제값을 최종 반영합니다.",
+            f"장 마감 반영 재조회: 일봉을 {refresh_ohlcv_end} 까지 읽어 실제 수익률을 반영합니다.",
             flush=True,
         )
         ohlcv_post = stocks.build_ohlcv_long(
             train_start - timedelta(days=10),
-            today_end,
+            refresh_ohlcv_end,
             force_full_listing=not forward_prediction_only,
             skip_gap_download=skip_ohlcv_gap_download,
             refresh_tail_days=1,
         )
         returns_post = stocks.daily_returns_table(ohlcv_post)
         for dr in day_reports:
-            if dr.trading_day != today_end:
+            if dr.forward_observation:
+                continue
+            if dr.trading_day > refresh_ohlcv_end:
+                continue
+            if not trading_calendar.is_krx_daily_bar_effective_closed(
+                dr.trading_day, now_kst=now_end_kst
+            ):
                 continue
             _backfill_day_actuals_from_returns(
                 dr,
                 returns=returns_post,
                 threshold=config.BIG_MOVE_THRESHOLD,
             )
+        returns = returns_post
 
     _enrich_cumulative_accuracy_avg(day_reports)
     prediction_accuracy_cache.merge_from_day_reports(day_reports)
@@ -1745,6 +1922,50 @@ def _run_pipeline(
             krx_movers_unavailable_any and not forward_prediction_only
         ),
     )
+
+
+def _resolve_pipeline_ohlcv_end(
+    end_date: date,
+    test_days: Sequence[date],
+    *,
+    now_kst: datetime,
+) -> date:
+    """
+    일봉 OHLCV 요청 ``end`` 날짜.
+
+    ``ohlcv_request_end_cap_today()`` 상한에 더해, 이미 마감·확정된 관측 거래일(``test_days``)은
+    구간 종료일이 더 뒤여도 해당 일까지 요청합니다. (캐시가 전 거래일까지만 있어도 5/18 실제값 조회)
+    """
+    cap = trading_calendar.ohlcv_request_end_cap_today()
+    today = now_kst.date()
+    ohlcv_end = min(end_date, cap)
+    for t in test_days:
+        if t > end_date or not trading_calendar.is_trading_day(t):
+            continue
+        if t > today:
+            continue
+        if t < today or trading_calendar.is_krx_daily_bar_effective_closed(
+            t, now_kst=now_kst
+        ):
+            ohlcv_end = max(ohlcv_end, min(t, end_date))
+    return min(ohlcv_end, end_date)
+
+
+def _observation_day_forward_mode(
+    t: date,
+    *,
+    today: date,
+    pipeline_forward_only: bool,
+) -> bool:
+    """
+    관측일 ``T`` 가 KST **오늘 이후** 거래일이면 예측 전용.
+
+    과거·당일(장 마감 후) 거래일은 실제 수익률을 채웁니다. 일봉 캐시가 짧아도
+    ``T > ohlcv_end`` 로 예측 전용 처리하지 않습니다(구간 배치 회귀 방지).
+    """
+    if pipeline_forward_only:
+        return True
+    return t > today
 
 
 def _omit_target_calendar_before_close(
@@ -1974,6 +2195,16 @@ def main() -> None:
             test_days,
             all_sessions=sessions,
         )
+
+        future_td = [t for t in test_days if t > today]
+        if future_td:
+            print(
+                f"구간 {d_from.isoformat()}~{d_to.isoformat()}: "
+                f"KST 오늘({today}) 이후 거래일 {len(future_td)}일 "
+                f"({future_td[0].isoformat()}~{future_td[-1].isoformat()})은 "
+                "예측 전용(실제 상승률·누적 정확도는 확정 후 갱신)으로 처리합니다.",
+                flush=True,
+            )
 
         omit_t_cal = _omit_target_calendar_before_close(test_days, now_kst=now_kst)
         if omit_t_cal:
