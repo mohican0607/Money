@@ -102,14 +102,15 @@ def _frozen_predicted_return_pct(item: dict) -> float | None:
     return v if math.isfinite(v) else None
 
 
-def _freeze_items_look_valid(items: list[dict], *, min_valid: int = 3) -> bool:
-    """고정 캐시에 유효한 예측 %%(0 초과)가 충분히 있을 때만 재사용."""
-    ok = 0
+def _freeze_entry_usable(items: list[dict]) -> bool:
+    """관측일 T별 고정 캐시에 재사용할 예측 수익률이 하나라도 있으면 True."""
+    if not items:
+        return False
     for x in items:
         p = _frozen_predicted_return_pct(x)
-        if p is not None and p > 0.5:
-            ok += 1
-    return ok >= min_valid
+        if p is not None and math.isfinite(p):
+            return True
+    return False
 
 
 def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.PredictionRow]:
@@ -433,6 +434,8 @@ def _print_usage() -> None:
       prediction_gap_rollup(예측–실제 달성률·버킷 통계 스냅샷)을 병합 저장하고,
       ML 랭커 joblib 은 재학습해 덮어씁니다(스냅샷에 쌓인 miss 진단으로 어려운 급등·오판 샘플 가중).
       다음 구간 재실행 시 갱신된 miss_diagnosis 가 재학습에 반영됩니다.
+      이 플래그가 있을 때만 data/cache/train/prediction_freeze_by_t.json 의
+      해당 관측일 예측수익률·후보 목록이 다시 계산·저장됩니다(플래그 없이 재실행 시 고정).
 
   예: python main.py 20260401 20260414
 """
@@ -1446,23 +1449,20 @@ def _run_pipeline(
                 theme_w = {}
         t_key = T.isoformat()
         frozen_items = freeze_payload.get(t_key) if config.PREDICTION_FREEZE_ENABLED else None
+        refresh_frozen_preds = train_snapshot_mode == "rebuild"
         use_frozen = (
-            isinstance(frozen_items, list)
-            and not day_forward
-            and _freeze_items_look_valid(frozen_items)
+            config.PREDICTION_FREEZE_ENABLED
+            and not refresh_frozen_preds
+            and isinstance(frozen_items, list)
+            and _freeze_entry_usable(frozen_items)
         )
         if use_frozen:
             preds = _prediction_rows_from_frozen_items(frozen_items)
             print(f"예측 고정 캐시 재사용: T={t_key} ({len(preds)}건)", flush=True)
         else:
-            if (
-                day_forward
-                and config.PREDICTION_FREEZE_ENABLED
-                and isinstance(frozen_items, list)
-                and frozen_items
-            ):
+            if refresh_frozen_preds and _freeze_entry_usable(frozen_items or []):
                 print(
-                    f"관측일 T={t_key}: 예측 전용 — 고정 캐시 무시 후 당일 뉴스로 재예측합니다.",
+                    f"관측일 T={t_key}: --rebuild-train-snapshot — 예측 고정 캐시를 갱신합니다.",
                     flush=True,
                 )
             preds = predict.predict_for_trading_day(
@@ -1477,7 +1477,9 @@ def _run_pipeline(
                 returns_ml=returns_ml,
                 theme_weights=theme_w or None,
             )
-            if config.PREDICTION_FREEZE_ENABLED:
+            if config.PREDICTION_FREEZE_ENABLED and (
+                refresh_frozen_preds or not _freeze_entry_usable(freeze_payload.get(t_key) or [])
+            ):
                 freeze_payload[t_key] = _prediction_rows_to_frozen_items(preds)
                 freeze_changed = True
         scoring_ctx = predict.build_scoring_context(blob, train_events)

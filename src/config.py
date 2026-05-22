@@ -64,6 +64,7 @@ REPORT_DATED_ROLLUP_HTML = OUTPUT_DIR / "report_dated_by_n.html"
 # 과거 급등–뉴스 ``BreakoutEvent`` 학습 스냅샷(JSON). ``main.py`` 기본이 로드·증분 병합, ``--no-train-snapshot`` 로 끔.
 TRAIN_SNAPSHOT_PATH = CACHE_DIR / "train" / "breakout_train_snapshot.json"
 # 관측일(T)별 예측 후보 고정 캐시: 같은 T 재실행 시 예측 종목/예측수익률을 동일하게 유지.
+# 갱신은 해당 T에 대한 최초 예측 저장, 또는 main.py --rebuild-train-snapshot 실행 시에만.
 PREDICTION_FREEZE_PATH = CACHE_DIR / "train" / "prediction_freeze_by_t.json"
 
 NAVER_CLIENT_ID = _env_str("NAVER_CLIENT_ID")
