@@ -1528,6 +1528,9 @@ def _run_pipeline(
                 actual_big_movers = stocks.big_movers_from_krx_pct_map(
                     krx_pct_by_code, config.BIG_MOVE_THRESHOLD, names
                 )
+                actual_big_decliners = stocks.big_movers_from_krx_pct_map(
+                    krx_pct_by_code, config.BIG_MOVE_THRESHOLD, names, direction="down"
+                )
             else:
                 krx_movers_unavailable_any = True
                 movers = stocks.big_movers_on_date(returns, T, config.BIG_MOVE_THRESHOLD)
@@ -1538,6 +1541,15 @@ def _run_pipeline(
                         "ret_pct": float(r["return_pct"]) * 100.0,
                     }
                     for _, r in movers.iterrows()
+                ]
+                movers_dn = stocks.big_movers_on_date(returns, T, -config.BIG_MOVE_THRESHOLD)
+                actual_big_decliners = [
+                    {
+                        "code": str(r["Code"]).zfill(6),
+                        "name": str(r["Name"]),
+                        "ret_pct": float(r["return_pct"]) * 100.0,
+                    }
+                    for _, r in movers_dn.iterrows()
                 ]
                 # 경고 문구는 콘솔에 반복 노이즈를 만들어 비활성화.
                 # 실제 집계는 아래 OHLCV 폴백(actual_big_movers)로 계속 진행합니다.
@@ -1560,10 +1572,14 @@ def _run_pipeline(
         pred_pct_mid_min = 10.0
         row_pred_min = 0.0 if day_forward else pred_pct_mid_min
         actual_10up_by_code: dict[str, dict] = {}
+        actual_10dn_by_code: dict[str, dict] = {}
         if not day_forward:
             if krx_pct_by_code:
                 actual_10up_rows = stocks.big_movers_from_krx_pct_map(
                     krx_pct_by_code, pred_pct_mid_min / 100.0, names
+                )
+                actual_10dn_rows = stocks.big_movers_from_krx_pct_map(
+                    krx_pct_by_code, -pred_pct_mid_min / 100.0, names, direction="down"
                 )
             else:
                 movers_10up = stocks.big_movers_on_date(returns, T, pred_pct_mid_min / 100.0)
@@ -1575,13 +1591,25 @@ def _run_pipeline(
                     }
                     for _, r in movers_10up.iterrows()
                 ]
+                movers_10dn = stocks.big_movers_on_date(returns, T, -pred_pct_mid_min / 100.0)
+                actual_10dn_rows = [
+                    {
+                        "code": str(r["Code"]).zfill(6),
+                        "name": str(r["Name"]),
+                        "ret_pct": float(r["return_pct"]) * 100.0,
+                    }
+                    for _, r in movers_10dn.iterrows()
+                ]
             actual_10up_by_code = {
                 str(x.get("code", "")).zfill(6): x for x in actual_10up_rows if x.get("code")
+            }
+            actual_10dn_by_code = {
+                str(x.get("code", "")).zfill(6): x for x in actual_10dn_rows if x.get("code")
             }
 
         if not day_forward:
             preds_by_code: dict[str, predict.PredictionRow] = {pr.code: pr for pr in preds}
-            for m in actual_10up_by_code.values():
+            for m in list(actual_10up_by_code.values()) + list(actual_10dn_by_code.values()):
                 code = m["code"]
                 act = float(m["ret_pct"]) / 100.0
                 pr = preds_by_code.get(code)
@@ -1806,6 +1834,7 @@ def _run_pipeline(
             theme_carryover.persist_rich_snapshot(
                 T,
                 actual_big_movers=actual_big_movers,
+                actual_big_decliners=actual_big_decliners,
                 rows_compare=rows_compare,
                 highlight_terms=hl_terms,
                 threshold=config.BIG_MOVE_THRESHOLD,

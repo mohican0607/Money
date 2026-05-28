@@ -283,7 +283,7 @@ def prediction_row_for_code(
             v = tw.get(k)
             if v is not None and math.isfinite(float(v)):
                 theme_hit += float(v)
-        theme_hit = min(theme_hit, 12.0)
+        theme_hit = max(-12.0, min(theme_hit, 12.0))
         if config.THEME_CARRYOVER_ENABLED:
             score += float(config.THEME_CARRYOVER_SCORE_SCALE) * theme_hit
 

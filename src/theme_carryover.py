@@ -87,6 +87,34 @@ def _normalize_weights(c: Counter, *, top_n: int = 96) -> dict[str, float]:
     return out
 
 
+def _normalize_signed_weights(
+    pos: Counter[str],
+    neg: Counter[str],
+    *,
+    top_n: int = 120,
+) -> dict[str, float]:
+    """
+    양(급등)·음(급락) 카운터를 각각 정규화해 합친 signed weights.
+
+    반환값은 대략 [-1, 1] 범위의 값이며, 급락(음수) 키워드는 다음날 점수/테마에 감점으로 작동할 수 있습니다.
+    """
+    w_pos = _normalize_weights(pos, top_n=top_n)
+    w_neg = _normalize_weights(neg, top_n=top_n)
+    out: dict[str, float] = {}
+    for k, v in w_pos.items():
+        out[k] = out.get(k, 0.0) + float(v)
+    for k, v in w_neg.items():
+        out[k] = out.get(k, 0.0) - float(v)
+    # 너무 큰 값을 방지(향후 스케일 파라미터가 이미 존재)
+    for k in list(out.keys()):
+        vv = float(out[k])
+        if not math.isfinite(vv) or abs(vv) < 1e-6:
+            out.pop(k, None)
+            continue
+        out[k] = max(-1.0, min(1.0, vv))
+    return out
+
+
 def _early_blob_for_trading_day(news_by_calendar: dict[date, list[dict[str, str]]], d: date) -> str:
     if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
         blob, _ = news.aggregate_early_late_for_target(news_by_calendar, d)
@@ -141,33 +169,46 @@ def synthesize_weights_for_day(
 def build_rich_weights_from_pipeline(
     *,
     actual_big_movers: list[dict[str, Any]],
+    actual_big_decliners: list[dict[str, Any]] | None = None,
     rows_compare: list[dict[str, Any]],
     highlight_terms: list[str],
     threshold: float,
 ) -> dict[str, float]:
-    """당일 파이프라인 표·급등 목록·하이라이트 용어로 테마 가중치."""
-    c: Counter[str] = Counter()
-    mover_codes = {str(m.get("code", "")).zfill(6) for m in actual_big_movers if m.get("code")}
+    """당일 파이프라인 표·급등/급락 목록·하이라이트 용어로 테마(+-) 가중치."""
+    pos: Counter[str] = Counter()
+    neg: Counter[str] = Counter()
+    mover_up = {str(m.get("code", "")).zfill(6) for m in actual_big_movers if m.get("code")}
+    mover_dn = {
+        str(m.get("code", "")).zfill(6)
+        for m in (actual_big_decliners or [])
+        if m.get("code")
+    }
     thr = float(threshold)
     for r in rows_compare:
         code = str(r.get("code", "")).zfill(6)
-        if code not in mover_codes:
+        if code not in mover_up and code not in mover_dn:
             continue
         ar = r.get("actual_ret")
-        if ar is None or not math.isfinite(float(ar)) or float(ar) < thr - 1e-9:
+        if ar is None or not math.isfinite(float(ar)):
             continue
-        w = 1.0 + max(0.0, float(ar) - thr) * 3.0
+        ar_f = float(ar)
+        if code in mover_up and ar_f < thr - 1e-9:
+            continue
+        if code in mover_dn and ar_f > -thr + 1e-9:
+            continue
+        mag = abs(ar_f)
+        w = 1.0 + max(0.0, mag - thr) * 3.0
         for kw in r.get("keywords") or []:
             if isinstance(kw, str):
                 kk = kw.strip()
                 if len(kk) >= 2:
-                    c[kk] += w
+                    (pos if code in mover_up else neg)[kk] += w
     for t in highlight_terms or []:
         if isinstance(t, str):
             tt = t.strip()
             if len(tt) >= 2:
-                c[tt] += 0.35
-    return _normalize_weights(c)
+                pos[tt] += 0.35
+    return _normalize_signed_weights(pos, neg)
 
 
 def load_weights_for_calendar_day(day: date) -> dict[str, float]:
@@ -190,6 +231,7 @@ def persist_rich_snapshot(
     trading_day: date,
     *,
     actual_big_movers: list[dict[str, Any]],
+    actual_big_decliners: list[dict[str, Any]] | None = None,
     rows_compare: list[dict[str, Any]],
     highlight_terms: list[str],
     threshold: float,
@@ -199,6 +241,7 @@ def persist_rich_snapshot(
         return
     weights = build_rich_weights_from_pipeline(
         actual_big_movers=actual_big_movers,
+        actual_big_decliners=actual_big_decliners,
         rows_compare=rows_compare,
         highlight_terms=highlight_terms,
         threshold=threshold,
@@ -209,6 +252,7 @@ def persist_rich_snapshot(
     by_day[t_iso] = {
         "weights": dict(weights),
         "n_movers": len(actual_big_movers),
+        "n_decliners": len(actual_big_decliners or []),
         "source": "pipeline",
     }
     p["by_day"] = by_day

@@ -733,6 +733,8 @@ def big_movers_from_krx_pct_map(
     pct_by_code: dict[str, float],
     threshold: float,
     listing_names: dict[str, str],
+    *,
+    direction: str = "up",
 ) -> list[dict]:
     """
     ``try_krx_change_pct_by_code`` 결과 맵에서 ``threshold``(소수, 예 ``0.2`` = 20%) 이상인 종목만 골라
@@ -741,12 +743,23 @@ def big_movers_from_krx_pct_map(
     각 원소는 ``code``, ``name``, ``ret_pct`` 키를 가집니다.
     """
     thr_pct = threshold * 100.0
+    direction = (direction or "up").strip().lower()
+    if direction not in ("up", "down"):
+        direction = "up"
+    if direction == "up":
+        rows = [
+            {"code": c, "name": listing_names.get(c, c), "ret_pct": pct}
+            for c, pct in pct_by_code.items()
+            if pct >= thr_pct
+        ]
+        rows.sort(key=lambda r: -r["ret_pct"])
+        return rows
     rows = [
         {"code": c, "name": listing_names.get(c, c), "ret_pct": pct}
         for c, pct in pct_by_code.items()
-        if pct >= thr_pct
+        if pct <= -thr_pct
     ]
-    rows.sort(key=lambda r: -r["ret_pct"])
+    rows.sort(key=lambda r: r["ret_pct"])
     return rows
 
 
