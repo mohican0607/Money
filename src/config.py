@@ -122,8 +122,9 @@ THEME_CARRYOVER_ENABLED = os.getenv("THEME_CARRYOVER_ENABLED", "1").strip().lowe
 THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 # 캘리브레이션 후 최종 예측 수익률(소수) 클램프 범위 (BIG_MOVE 20%와 맞춤)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
-#PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.35)
-PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
+PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.35)
+# 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
+PREDICTION_FREEZE_SCHEMA_VERSION = 2
 TRAIN_START_DEFAULT = date(2025, 4, 11)  # 약 1년 전(실행일 기준 조정은 main에서)
 TEST_START = date(2026, 1, 1)
 
@@ -222,12 +223,48 @@ NEWS_FETCH_MAX_WORKERS = _positive_int_env("NEWS_FETCH_MAX_WORKERS", 4)
 # market: 일자+증시 키워드(기본).
 # ticker: 종목마다 ``YYYY년 M월 D일 {종목명}`` 쿼리 후 합침.
 # both: market + ticker 를 동시에 수집·병합해 학습/추론 입력으로 사용.
-_NM = os.getenv("NEWS_NAVER_QUERY_MODE", "market").strip().lower()
+_NM = os.getenv("NEWS_NAVER_QUERY_MODE", "both").strip().lower()
 NEWS_NAVER_QUERY_MODE = _NM if _NM in ("market", "ticker", "both") else "market"
 # ticker 모드: 하루치에서 종목 쿼리 병렬 수·종목당 최대 API 페이지(100건/페이지).
 # 네이버 뉴스 검색은 start 최대 1000 → 페이지 상한 10.
-NEWS_TICKER_NAVER_MAX_WORKERS = _positive_int_env("NEWS_TICKER_NAVER_MAX_WORKERS", 8)
-NEWS_TICKER_NAVER_MAX_PAGES = min(10, _positive_int_env("NEWS_TICKER_NAVER_MAX_PAGES", 5))
+NEWS_TICKER_NAVER_MAX_WORKERS = _positive_int_env("NEWS_TICKER_NAVER_MAX_WORKERS", 12)
+NEWS_TICKER_NAVER_MAX_PAGES = min(10, _positive_int_env("NEWS_TICKER_NAVER_MAX_PAGES", 10))
 
 # market / both 의 시장 쿼리: 쿼리마다 페이징 깊이(1..10). 기본 10이면 API가 허용하는 최대 건수에 가깝게 수집.
 NEWS_NAVER_MARKET_MAX_PAGES = min(10, _positive_int_env("NEWS_NAVER_MARKET_MAX_PAGES", 10))
+
+# 네이버 시장(news) 쿼리 확장 시드. 25,000건/일 호출 한도를 적극 활용하려면 늘리세요.
+NEWS_NAVER_MARKET_QUERY_SEEDS_EXTRA = [
+    "주가",
+    "급등",
+    "상한가",
+    "거래량",
+    "테마주",
+    "2차전지",
+    "반도체",
+    "바이오",
+    "AI",
+    "로봇",
+    "원전",
+    "환율",
+    "금리",
+    "한국은행",
+    "연준",
+    "실적",
+    "공시",
+    "유상증자",
+    "무상증자",
+    "합병",
+    "IPO",
+]
+
+# 최근 오판 기반 키워드 가중치 피드백(자동 학습)
+KEYWORD_FEEDBACK_ENABLED = os.getenv("KEYWORD_FEEDBACK_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+KEYWORD_FEEDBACK_SCORE_SCALE = _float_env("KEYWORD_FEEDBACK_SCORE_SCALE", 1.1)
+KEYWORD_FEEDBACK_DECAY = _float_env("KEYWORD_FEEDBACK_DECAY", 0.02)
+KEYWORD_FEEDBACK_STEP = _float_env("KEYWORD_FEEDBACK_STEP", 0.06)

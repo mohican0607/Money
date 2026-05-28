@@ -76,8 +76,12 @@ def _load_prediction_freeze_payload() -> dict[str, list[dict]]:
         return {}
     if not isinstance(raw, dict):
         return {}
+    if raw.get("_schema_version") != config.PREDICTION_FREEZE_SCHEMA_VERSION:
+        return {}
     out: dict[str, list[dict]] = {}
     for k, v in raw.items():
+        if k.startswith("_"):
+            continue
         if isinstance(k, str) and isinstance(v, list):
             out[k] = [x for x in v if isinstance(x, dict)]
     return out
@@ -86,7 +90,11 @@ def _load_prediction_freeze_payload() -> dict[str, list[dict]]:
 def _save_prediction_freeze_payload(payload: dict[str, list[dict]]) -> None:
     path = config.PREDICTION_FREEZE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    to_write = {
+        "_schema_version": config.PREDICTION_FREEZE_SCHEMA_VERSION,
+        **payload,
+    }
+    path.write_text(json.dumps(to_write, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _frozen_predicted_return_pct(item: dict) -> float | None:
@@ -1853,6 +1861,9 @@ def _run_pipeline(
     _enrich_cumulative_accuracy_avg(day_reports)
     prediction_accuracy_cache.merge_from_day_reports(day_reports)
     prediction_accuracy_cache.merge_feedback_buckets_from_day_reports(day_reports)
+    prediction_accuracy_cache.merge_keyword_feedback_from_day_reports(
+        day_reports, threshold=config.BIG_MOVE_THRESHOLD
+    )
     prediction_accuracy_cache.merge_high_pred_history_from_day_reports(
         day_reports, threshold_pct=config.BIG_MOVE_THRESHOLD * 100.0
     )

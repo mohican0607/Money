@@ -4,8 +4,8 @@
 훈련 이벤트에서 종목별로 「급등일에 함께 나온 뉴스 키워드」 프로필을 만들고,
 예측일 early 뉴스 blob의 키워드와 교집합 크기·종목명 언급 횟수로 점수를 매깁니다.
 예측 상승률(%)은 후보 산출 시 과거 급등 평균·보정으로 내부 기준을 잡고, **최종 표시값**은
-ML 경로에서는 급등 확률을, 휴리스틱만 쓸 때는 상위 후보 간 **점수 순위**를
-``11~PRED_RETURN_MAX%`` 구간에 선형 정렬해 적중률 표기와 맞춥니다.
+상위 후보 묶음 안에서 휴리스틱 점수 또는 ML 급등 확률 순위를
+``PRED_RETURN_MIN~PRED_RETURN_MAX%`` 구간에 선형 정렬합니다(익일 20%↑ 후보 표기와 동일 하한).
 선택적으로 ``ml_move_rank`` 감독학습 랭커가 후보 **순위**를 확률 기준으로 바꿉니다(``PRED_USE_ML_RANKER``).
 """
 from __future__ import annotations
@@ -15,6 +15,7 @@ import math
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
+from collections.abc import Callable
 from typing import Any
 
 from . import config, prediction_accuracy_cache
@@ -52,11 +53,13 @@ def _historical_mean_return(train_events: list[BreakoutEvent], code: str) -> flo
 
     - 종목 이력이 없으면: 전체 훈련 급등 사건 평균을 사용
     - 종목 이력이 적으면: 종목 평균과 전체 평균을 가중 혼합(베이지안 스무딩)
-    - 최종 값은 [0.20, 0.35] 구간으로 클램프
+    - 최종 값은 ``PRED_RETURN_MIN``~``PRED_RETURN_MAX`` 구간으로 클램프
     """
+    lo = float(config.PRED_RETURN_MIN)
+    hi = float(config.PRED_RETURN_MAX)
     all_xs = [e.return_pct for e in train_events]
-    global_mean = sum(all_xs) / len(all_xs) if all_xs else 0.20
-    prior = float(min(0.35, max(0.20, global_mean)))
+    global_mean = sum(all_xs) / len(all_xs) if all_xs else lo
+    prior = float(min(hi, max(lo, global_mean)))
 
     xs = [e.return_pct for e in train_events if e.code == code]
     if not xs:
@@ -67,7 +70,7 @@ def _historical_mean_return(train_events: list[BreakoutEvent], code: str) -> flo
     prior_strength = 5.0
     n = float(len(xs))
     blended = (n * code_mean + prior_strength * prior) / (n + prior_strength)
-    return float(min(0.35, max(0.20, blended)))
+    return float(min(hi, max(lo, blended)))
 
 
 def _count_code_events(train_events: list[BreakoutEvent], code: str) -> int:
@@ -192,22 +195,47 @@ def _feedback_calibrated_return(
     return float(min(hi, max(lo, float(pred_ret) * mult)))
 
 
-# ``ml_move_rank._ML_RETURN_MAP_FLOOR_PCT`` 와 동일 의미(순환 import 피해 여기에 둠).
-_HEURISTIC_RETURN_MAP_FLOOR_PCT = 11.0
-
-
-def _display_return_pct_from_heuristic_rank(
-    score: float, *, score_min: float, score_max: float
-) -> float:
-    """상위 후보 묶음 안에서 휴리스틱 점수를 [하한, PRED_RETURN_MAX%%]로 단조 매핑."""
-    lo = _HEURISTIC_RETURN_MAP_FLOOR_PCT
+def _display_return_pct_bounds() -> tuple[float, float]:
+    """리포트 표시용 예측 상승률(%%) 하한·상한 — 급등 임계(기본 20%%)와 ``PRED_RETURN_MAX``."""
+    lo = float(config.PRED_RETURN_MIN) * 100.0
     hi = float(config.PRED_RETURN_MAX) * 100.0
-    if score_max <= score_min + 1e-12:
+    return lo, hi
+
+
+def display_return_pct_from_rank_value(
+    value: float, *, value_min: float, value_max: float
+) -> float:
+    """상위 후보 묶음 안에서 순위 지표(점수·ML 확률)를 [PRED_RETURN_MIN, PRED_RETURN_MAX]%%로 단조 매핑."""
+    lo, hi = _display_return_pct_bounds()
+    if value_max <= value_min + 1e-12:
         t = 1.0
     else:
-        t = (float(score) - float(score_min)) / (float(score_max) - float(score_min))
+        t = (float(value) - float(value_min)) / (float(value_max) - float(value_min))
     t = max(0.0, min(1.0, t))
     return lo + (hi - lo) * t
+
+
+def apply_display_return_pct_ranking(
+    rows: list[PredictionRow],
+    *,
+    rank_value: Callable[[PredictionRow], float],
+    reason_prefix: str,
+) -> None:
+    """``rows`` 안에서 ``rank_value(row)`` 순으로 표시 예측 상승률(%%)을 재할당."""
+    if not rows:
+        return
+    vals = [float(rank_value(r)) for r in rows]
+    vmin, vmax = min(vals), max(vals)
+    lo, hi = _display_return_pct_bounds()
+    note = (
+        f"{reason_prefix} "
+        f"상위 후보 {len(rows)}개를 {lo:.0f}~{hi:.0f}% 구간에 순위별로 정렬한 표시값입니다."
+    )
+    for r, v in zip(rows, vals):
+        r.predicted_return_pct = display_return_pct_from_rank_value(
+            v, value_min=vmin, value_max=vmax
+        )
+        r.reasons = [note] + list(r.reasons)
 
 
 def build_scoring_context(
@@ -258,6 +286,21 @@ def prediction_row_for_code(
         theme_hit = min(theme_hit, 12.0)
         if config.THEME_CARRYOVER_ENABLED:
             score += float(config.THEME_CARRYOVER_SCORE_SCALE) * theme_hit
+
+    # 최근 오판 기반 키워드 가중치 피드백(온라인 학습). 교집합 키워드에 대해 가중합을 점수에 더합니다.
+    if config.KEYWORD_FEEDBACK_ENABLED and inter:
+        try:
+            kw_w = prediction_accuracy_cache.keyword_feedback_weights()
+        except Exception:
+            kw_w = {}
+        if kw_w:
+            s = 0.0
+            for k in inter:
+                v = kw_w.get(k)
+                if v is not None and math.isfinite(float(v)):
+                    s += float(v)
+            if math.isfinite(s) and s != 0.0:
+                score += float(config.KEYWORD_FEEDBACK_SCORE_SCALE) * s
     if n_hit < min_keyword_hits and mention < 0.2:
         return None
     matched = sorted(inter, key=len, reverse=True)[:25]
@@ -272,7 +315,8 @@ def prediction_row_for_code(
         reasons.append("뉴스 본문·제목에 종목명 다수 등장")
     reasons.append(
         "표시 예측 상승률(%)은 이 종목 과거 급등일 실제 상승률 평균과 "
-        "전체 훈련 급등 평균을 함께 반영한 스무딩 값입니다(20~35% 구간). "
+        f"전체 훈련 급등 평균을 함께 반영한 스무딩 값입니다"
+        f"({config.PRED_RETURN_MIN * 100:.0f}~{config.PRED_RETURN_MAX * 100:.0f}% 구간). "
         "훈련 사례가 없으면 전체 훈련 급등 평균을 사용합니다."
     )
     base_ret = _historical_mean_return(train_events, code)
@@ -380,18 +424,11 @@ def predict_for_trading_day(
 
     ranked.sort(key=lambda x: x.score, reverse=True)
     top = ranked[:top_n]
-    if top:
-        sc = [x.score for x in top]
-        smin, smax = min(sc), max(sc)
-        note = (
-            f"표시 예측 상승률은 상위 후보 내 휴리스틱 점수(키워드·종목명)를 "
-            f"{_HEURISTIC_RETURN_MAP_FLOOR_PCT:.0f}~{config.PRED_RETURN_MAX * 100:.0f}% 구간에 선형 정렬한 값입니다."
-        )
-        for r in top:
-            r.predicted_return_pct = _display_return_pct_from_heuristic_rank(
-                r.score, score_min=smin, score_max=smax
-            )
-            r.reasons = [note] + list(r.reasons)
+    apply_display_return_pct_ranking(
+        top,
+        rank_value=lambda r: r.score,
+        reason_prefix="표시 예측 상승률은 휴리스틱 점수(키워드·종목명·테마) 기준으로",
+    )
     return top
 
 

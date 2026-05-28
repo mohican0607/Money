@@ -42,13 +42,14 @@ def _ratio(pred_ret: float | None, actual_ret: float | None) -> float | None:
 
 def _default_payload() -> dict:
     return {
-        "version": 3,
+        "version": 4,
         "t_code_ratio": {},
         "t_code_actual_pct": {},
         "high_pred_by_code": {},
         "mid_pred_by_code": {},
         "all_pred_by_code": {},
         "feedback_bucket_stats": {},
+        "keyword_feedback_weights": {},
     }
 
 
@@ -89,21 +90,126 @@ def _load_payload() -> dict:
     fb = raw.get("feedback_bucket_stats")
     if isinstance(fb, dict):
         out["feedback_bucket_stats"] = fb
+    kw = raw.get("keyword_feedback_weights")
+    if isinstance(kw, dict):
+        out["keyword_feedback_weights"] = kw
     return out
 
 
 def _save_payload(payload: dict) -> None:
     TRACK_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": 3,
+        "version": 4,
         "t_code_ratio": dict(payload.get("t_code_ratio") or {}),
         "t_code_actual_pct": dict(payload.get("t_code_actual_pct") or {}),
         "high_pred_by_code": dict(payload.get("high_pred_by_code") or {}),
         "mid_pred_by_code": dict(payload.get("mid_pred_by_code") or {}),
         "all_pred_by_code": dict(payload.get("all_pred_by_code") or {}),
         "feedback_bucket_stats": dict(payload.get("feedback_bucket_stats") or {}),
+        "keyword_feedback_weights": dict(payload.get("keyword_feedback_weights") or {}),
     }
     TRACK_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def keyword_feedback_weights() -> dict[str, float]:
+    """최근 오판 기반으로 학습된 키워드 가중치(가벼운 온라인 피드백)."""
+    p = _load_payload()
+    raw = p.get("keyword_feedback_weights")
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for k, v in raw.items():
+        if not isinstance(k, str) or len(k.strip()) < 2:
+            continue
+        if not isinstance(v, (int, float)) or not math.isfinite(float(v)):
+            continue
+        out[k.strip()] = float(v)
+    return out
+
+
+def merge_keyword_feedback_from_day_reports(
+    day_reports: list,
+    *,
+    threshold: float,
+) -> None:
+    """
+    빗나간 예측을 바탕으로 키워드 가중치를 누적 업데이트합니다.
+
+    - False positive(예측≥threshold인데 실제<threshold): 키워드 가중치 하향
+    - False negative(예측<threshold인데 실제≥threshold, 단 예측 후보에 키워드가 존재): 키워드 가중치 상향
+
+    이 가중치는 다음 실행의 휴리스틱 스코어에 직접 반영됩니다.
+    """
+    if not config.KEYWORD_FEEDBACK_ENABLED:
+        return
+    p = _load_payload()
+    w_raw = p.get("keyword_feedback_weights")
+    weights: dict[str, float] = dict(w_raw) if isinstance(w_raw, dict) else {}
+
+    thr_pct = float(threshold) * 100.0
+    decay = max(0.0, min(0.25, float(config.KEYWORD_FEEDBACK_DECAY)))
+    step = max(0.0, min(0.50, float(config.KEYWORD_FEEDBACK_STEP)))
+    if decay > 0 and weights:
+        for k in list(weights.keys()):
+            v = float(weights.get(k, 0.0) or 0.0) * (1.0 - decay)
+            if abs(v) < 1e-5:
+                weights.pop(k, None)
+            else:
+                weights[k] = v
+
+    def _keywords_from_row(r: dict) -> list[str]:
+        kws = r.get("keywords") or []
+        out: list[str] = []
+        if isinstance(kws, list):
+            for x in kws:
+                if isinstance(x, str):
+                    s = x.strip()
+                    if len(s) >= 2:
+                        out.append(s)
+        return out[:30]
+
+    changed = False
+    for dr in day_reports:
+        if getattr(dr, "forward_observation", False):
+            continue
+        for r in getattr(dr, "rows_compare", []) or []:
+            pr = r.get("pred_ret")
+            ar = r.get("actual_ret")
+            if ar is None or not math.isfinite(float(ar)):
+                continue
+            act_pct = float(ar) * 100.0
+            pred_pct = None
+            if pr is not None and math.isfinite(float(pr)):
+                pred_pct = float(pr)
+            kws = _keywords_from_row(r)
+            if not kws:
+                continue
+
+            is_fp = pred_pct is not None and pred_pct + 1e-9 >= thr_pct and act_pct < thr_pct - 1e-9
+            is_fn = pred_pct is not None and pred_pct < thr_pct - 1e-9 and act_pct + 1e-9 >= thr_pct
+            if not (is_fp or is_fn):
+                continue
+
+            # 오차가 클수록 업데이트 폭을 약간 키움(캡)
+            gap = abs((pred_pct or thr_pct) - act_pct)
+            mag = min(1.7, 0.6 + gap / 18.0)
+            delta = step * mag * (-1.0 if is_fp else 1.0)
+
+            for k in kws:
+                cur = float(weights.get(k, 0.0) or 0.0) + float(delta)
+                cur = max(-2.0, min(2.0, cur))
+                if abs(cur) < 1e-5:
+                    if k in weights:
+                        weights.pop(k, None)
+                        changed = True
+                else:
+                    if weights.get(k) != cur:
+                        weights[k] = cur
+                        changed = True
+
+    if changed:
+        p["keyword_feedback_weights"] = weights
+        _save_payload(p)
 
 
 def _key(t: object, code: str) -> str:

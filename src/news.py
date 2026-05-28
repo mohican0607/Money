@@ -814,6 +814,8 @@ def _fetch_news_day_naver(
     date_ko = f"{target.year}년 {target.month}월 {target.day}일"
     queries = [f"{date_ko} 증시", f"{date_ko} 코스피", f"{date_ko} 코스닥", f"{date_ko} 주식"]
     queries += [f"{date_ko} {s}" for s in config.NEWS_QUERY_SEEDS if s not in ("KOSPI", "KOSDAQ")]
+    queries += [f"{date_ko} {s}" for s in (config.NEWS_NAVER_MARKET_QUERY_SEEDS_EXTRA or [])]
+    queries = _dedupe_query_strings(queries)
 
     for q in queries:
         for i in range(config.NEWS_NAVER_MARKET_MAX_PAGES):

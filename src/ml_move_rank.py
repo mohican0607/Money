@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from datetime import date
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from . import (
     snapshot_miss_diagnosis,
     theme_carryover,
     trading_calendar,
+    market_index,
 )
 from .features import BreakoutEvent, keyword_set, name_mention_score
 
@@ -51,6 +53,8 @@ FEATURE_NAMES = (
     "news_kw_count",
     "news_blob_len_log",
     "theme_kw_overlap",
+    "ks11_ret_lag1",
+    "ks11_ret_std5",
     "ret_lag1",
     "log_vol_lag1",
     "ret_roll_std5",
@@ -58,22 +62,10 @@ FEATURE_NAMES = (
     "close_ma20_ratio",
 )
 
-ML_MODEL_VERSION = 4
+ML_MODEL_VERSION = 5
 MAX_NEG_PER_DAY = 360
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
-
-# ML 확률 → 표시 예측 상승률(%) 단조 매핑. 하한은 임계(20%)보다 낮게 두어
-# 저확률 후보는 pred≥임계 표에서 빠지게 해 적중률(실제도≥임계) 분모를 정렬한다.
-_ML_RETURN_MAP_FLOOR_PCT = 11.0
-
-
-def _display_return_pct_from_ml_prob(p: float) -> float:
-    """급등(≥임계) 추정 확률을 [하한, PRED_RETURN_MAX] 구간의 표시 %%로 변환."""
-    lo = _ML_RETURN_MAP_FLOOR_PCT
-    hi = float(config.PRED_RETURN_MAX) * 100.0
-    t = float(min(1.0, max(0.0, p)))
-    return lo + (hi - lo) * t
 
 
 def _early_blob_for_trading_day(
@@ -93,6 +85,54 @@ def _ohlcv_lookup(returns_ml: pd.DataFrame) -> pd.DataFrame:
     t["_c"] = t["Code"].astype(str).str.zfill(6)
     return t.set_index(["_d", "_c"])
 
+
+def _ks11_market_feats(trading_day: date) -> tuple[float, float]:
+    """
+    시장흐름 피처(지수):
+    - ks11_ret_lag1: trading_day 직전 거래일의 KOSPI 수익률
+    - ks11_ret_std5: 최근 5개 값 표준편차(변동성)
+    """
+    try:
+        prev = trading_calendar.last_trading_day_before(trading_day)
+    except ValueError:
+        return 0.0, 0.0
+    # 충분한 과거를 확보하기 위해 넉넉히 60일 범위로 로드(캐시됨)
+    start = prev - pd.Timedelta(days=90)
+    end = prev + pd.Timedelta(days=2)
+    df = _load_ks11_cached(start.date(), end.date())
+    if df is None or df.empty:
+        return 0.0, 0.0
+    r1 = market_index.index_daily_return_pct(df, prev)
+    if r1 is None:
+        r1v = 0.0
+    else:
+        r1v = float(r1)
+    # 최근 5개(전일 포함) 지수 수익률 표준편차
+    try:
+        s = df.sort_values("Date").reset_index(drop=True)
+        s["ret"] = s["Close"].pct_change()
+        ts = pd.Timestamp(prev)
+        hit = s.index[s["Date"] == ts]
+        if len(hit) == 0:
+            return r1v, 0.0
+        i = int(hit[0])
+        w = s.loc[max(0, i - 6) : i, "ret"].dropna().astype(float).tolist()
+        if len(w) < 2:
+            return r1v, 0.0
+        mean = sum(w) / len(w)
+        var = sum((x - mean) ** 2 for x in w) / max(1.0, float(len(w) - 1))
+        std = float(math.sqrt(var))
+        return r1v, std
+    except Exception:
+        return r1v, 0.0
+
+
+@lru_cache(maxsize=4)
+def _load_ks11_cached(start: date, end: date) -> pd.DataFrame:
+    try:
+        return market_index.load_index_frame("KS11", start, end)
+    except Exception:
+        return pd.DataFrame()
 
 def _price_feats_row(idx: pd.DataFrame | None, code: str, trading_day: date) -> list[float]:
     cols = (
@@ -146,6 +186,8 @@ def _feat_vector(
     base_ret = predict._historical_mean_return(sub, code)
     ce = sum(1 for e in sub if e.code == code)
     overlap = theme_carryover.theme_kw_overlap_score(kw_news, theme_weights)
+    # 시장흐름(지수) 피처: KOSPI(KS11) 전일 수익률 및 최근 변동성
+    ks11_ret_lag1, ks11_std5 = _ks11_market_feats(before_exclusive)
     base = [
         float(n_hit),
         float(mention),
@@ -157,6 +199,8 @@ def _feat_vector(
         float(len(kw_news)),
         float(math.log1p(max(0, len(news_blob)))),
         float(overlap),
+        float(ks11_ret_lag1),
+        float(ks11_std5),
     ]
     return base + _price_feats_row(ohlcv_idx, code, before_exclusive)
 
@@ -447,25 +491,30 @@ def rank_predictions_ml(
             continue
         p = float(proba[i])
         pr.ml_prob = p
-        pred_pct = _display_return_pct_from_ml_prob(p)
-        n_hit = int(max(0.0, feats[i][0])) if i < len(feats) and len(feats[i]) > 0 else 0
-        mention = float(max(0.0, feats[i][1])) if i < len(feats) and len(feats[i]) > 1 else 0.0
+        pr.reasons = [
+            f"감독학습 랭커(HistGradientBoosting)가 당일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) "
+            f"추정 확률 {p * 100:.1f}% (뉴스·급등이력·시세·전일테마 피처 {len(FEATURE_NAMES)}개)."
+        ] + list(pr.reasons)
+        out.append(pr)
+
+    predict.apply_display_return_pct_ranking(
+        out,
+        rank_value=lambda r: float(r.ml_prob or 0.0),
+        reason_prefix="표시 예측 상승률은 ML 급등 확률 순위 기준으로",
+    )
+    for pr in out:
+        n_hit = int(getattr(pr, "keyword_hits", 0) or 0)
+        mention = float(getattr(pr, "mention_score", 0.0) or 0.0)
         pr.predicted_return_pct = (
             predict._feedback_calibrated_return(
-                pred_pct / 100.0,
-                code=code,
+                pr.predicted_return_pct / 100.0,
+                code=pr.code,
                 n_hit=n_hit,
                 mention=mention,
                 feedback_ctx=feedback_ctx,
-                clamp_lo=_ML_RETURN_MAP_FLOOR_PCT / 100.0,
+                clamp_lo=float(config.PRED_RETURN_MIN),
                 clamp_hi=float(config.PRED_RETURN_MAX),
             )
             * 100.0
         )
-        pr.reasons = [
-            f"감독학습 랭커(HistGradientBoosting)가 당일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) "
-            f"추정 확률 {p * 100:.1f}% (뉴스·급등이력·시세·전일테마 피처 {len(FEATURE_NAMES)}개). "
-            f"표시 예측 상승률은 이 확률을 {_ML_RETURN_MAP_FLOOR_PCT:.0f}~{config.PRED_RETURN_MAX * 100:.0f}% 구간에 선형 정렬한 값입니다."
-        ] + list(pr.reasons)
-        out.append(pr)
     return out
