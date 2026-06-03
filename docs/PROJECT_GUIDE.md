@@ -93,9 +93,17 @@ python main.py --weekly
 |--------|------|
 | *(기본)* | `breakout_train_snapshot.json` 재사용, 미반영 캘린더만 병합 |
 | `--no-train-snapshot` | 스냅샷 없이 매번 `train_events` 전체 재계산 |
-| `--rebuild-train-snapshot` | `train_events` **전체 재계산** + ML joblib **재학습** + 구간 말미 `rebuild_learning`·freeze **갱신** |
-| `--append-rebuild-learning` | `train_events`·ML **재사용**, 구간 **예측·freeze·rebuild_learning 병합만** (갭 채우기, 빠름) |
+| `--rebuild-train-snapshot` | `train_events` **전체 재계산** + ML **재학습** + **From~To 안** 예측·freeze·`rebuild_learning` 갱신 |
+| `--append-rebuild-learning` | `train_events`·ML **재사용**, **From~To 안**만 예측·freeze·`rebuild_learning` (빠른 갭 채우기) |
 | `--no-report-expand` | 구간 실행 시 기존 월간 HTML 날짜 **자동 추가 안 함** (인자 일수만) |
+
+**예측 고정 캐시 (`prediction_freeze_by_t.json`) — `python main.py From To` 구간 실행 시**
+
+| 관측일 | freeze 동작 |
+|--------|-------------|
+| **CLI From ~ To 안** | **항상 무시** → 매번 재예측 후 freeze 저장 (플래그 유무 동일) |
+| 구간 밖 (리포트 병합일 등) | 캐시가 있으면 **재사용** |
+| 단일일 / `--weekly` | 캐시가 있으면 **재사용** (기본 동작) |
 
 **갭 채우기 예 (10거래일, ML 반영, 리포트 병합 없음):**
 
@@ -128,7 +136,7 @@ python main.py --rebuild-train-snapshot 20260401 20260601
 |------|------|-----------|
 | `breakout_train_snapshot.json` | `train_events`, `rebuild_learning`, `market_theme_flow`, `prediction_gap_rollup` | `--rebuild` / `--append` 말미 병합 |
 | `prediction_accuracy_track.json` | `t_code_ratio`, 종목별 예측 이력, `keyword_feedback_weights` | 매 구간 실행 말미 |
-| `prediction_freeze_by_t.json` | 관측일 T별 상위 후보·예측% 고정 | `--rebuild` / `--append` 시 해당 T 재계산 |
+| `prediction_freeze_by_t.json` | 관측일 T별 상위 후보·예측% 고정 | **From~To 구간** 실행마다 해당 T 재계산·저장 |
 | `daily_theme_snapshots.json` | 전일 급등·테마 가중치 | 매 거래일 파이프라인 |
 | `move_ranker_v*.joblib` | ML 랭커 모델 | `--rebuild-train-snapshot` 시 재학습 |
 

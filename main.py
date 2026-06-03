@@ -124,6 +124,28 @@ def _freeze_entry_usable(items: list[dict]) -> bool:
     return False
 
 
+def _ignore_freeze_for_trading_day(
+    T: date,
+    *,
+    train_snapshot_mode: str,
+    cal_scope: tuple[date, date] | None,
+) -> bool:
+    """
+    예측 고정 캐시를 쓰지 않고 다시 예측할 관측일 T 인지 판단.
+
+    - ``python main.py From To`` (``cal_scope`` 있음): **From~To 안** 모든 실행에서 freeze 무시.
+      (``--rebuild`` / ``--append`` 직후 일반 실행도 동일 — 고정 캐시에 묶이지 않음)
+    - 월간 리포트 병합 등으로 루프에만 포함된 **구간 밖** T: freeze 재사용
+    - ``--weekly``·단일일 등 ``cal_scope`` 없음: ``rebuild``/``append`` 일 때만 전일 freeze 무시
+    """
+    if train_snapshot_mode in ("rebuild", "append_learning") and cal_scope is None:
+        return True
+    if cal_scope is None:
+        return False
+    s0, s1 = cal_scope
+    return s0 <= T <= s1
+
+
 def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.PredictionRow]:
     """고정 캐시 dict 목록을 ``PredictionRow`` 리스트로 변환합니다. 파싱 실패 항목은 건너뜁니다."""
     rows: list[predict.PredictionRow] = []
@@ -454,12 +476,12 @@ def _print_usage() -> None:
       prediction_gap_rollup(예측–실제 달성률·버킷 통계 스냅샷)을 병합 저장하고,
       ML 랭커 joblib 은 재학습해 덮어씁니다(스냅샷에 쌓인 miss 진단으로 어려운 급등·오판 샘플 가중).
       다음 구간 재실행 시 갱신된 miss_diagnosis 가 재학습에 반영됩니다.
-      이 플래그가 있을 때만 data/cache/train/prediction_freeze_by_t.json 의
-      해당 관측일 예측수익률·후보 목록이 다시 계산·저장됩니다(플래그 없이 재실행 시 고정).
+      From~To 구간 안의 관측일은 예측 고정 캐시를 무시하고 재계산·저장합니다.
+      구간 밖 test_days(월간 리포트 병합일 등)는 freeze 가 있으면 재사용합니다.
   --append-rebuild-learning
       급등-뉴스 train_events 는 스냅샷 재사용(미반영 캘린더만 병합). ML joblib 도 재학습하지 않고
-      기존 모델을 로드합니다. 다만 From~To 거래일은 --rebuild-train-snapshot 과 동일하게
-      예측·freeze·rebuild_learning 병합을 수행합니다(구간 보강·갭 채우기용, 훨씬 빠름).
+      기존 모델을 로드합니다. From~To 안은 예측·freeze·rebuild_learning 병합(구간 보강용).
+      플래그 없이 ``python main.py From To`` 만 실행해도 From~To 안은 freeze 를 무시하고 재예측합니다.
   --no-report-expand
       From~To 구간 실행 시 기존 월간 HTML 에 있던 날짜를 자동으로 추가하지 않습니다.
       (인자 거래일만 예측·리포트에 반영)
@@ -1480,10 +1502,14 @@ def _run_pipeline(
                 theme_w = {}
         t_key = T.isoformat()
         frozen_items = freeze_payload.get(t_key) if config.PREDICTION_FREEZE_ENABLED else None
-        refresh_frozen_preds = train_snapshot_mode in ("rebuild", "append_learning")
+        ignore_freeze_for_t = _ignore_freeze_for_trading_day(
+            T,
+            train_snapshot_mode=train_snapshot_mode,
+            cal_scope=train_snapshot_cal_scope,
+        )
         use_frozen = (
             config.PREDICTION_FREEZE_ENABLED
-            and not refresh_frozen_preds
+            and not ignore_freeze_for_t
             and isinstance(frozen_items, list)
             and _freeze_entry_usable(frozen_items)
         )
@@ -1491,11 +1517,30 @@ def _run_pipeline(
             preds = _prediction_rows_from_frozen_items(frozen_items)
             print(f"예측 고정 캐시 재사용: T={t_key} ({len(preds)}건)", flush=True)
         else:
-            if refresh_frozen_preds and _freeze_entry_usable(frozen_items or []):
-                print(
-                    f"관측일 T={t_key}: --rebuild-train-snapshot — 예측 고정 캐시를 갱신합니다.",
-                    flush=True,
-                )
+            if ignore_freeze_for_t:
+                if train_snapshot_cal_scope is not None:
+                    s0, s1 = train_snapshot_cal_scope
+                    scope_note = f"구간({s0}~{s1}) "
+                else:
+                    scope_note = ""
+                if train_snapshot_mode == "rebuild":
+                    reason = "--rebuild-train-snapshot"
+                elif train_snapshot_mode == "append_learning":
+                    reason = "--append-rebuild-learning"
+                else:
+                    reason = "From~To 구간 실행"
+                if _freeze_entry_usable(frozen_items or []):
+                    print(
+                        f"관측일 T={t_key}: {reason} — "
+                        f"{scope_note}예측 고정 캐시 무시·재계산합니다.",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"관측일 T={t_key}: {reason} — "
+                        f"{scope_note}예측 고정 캐시 없음·신규 계산합니다.",
+                        flush=True,
+                    )
             preds = predict.predict_for_trading_day(
                 T,
                 codes,
@@ -1509,7 +1554,8 @@ def _run_pipeline(
                 theme_weights=theme_w or None,
             )
             if config.PREDICTION_FREEZE_ENABLED and (
-                refresh_frozen_preds or not _freeze_entry_usable(freeze_payload.get(t_key) or [])
+                ignore_freeze_for_t
+                or not _freeze_entry_usable(freeze_payload.get(t_key) or [])
             ):
                 freeze_payload[t_key] = _prediction_rows_to_frozen_items(preds)
                 freeze_changed = True
