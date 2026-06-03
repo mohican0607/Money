@@ -4,7 +4,7 @@
 이 모듈은 함수 없이 프로젝트 전역 설정만 노출합니다.
 - ``ROOT`` / ``DATA_DIR`` / ``CACHE_DIR`` / ``OUTPUT_DIR``: 디렉터리 루트(``load_dotenv()`` 후 계산).
 - 네이버·뉴스·시세 관련 플래그는 ``os.getenv`` 기반이며, 실행 전 ``.env`` 또는 환경 변수로 덮어씁니다.
-- 날짜 상수(``TRAIN_START_DEFAULT``, ``TEST_START``, ``REPORT_TEST_DAY_*``)는 훈련·테스트·월간 리포트 범위를 고정합니다.
+- 날짜 상수: ``TRAIN_START_DEFAULT``(급등 이벤트 수집 시작), ``TEST_START``(``--weekly`` 등 **기본 관측 시작일**; 학습 상한 아님), ``REPORT_TEST_DAY_*``.
 
 상세 사용법과 흐름은 ``docs/PROJECT_GUIDE.md`` 를 참고하세요.
 """
@@ -125,7 +125,8 @@ PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.35)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
 PREDICTION_FREEZE_SCHEMA_VERSION = 2
-TRAIN_START_DEFAULT = date(2025, 4, 11)  # 약 1년 전(실행일 기준 조정은 main에서)
+TRAIN_START_DEFAULT = date(2025, 4, 11)  # 급등–뉴스 이벤트·스냅샷 수집 시작
+# --weekly 등 날짜 인자 없을 때 관측(리포트) 시작일. 학습 라벨 상한은 관측일 T 직전(워크포워드).
 TEST_START = date(2026, 1, 1)
 
 # 매수 시나리오: N거래일 장마감 전(약 14:00~14:50)에 주문해 N+1일 급등을 노릴 때,

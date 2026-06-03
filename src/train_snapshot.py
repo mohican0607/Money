@@ -1,8 +1,9 @@
 """
-훈련 구간 ``BreakoutEvent`` 스냅샷(JSON) — ``main.py`` 기본(증분 병합), ``--no-train-snapshot``, ``--rebuild-train-snapshot``.
+과거 급등–뉴스 ``BreakoutEvent`` 스냅샷(JSON) — ``main.py`` 기본(증분 병합), ``--rebuild-train-snapshot``.
 
-- 지문(fingerprint): 훈련 구간·급등 임계·뉴스 컷오프·수집 소스 등이 바뀌면 스냅샷을 쓰지 않고 전체 재계산합니다.
-- ``calendar_days_covered``: 이 스냅샷이 반영했다고 기록한 캘린더 일자(뉴스 JSON 일자와 대응).
+- 스냅샷에는 ``TRAIN_START_DEFAULT`` 이후 확인된 급등 이벤트를 **날짜 상한 없이** 저장합니다.
+- 예측 시에는 ``filter_train_events_before(events, T)`` 로 **관측일 T 직전** 이벤트만 사용(워크포워드).
+- 지문(fingerprint): 훈련·뉴스 컷오프·워크포워드 정책 등이 바뀌면 스냅샷을 쓰지 않고 전체 재계산합니다.
 """
 from __future__ import annotations
 
@@ -38,6 +39,7 @@ def fingerprint() -> str:
         "has_naver_creds": bool(config.NAVER_CLIENT_ID and config.NAVER_CLIENT_SECRET),
         # early 뉴스 컷오프를 T 직전 거래일 세션으로 둠(주말·연휴 직전 장 뉴스 포함).
         "news_early_anchor": "last_krx_session_before_t_close",
+        "walk_forward_train_events": True,
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]
@@ -65,6 +67,27 @@ def _event_from_json(d: dict[str, Any]) -> BreakoutEvent:
         news_keywords=frozenset(str(x) for x in d.get("news_keywords") or []),
         news_snippets=[str(x) for x in d.get("news_snippets") or []],
     )
+
+
+def filter_train_events_before(
+    events: list[BreakoutEvent],
+    before_exclusive: date,
+    *,
+    train_start: date | None = None,
+) -> list[BreakoutEvent]:
+    """관측일 ``before_exclusive``(T) **이전** 거래일 급등 이벤트만 반환(워크포워드 학습 라벨)."""
+    lo = train_start if train_start is not None else config.TRAIN_START_DEFAULT
+    return [e for e in events if lo <= e.trading_day < before_exclusive]
+
+
+def events_for_storage(
+    events: list[BreakoutEvent],
+    *,
+    train_start: date,
+    storage_end: date,
+) -> list[BreakoutEvent]:
+    """스냅샷 JSON에 저장할 이벤트(``train_start`` ~ ``storage_end`` 거래일)."""
+    return [e for e in events if train_start <= e.trading_day <= storage_end]
 
 
 @dataclass

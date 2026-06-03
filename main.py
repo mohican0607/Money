@@ -459,10 +459,10 @@ def _print_usage() -> None:
   python main.py --weekly
       월간 배치 (config REPORT_TEST_DAY_START ~ END, --weekly 이름은 호환용)
 
-  학습 스냅샷 (과거 급등-뉴스 BreakoutEvent, data/cache/train/breakout_train_snapshot.json):
+  학습 스냅샷 (급등-뉴스 BreakoutEvent 풀, breakout_train_snapshot.json):
   (플래그 없음, 기본)
-      스냅샷을 읽어 재사용하고, 이번 실행에 필요한 캘린더 일 중 스냅샷에 없는 뉴스 일자만 반영해
-      이벤트를 병합·저장. 두 날짜 구간이면 미반영 판단은 인자 캘린더 구간으로 한정.
+      스냅샷을 읽어 재사용·병합. 예측 시에는 관측일 T마다 T 직전 이벤트만 사용(워크포워드).
+      TEST_START( config )는 --weekly 기본 관측 시작일이며 학습 상한이 아님.
   --no-train-snapshot
       스냅샷을 읽지도 쓰지도 않고, 매번 전체 재계산만 수행(예전 동작).
   --use-train-snapshot
@@ -1301,7 +1301,9 @@ def _run_pipeline(
     returns_ml = stocks.enrich_daily_returns_for_ml(returns)
 
     trading_days = trading_calendar.trading_sessions_in_range(train_start, end_date)
-    news_trading_days = [t for t in trading_days if train_start <= t < test_start] + test_days
+    news_trading_days = sorted(
+        {t for t in trading_days if train_start <= t <= end_date} | set(test_days)
+    )
     target_cal_days = frozenset(test_days) if include_target_calendar_news else None
     cal_days = _collect_calendar_days_for_trading_range(
         news_trading_days,
@@ -1335,33 +1337,33 @@ def _run_pipeline(
     cal_day_set = set(cal_days)
     fp_snap = train_snapshot.fingerprint()
 
-    def _filter_train_events(ev: list[features.BreakoutEvent]) -> list[features.BreakoutEvent]:
-        """``train_start``~``test_start`` 직전 거래일 이벤트만 남깁니다."""
-        return [e for e in ev if train_start <= e.trading_day < test_start]
-
-    def _full_breakout_train() -> list[features.BreakoutEvent]:
-        """전체 수익률·뉴스로 급등 이벤트를 만든 뒤 훈련 구간으로 필터."""
-        all_ev = features.build_breakout_events(
+    def _all_breakout_events_raw() -> list[features.BreakoutEvent]:
+        """수익률·뉴스로 급등 이벤트 전체 생성(스냅샷 저장·워크포워드 풀)."""
+        return features.build_breakout_events(
             returns,
             news_by_calendar,
             trading_calendar.news_window_for_target_trading_day,
             config.BIG_MOVE_THRESHOLD,
         )
-        return _filter_train_events(all_ev)
+
+    def _events_for_snapshot(ev: list[features.BreakoutEvent]) -> list[features.BreakoutEvent]:
+        return train_snapshot.events_for_storage(
+            ev, train_start=train_start, storage_end=end_date
+        )
 
     train_td_set = {
         d
         for d in returns["Date"].dt.date.unique()
-        if train_start <= d < test_start
+        if train_start <= d <= end_date
     }
 
     if train_snapshot_mode == "none":
         print("과거 급등-뉴스 이벤트 구축…")
-        train_events = _full_breakout_train()
+        all_train_events = _events_for_snapshot(_all_breakout_events_raw())
     elif train_snapshot_mode == "rebuild":
         print("과거 급등-뉴스 이벤트 전체 재계산(학습 스냅샷 저장)…")
-        train_events = _full_breakout_train()
-        train_snapshot.save_snapshot(train_events, set(cal_day_set), fp=fp_snap)
+        all_train_events = _events_for_snapshot(_all_breakout_events_raw())
+        train_snapshot.save_snapshot(all_train_events, set(cal_day_set), fp=fp_snap)
         print(f"학습 스냅샷 저장: {config.TRAIN_SNAPSHOT_PATH} (캘린더 {len(cal_day_set)}일)")
     else:
         # use | append_learning
@@ -1380,18 +1382,19 @@ def _run_pipeline(
             else:
                 print("학습 스냅샷: 파일 없음 또는 형식 오류 → 전체 재계산 후 저장.")
             print("과거 급등-뉴스 이벤트 구축…")
-            train_events = _full_breakout_train()
-            train_snapshot.save_snapshot(train_events, set(cal_day_set), fp=fp_snap)
+            all_train_events = _events_for_snapshot(_all_breakout_events_raw())
+            train_snapshot.save_snapshot(all_train_events, set(cal_day_set), fp=fp_snap)
             print(f"학습 스냅샷 저장: {config.TRAIN_SNAPSHOT_PATH}")
         elif not missing_scope:
-            train_events = _filter_train_events(snap.events)
+            all_train_events = _events_for_snapshot(snap.events)
             print(
                 f"과거 급등-뉴스: 학습 스냅샷 재사용 "
-                f"({config.TRAIN_SNAPSHOT_PATH.name}, 훈련 이벤트 {len(train_events)}건)"
+                f"({config.TRAIN_SNAPSHOT_PATH.name}, 급등 이벤트 {len(all_train_events)}건, "
+                f"예측 시 관측일 T 직전만 워크포워드)"
             )
             new_cov = snap.calendar_days_covered | cal_day_set
             if new_cov != snap.calendar_days_covered:
-                train_snapshot.save_snapshot(train_events, new_cov, fp=fp_snap)
+                train_snapshot.save_snapshot(all_train_events, new_cov, fp=fp_snap)
         else:
             print(
                 f"과거 급등-뉴스: 스냅샷 병합 — 미반영 캘린더 일 {len(missing_scope)}일 "
@@ -1410,16 +1413,23 @@ def _run_pipeline(
                 config.BIG_MOVE_THRESHOLD,
                 recompute_td,
             )
-            train_events = _filter_train_events(old + new)
+            all_train_events = _events_for_snapshot(old + new)
             new_cov = snap.calendar_days_covered | cal_day_set
-            train_snapshot.save_snapshot(train_events, new_cov, fp=fp_snap)
+            train_snapshot.save_snapshot(all_train_events, new_cov, fp=fp_snap)
             print(
                 f"학습 스냅샷 갱신 저장: 관련 거래일 {len(recompute_td)}일 재계산 → "
                 f"{config.TRAIN_SNAPSHOT_PATH.name}"
             )
 
     kw_cooccur = Counter()
-    for e in train_events:
+    kw_pool = (
+        train_snapshot.filter_train_events_before(
+            all_train_events, min(test_days), train_start=train_start
+        )
+        if test_days
+        else all_train_events
+    )
+    for e in kw_pool:
         for w in e.news_keywords:
             kw_cooccur[w] += 1
     correlation_rows = kw_cooccur.most_common(40)
@@ -1429,24 +1439,9 @@ def _run_pipeline(
     names = dict(zip(codes, listing["Name"].astype(str)))
     market_by_code = stocks.market_segment_by_code()
 
-    ml_bundle = None
-    if config.PRED_USE_ML_RANKER:
-        try:
-            from src import ml_move_rank
-
-            ml_bundle = ml_move_rank.fit_or_load_classifier(
-                train_events=train_events,
-                returns_ml=returns_ml,
-                news_by_calendar=news_by_calendar,
-                listing_names=names,
-                fp=fp_snap,
-                force_retrain=train_snapshot_mode == "rebuild",
-            )
-        except Exception as e:
-            print(f"ML 랭커 초기화 실패(휴리스틱만 사용): {e}", flush=True)
-            ml_bundle = None
-
-    ks11 = market_index.load_index_frame("KS11", test_start - timedelta(days=5), end_date)
+    ks11 = market_index.load_index_frame(
+        "KS11", train_start - timedelta(days=5), end_date
+    )
 
     day_reports: list[report.DayReport] = []
     late_below_n = late_below_kw = late_gte_n = late_gte_kw = 0
@@ -1487,13 +1482,34 @@ def _run_pipeline(
             early_rows, _ = news.classified_rows_for_target(news_by_calendar, T)
             actual_ctx_rows = news.rows_for_actual_context(news_by_calendar, T)
 
-        min_hits = 1 if train_events else 0
+        train_events_t = train_snapshot.filter_train_events_before(
+            all_train_events, T, train_start=train_start
+        )
+        ml_bundle = None
+        if config.PRED_USE_ML_RANKER:
+            try:
+                from src import ml_move_rank
+
+                ml_bundle = ml_move_rank.fit_or_load_classifier(
+                    train_events=train_events_t,
+                    returns_ml=returns_ml,
+                    news_by_calendar=news_by_calendar,
+                    listing_names=names,
+                    fp=fp_snap,
+                    label_before_exclusive=T,
+                    force_retrain=train_snapshot_mode == "rebuild",
+                )
+            except Exception as e:
+                print(f"ML 랭커 초기화 실패(휴리스틱만 사용): {e}", flush=True)
+                ml_bundle = None
+
+        min_hits = 1 if train_events_t else 0
         theme_w: dict[str, float] = {}
         if config.THEME_CARRYOVER_ENABLED:
             try:
                 theme_w = theme_carryover.weights_for_observation_day(
                     T,
-                    train_events=train_events,
+                    train_events=train_events_t,
                     news_by_calendar=news_by_calendar,
                     returns_df=returns,
                     threshold=config.BIG_MOVE_THRESHOLD,
@@ -1545,7 +1561,7 @@ def _run_pipeline(
                 T,
                 codes,
                 names,
-                train_events,
+                train_events_t,
                 blob,
                 top_n=40,
                 min_keyword_hits=min_hits,
@@ -1559,7 +1575,7 @@ def _run_pipeline(
             ):
                 freeze_payload[t_key] = _prediction_rows_to_frozen_items(preds)
                 freeze_changed = True
-        scoring_ctx = predict.build_scoring_context(blob, train_events)
+        scoring_ctx = predict.build_scoring_context(blob, train_events_t)
 
         kospi_r = market_index.index_daily_return_pct(ks11, T)
         kospi_hint = None
@@ -1844,7 +1860,7 @@ def _run_pipeline(
         for r in rows_compare:
             code_r = str(r.get("code", ""))
             pr_row = _prediction_row_strict_or_loose(
-                code_r, names, train_events, blob, scoring_ctx, min_hits
+                code_r, names, train_events_t, blob, scoring_ctx, min_hits
             )
             r["gap_analysis_html"] = _gap_analysis_html_for_row(
                 r.get("pred_ret"),
@@ -2126,7 +2142,10 @@ def _render_monthly_batch(po: PipelineOut, *, test_range_label: str) -> list[Pat
         생성·갱신된 HTML 경로 목록(폴더 자동 열기용).
     """
     meta_base = {
-        "train_range": f"{po.train_start} ~ {po.test_start - timedelta(days=1)}",
+        "train_range": (
+            f"{po.train_start} ~ 각 관측일 T 직전까지(워크포워드, "
+            f"기본 관측 시작 {po.test_start})"
+        ),
         "test_range": test_range_label,
         "threshold": f"{config.BIG_MOVE_THRESHOLD*100:.0f}%",
         "news_source": po.news_source,
@@ -2432,7 +2451,10 @@ def main() -> None:
         t_day = actual_t
 
     meta_compact = {
-        "train_range": f"{po.train_start} ~ {po.test_start - timedelta(days=1)}",
+        "train_range": (
+            f"{po.train_start} ~ 각 관측일 T 직전까지(워크포워드, "
+            f"기본 관측 시작 {po.test_start})"
+        ),
         "test_range": f"단일 실행 N={n_day} → T={t_day}",
         "threshold": f"{config.BIG_MOVE_THRESHOLD*100:.0f}%",
         "news_source": po.news_source,

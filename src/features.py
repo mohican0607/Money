@@ -69,7 +69,7 @@ def keyword_set(text: str, k: int = 80) -> frozenset[str]:
 
 @dataclass
 class BreakoutEvent:
-    """훈련 구간의 한 건: 특정 거래일에 임계 이상 급등한 종목과 그날 뉴스 키워드 프로필."""
+    """과거 거래일 급등 라벨 1건: 해당일 수익률·당일 뉴스에서 뽑은 키워드(종목 프로필 보조용)."""
 
     trading_day: date
     code: str

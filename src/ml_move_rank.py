@@ -1,7 +1,7 @@
 """
 훈련 구간 라벨(당일 급등 여부)로 **감독학습 랭커**를 학습해, 관측일 후보 종목을 확률 순으로 정렬합니다.
 
-피처: 뉴스·과거 급등 이력(키워드 교집합, 종목명, 과거 평균 수익률, 이벤트 건수, 휴리스틱 점수)과
+피처: N−1~N일 **14:30(KST)까지** 뉴스·테마·시세·KOSPI 흐름·과거 급등 이력(보조) 등.
 ``stocks.enrich_daily_returns_for_ml`` 로 만든 **전일 수익·거래량·단기 변동성·이평 대비 위치** 등 시세 요약.
 학습 행은 거래일 ``d`` 기준으로 ``d`` **이전**의 급등 이벤트만 써서 시간 누수를 줄입니다.
 """
@@ -216,7 +216,7 @@ def _build_training_arrays(
     names: dict[str, str],
     threshold: float,
     train_start: date,
-    test_start: date,
+    label_before_exclusive: date,
     *,
     pos_boost_keys: set[tuple[str, str]] | None = None,
     neg_boost_keys: set[tuple[str, str]] | None = None,
@@ -234,7 +234,9 @@ def _build_training_arrays(
     neg_boost = neg_boost_keys or set()
 
     days = sorted(
-        d for d in returns_ml["Date"].dt.date.unique() if train_start <= d < test_start
+        d
+        for d in returns_ml["Date"].dt.date.unique()
+        if train_start <= d < label_before_exclusive
     )
     for d in days:
         blob = _early_blob_for_trading_day(news_by_calendar, d)
@@ -333,9 +335,12 @@ def _build_training_arrays(
     return np.asarray(rows_x, dtype=np.float64), np.asarray(rows_y, dtype=np.int32)
 
 
-def _model_path(fp: str) -> Path:
-    """스냅샷 지문 ``fp`` 에 대응하는 ML 랭커 joblib 캐시 경로."""
-    return config.CACHE_DIR / "train" / f"move_ranker_v{ML_MODEL_VERSION}_{fp}.joblib"
+def _model_path(fp: str, label_before_exclusive: date | None = None) -> Path:
+    """스냅샷 지문·워크포워드 컷오프(관측일 T)별 ML 랭커 joblib 캐시 경로."""
+    suffix = (
+        f"_{label_before_exclusive.isoformat()}" if label_before_exclusive is not None else ""
+    )
+    return config.CACHE_DIR / "train" / f"move_ranker_v{ML_MODEL_VERSION}_{fp}{suffix}.joblib"
 
 
 def fit_or_load_classifier(
@@ -345,6 +350,7 @@ def fit_or_load_classifier(
     news_by_calendar: dict[date, list[dict[str, str]]],
     listing_names: dict[str, str],
     fp: str,
+    label_before_exclusive: date,
     force_retrain: bool = False,
 ) -> dict[str, Any] | None:
     """
@@ -363,7 +369,7 @@ def fit_or_load_classifier(
         print("ML 랭커: scikit-learn 미설치 → 휴리스틱만 사용합니다. (pip install scikit-learn)", flush=True)
         return None
 
-    path = _model_path(fp)
+    path = _model_path(fp, label_before_exclusive)
     bundle: dict[str, Any] = {
         "pipeline": None,
         "fp": fp,
@@ -399,7 +405,7 @@ def fit_or_load_classifier(
         listing_names,
         config.BIG_MOVE_THRESHOLD,
         config.TRAIN_START_DEFAULT,
-        config.TEST_START,
+        label_before_exclusive,
         pos_boost_keys=pos_boost,
         neg_boost_keys=neg_boost,
     )
@@ -502,8 +508,8 @@ def rank_predictions_ml(
         p = float(proba[i])
         pr.ml_prob = p
         pr.reasons = [
-            f"감독학습 랭커(HistGradientBoosting)가 당일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) "
-            f"추정 확률 {p * 100:.1f}% (뉴스·급등이력·시세·전일테마 피처 {len(FEATURE_NAMES)}개)."
+            f"감독학습 랭커(HistGradientBoosting) 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) "
+            f"추정 확률 {p * 100:.1f}% (14:30까지 뉴스·테마·시세·시장흐름 등 피처 {len(FEATURE_NAMES)}개)."
         ] + list(pr.reasons)
         out.append(pr)
 
