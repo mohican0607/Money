@@ -67,6 +67,7 @@ from src import (
 
 
 def _load_prediction_freeze_payload() -> dict[str, list[dict]]:
+    """``prediction_freeze_by_t.json`` 에서 관측일 T별 고정 예측 후보를 읽습니다. 스키마 불일치·손상 시 빈 dict."""
     path = config.PREDICTION_FREEZE_PATH
     if not path.is_file():
         return {}
@@ -88,6 +89,7 @@ def _load_prediction_freeze_payload() -> dict[str, list[dict]]:
 
 
 def _save_prediction_freeze_payload(payload: dict[str, list[dict]]) -> None:
+    """관측일 T별 고정 예측 후보를 ``prediction_freeze_by_t.json`` 에 저장합니다."""
     path = config.PREDICTION_FREEZE_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     to_write = {
@@ -98,6 +100,7 @@ def _save_prediction_freeze_payload(payload: dict[str, list[dict]]) -> None:
 
 
 def _frozen_predicted_return_pct(item: dict) -> float | None:
+    """고정 캐시 항목에서 ``predicted_return_pct``(또는 레거시 ``pred_ret``)를 유한 실수로 꺼냅니다."""
     raw = item.get("predicted_return_pct")
     if raw is None:
         raw = item.get("pred_ret")
@@ -122,6 +125,7 @@ def _freeze_entry_usable(items: list[dict]) -> bool:
 
 
 def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.PredictionRow]:
+    """고정 캐시 dict 목록을 ``PredictionRow`` 리스트로 변환합니다. 파싱 실패 항목은 건너뜁니다."""
     rows: list[predict.PredictionRow] = []
     for x in items:
         try:
@@ -151,6 +155,7 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
 
 
 def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[dict]:
+    """``PredictionRow`` 리스트를 고정 캐시 JSON에 넣을 dict 목록으로 직렬화합니다."""
     return [
         {
             "code": str(r.code).zfill(6),
@@ -181,6 +186,7 @@ def _append_compare_row_from_prediction(
     late_blob: str,
     pr_for_gap: predict.PredictionRow | None,
 ) -> None:
+    """``PredictionRow`` 한 건을 비교 표 ``rows_compare`` 행 dict로 append합니다."""
     ph = pr.predicted_return_pct >= pred_pct_min
     pm = pred_pct_mid_min <= pr.predicted_return_pct < pred_pct_min
     rows_compare.append(
@@ -332,6 +338,7 @@ def _fetch_news_for_calendar_days(cal_days: list[date], *, fetch_until: date | N
         return out
 
     def _one_day(day: date) -> tuple[date, list]:
+        """단일 캘린더 일 뉴스를 세션 재사용으로 수집해 (일자, rows) 를 반환."""
         sess = requests.Session()
         try:
             return day, news.fetch_news_for_calendar_day(day, session=sess)
@@ -373,9 +380,12 @@ def _parse_cli() -> tuple[str, date | None, date | None, str]:
     """
     raw = [a for a in sys.argv[1:] if a]
     has_rebuild = "--rebuild-train-snapshot" in raw
+    has_append = "--append-rebuild-learning" in raw
     has_no_snap = "--no-train-snapshot" in raw
     if has_rebuild:
         snap_mode = "rebuild"
+    elif has_append:
+        snap_mode = "append_learning"
     elif has_no_snap:
         snap_mode = "none"
     else:
@@ -388,7 +398,9 @@ def _parse_cli() -> tuple[str, date | None, date | None, str]:
         not in (
             "--use-train-snapshot",
             "--rebuild-train-snapshot",
+            "--append-rebuild-learning",
             "--no-train-snapshot",
+            "--no-report-expand",
         )
     ]
     if not argv:
@@ -444,8 +456,16 @@ def _print_usage() -> None:
       다음 구간 재실행 시 갱신된 miss_diagnosis 가 재학습에 반영됩니다.
       이 플래그가 있을 때만 data/cache/train/prediction_freeze_by_t.json 의
       해당 관측일 예측수익률·후보 목록이 다시 계산·저장됩니다(플래그 없이 재실행 시 고정).
+  --append-rebuild-learning
+      급등-뉴스 train_events 는 스냅샷 재사용(미반영 캘린더만 병합). ML joblib 도 재학습하지 않고
+      기존 모델을 로드합니다. 다만 From~To 거래일은 --rebuild-train-snapshot 과 동일하게
+      예측·freeze·rebuild_learning 병합을 수행합니다(구간 보강·갭 채우기용, 훨씬 빠름).
+  --no-report-expand
+      From~To 구간 실행 시 기존 월간 HTML 에 있던 날짜를 자동으로 추가하지 않습니다.
+      (인자 거래일만 예측·리포트에 반영)
 
   예: python main.py 20260401 20260414
+  예: python main.py --append-rebuild-learning --no-report-expand 20260516 20260601
 """
     )
 
@@ -526,6 +546,7 @@ def _open_report_outputs(html_paths: Sequence[Path]) -> None:
         return
 
     def _is_primary_report(p: Path) -> bool:
+        """자동 열기 대상: report_*.html 이면서 index 가 아닌 파일."""
         n = p.name.lower()
         return n.startswith("report_") and n.endswith(".html") and "index" not in n
 
@@ -1293,9 +1314,11 @@ def _run_pipeline(
     fp_snap = train_snapshot.fingerprint()
 
     def _filter_train_events(ev: list[features.BreakoutEvent]) -> list[features.BreakoutEvent]:
+        """``train_start``~``test_start`` 직전 거래일 이벤트만 남깁니다."""
         return [e for e in ev if train_start <= e.trading_day < test_start]
 
     def _full_breakout_train() -> list[features.BreakoutEvent]:
+        """전체 수익률·뉴스로 급등 이벤트를 만든 뒤 훈련 구간으로 필터."""
         all_ev = features.build_breakout_events(
             returns,
             news_by_calendar,
@@ -1319,7 +1342,7 @@ def _run_pipeline(
         train_snapshot.save_snapshot(train_events, set(cal_day_set), fp=fp_snap)
         print(f"학습 스냅샷 저장: {config.TRAIN_SNAPSHOT_PATH} (캘린더 {len(cal_day_set)}일)")
     else:
-        # use
+        # use | append_learning
         snap = train_snapshot.load_snapshot()
         fp_ok = snap is not None and snap.fingerprint == fp_snap
         if train_snapshot_cal_scope is not None:
@@ -1457,7 +1480,7 @@ def _run_pipeline(
                 theme_w = {}
         t_key = T.isoformat()
         frozen_items = freeze_payload.get(t_key) if config.PREDICTION_FREEZE_ENABLED else None
-        refresh_frozen_preds = train_snapshot_mode == "rebuild"
+        refresh_frozen_preds = train_snapshot_mode in ("rebuild", "append_learning")
         use_frozen = (
             config.PREDICTION_FREEZE_ENABLED
             and not refresh_frozen_preds
@@ -1555,6 +1578,7 @@ def _run_pipeline(
                 # 실제 집계는 아래 OHLCV 폴백(actual_big_movers)로 계속 진행합니다.
 
         def _actual_ret_for_code(code: str) -> float | None:
+            """관측일 T 종목 실제 수익률(OHLCV → pykrx 맵 순)."""
             a = stocks.actual_return_on_date(returns, code, T)
             if a is not None:
                 return a
@@ -1920,7 +1944,7 @@ def _run_pipeline(
     )
 
     if (
-        train_snapshot_mode == "rebuild"
+        train_snapshot_mode in ("rebuild", "append_learning")
         and train_snapshot_cal_scope is not None
         and not forward_prediction_only
     ):
@@ -2068,6 +2092,7 @@ def _render_monthly_batch(po: PipelineOut, *, test_range_label: str) -> list[Pat
     if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
 
         def _pct(num: int, den: int) -> str:
+            """late-뉴스 프로브용 백분율 문자열(분모 0이면 —)."""
             if den <= 0:
                 return "—"
             return f"{100.0 * num / den:.1f}%"
@@ -2233,10 +2258,16 @@ def main() -> None:
         if not test_days:
             print(f"구간 {d_from} ~ {d_to} 에 포함되는 거래일이 없습니다. (데이터 상한 {end_date})")
             return
-        test_days = _expand_range_test_days_with_existing_report_days(
-            test_days,
-            all_sessions=sessions,
-        )
+        if "--no-report-expand" not in sys.argv[1:]:
+            test_days = _expand_range_test_days_with_existing_report_days(
+                test_days,
+                all_sessions=sessions,
+            )
+        else:
+            print(
+                "--no-report-expand: 인자 구간 거래일만 사용합니다(기존 월간 리포트 날짜 병합 안 함).",
+                flush=True,
+            )
 
         future_td = [t for t in test_days if t > today]
         if future_td:
@@ -2255,6 +2286,13 @@ def main() -> None:
                     f"관측일 T={t} 14:30 전: 해당일 캘린더 뉴스는 수집하지 않습니다.",
                     flush=True,
                 )
+
+        if snap_mode == "append_learning":
+            print(
+                "--append-rebuild-learning: 급등-뉴스 스냅샷·ML joblib 은 재사용하고, "
+                f"거래일 {len(test_days)}일 예측·freeze·rebuild_learning 병합만 수행합니다.",
+                flush=True,
+            )
 
         po = _run_pipeline(
             test_days,

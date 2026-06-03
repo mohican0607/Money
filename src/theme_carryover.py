@@ -24,14 +24,17 @@ _CACHE_PAYLOAD: dict[str, Any] | None = None
 
 
 def snapshot_path() -> Path:
+    """일별 테마 스냅샷 JSON 파일 경로(``daily_theme_snapshots.json``)."""
     return _SNAPSHOT_PATH
 
 
 def _default_payload() -> dict[str, Any]:
+    """빈 ``by_day`` 를 가진 기본 스냅샷 딕셔너리."""
     return {"version": 1, "by_day": {}}
 
 
 def _load_payload() -> dict[str, Any]:
+    """디스크 JSON을 읽어 모듈 캐시에 두고 반환. 없거나 손상 시 기본 페이로드."""
     global _CACHE_MTIME, _CACHE_PAYLOAD
     p = _SNAPSHOT_PATH
     if not p.is_file():
@@ -60,11 +63,13 @@ def _load_payload() -> dict[str, Any]:
 
 
 def _invalidate_cache() -> None:
+    """메모리 캐시(``_CACHE_MTIME``·``_CACHE_PAYLOAD``)를 비웁니다."""
     global _CACHE_MTIME, _CACHE_PAYLOAD
     _CACHE_MTIME, _CACHE_PAYLOAD = None, None
 
 
 def _save_payload(payload: dict[str, Any]) -> None:
+    """스냅샷 JSON을 디스크에 쓰고 메모리 캐시를 무효화합니다."""
     _SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {"version": 1, "by_day": dict(payload.get("by_day") or {})}
     _SNAPSHOT_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -72,6 +77,7 @@ def _save_payload(payload: dict[str, Any]) -> None:
 
 
 def _normalize_weights(c: Counter, *, top_n: int = 96) -> dict[str, float]:
+    """키워드 카운터를 최댓값 기준 [0, 1] 가중치 dict로 정규화(상위 ``top_n``)."""
     if not c:
         return {}
     mx = max(c.values())
@@ -116,6 +122,7 @@ def _normalize_signed_weights(
 
 
 def _early_blob_for_trading_day(news_by_calendar: dict[date, list[dict[str, str]]], d: date) -> str:
+    """거래일 ``d`` 의 early 뉴스 텍스트 blob(컷오프 설정에 따라 집계 방식 분기)."""
     if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
         blob, _ = news.aggregate_early_late_for_target(news_by_calendar, d)
         return blob

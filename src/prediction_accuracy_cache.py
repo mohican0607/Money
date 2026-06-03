@@ -41,6 +41,7 @@ def _ratio(pred_ret: float | None, actual_ret: float | None) -> float | None:
 
 
 def _default_payload() -> dict:
+    """빈 추적 캐시 페이로드(version 4) 기본 구조를 만듭니다."""
     return {
         "version": 4,
         "t_code_ratio": {},
@@ -53,15 +54,31 @@ def _default_payload() -> dict:
     }
 
 
+_payload_cache: dict | None = None
+
+
+def _invalidate_payload_cache() -> None:
+    """프로세스 내 ``_payload_cache`` 를 비워 다음 ``_load_payload`` 가 디스크를 다시 읽게 합니다."""
+    global _payload_cache
+    _payload_cache = None
+
+
 def _load_payload() -> dict:
+    """``prediction_accuracy_track.json`` 을 읽어 정규화된 페이로드를 돌려줍니다. 프로세스 내 캐시가 있으면 디스크를 건너뜁니다(``_save_payload`` 시 무효화)."""
+    global _payload_cache
+    if _payload_cache is not None:
+        return _payload_cache
     if not TRACK_PATH.is_file():
-        return _default_payload()
+        _payload_cache = _default_payload()
+        return _payload_cache
     try:
         raw = json.loads(TRACK_PATH.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return _default_payload()
+        _payload_cache = _default_payload()
+        return _payload_cache
     if not isinstance(raw, dict):
-        return _default_payload()
+        _payload_cache = _default_payload()
+        return _payload_cache
     out = _default_payload()
     tr = raw.get("t_code_ratio")
     if isinstance(tr, dict):
@@ -93,10 +110,13 @@ def _load_payload() -> dict:
     kw = raw.get("keyword_feedback_weights")
     if isinstance(kw, dict):
         out["keyword_feedback_weights"] = kw
+    _payload_cache = out
     return out
 
 
 def _save_payload(payload: dict) -> None:
+    """페이로드를 디스크에 저장하고 메모리 캐시를 무효화합니다."""
+    _invalidate_payload_cache()
     TRACK_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": 4,
@@ -158,6 +178,7 @@ def merge_keyword_feedback_from_day_reports(
                 weights[k] = v
 
     def _keywords_from_row(r: dict) -> list[str]:
+        """rows_compare 행에서 2자 이상 키워드 문자열 목록을 추출."""
         kws = r.get("keywords") or []
         out: list[str] = []
         if isinstance(kws, list):
@@ -213,6 +234,7 @@ def merge_keyword_feedback_from_day_reports(
 
 
 def _key(t: object, code: str) -> str:
+    """관측일 T와 종목코드를 ``T:code`` 형식 키로 만듭니다."""
     td = getattr(t, "isoformat", lambda: str(t))()
     return f"{td}:{str(code).zfill(6)}"
 
@@ -407,6 +429,7 @@ def merge_all_pred_history_from_day_reports(
 
 
 def _parse_hist_t_iso(t_raw: object) -> date | None:
+    """이력 항목 ``t`` ISO 문자열을 ``date`` 로 파싱(실패 시 None)."""
     if not t_raw:
         return None
     parts = str(t_raw).strip().split("-")
@@ -465,14 +488,11 @@ def _backfill_closed_high_pred_actuals_from_market(day_reports: list) -> None:
         _save_payload(p)
 
 
-def _pred_history_for_code(code: str, *, history_key: str) -> list[dict]:
-    """관측일 내림차순 ``[{t, pred_pct, actual_pct}, ...]``.
-
-    ``high_pred_by_code`` 에 ``actual_pct`` 가 비어 있어도 ``t_code_actual_pct``(관측일·코드별 실제%)가
-    있으면 툴팁에 실제%를 채웁니다(예측 전용 실행 후 전체 재생성 시 이력만 남는 경우).
-    """
+def _pred_history_for_code_from_payload(
+    payload: dict, code: str, *, history_key: str
+) -> list[dict]:
+    """``_load_payload()`` 결과를 재사용해 종목별 예측 이력을 만듭니다."""
     c = str(code).zfill(6)
-    payload = _load_payload()
     act_map: dict[str, float] = dict(payload.get("t_code_actual_pct") or {})
     hist_obj = payload.get(history_key)
     if not isinstance(hist_obj, dict):
@@ -495,15 +515,27 @@ def _pred_history_for_code(code: str, *, history_key: str) -> list[dict]:
     return out
 
 
+def _pred_history_for_code(code: str, *, history_key: str) -> list[dict]:
+    """관측일 내림차순 ``[{t, pred_pct, actual_pct}, ...]``.
+
+    ``high_pred_by_code`` 에 ``actual_pct`` 가 비어 있어도 ``t_code_actual_pct``(관측일·코드별 실제%)가
+    있으면 툴팁에 실제%를 채웁니다(예측 전용 실행 후 전체 재생성 시 이력만 남는 경우).
+    """
+    return _pred_history_for_code_from_payload(_load_payload(), code, history_key=history_key)
+
+
 def high_pred_history_for_code(code: str) -> list[dict]:
+    """급등 기준(예: 20%) 이상 예측 이력을 관측일 내림차순으로 돌려줍니다."""
     return _pred_history_for_code(code, history_key="high_pred_by_code")
 
 
 def mid_pred_history_for_code(code: str) -> list[dict]:
+    """10~20% 구간 예측 이력을 관측일 내림차순으로 돌려줍니다."""
     return _pred_history_for_code(code, history_key="mid_pred_by_code")
 
 
 def all_pred_history_for_code(code: str) -> list[dict]:
+    """10% 이상 예측 이력(고·중 구간 포함)을 관측일 내림차순으로 돌려줍니다."""
     return _pred_history_for_code(code, history_key="all_pred_by_code")
 
 
@@ -544,36 +576,57 @@ def _patch_today_open_session_intraday_in_histories(day_reports: list) -> None:
             r["pred_high_history"] = new_hist
 
 
+def _mean_ratio_by_code_from_payload(payload: dict) -> dict[str, float]:
+    """``t_code_ratio`` 키 ``T:code`` 를 종목별 평균 달성률로 집계."""
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for k, v in (payload.get("t_code_ratio") or {}).items():
+        if not isinstance(k, str) or ":" not in k or not isinstance(v, (int, float)):
+            continue
+        _t, code = k.rsplit(":", 1)
+        c = str(code).zfill(6)
+        fv = min(float(v), 1.0)
+        sums[c] = sums.get(c, 0.0) + fv
+        counts[c] = counts.get(c, 0) + 1
+    return {c: sums[c] / counts[c] for c in sums if counts.get(c)}
+
+
 def enrich_rows_pred_high_history(day_reports: list) -> None:
     """각 ``rows_compare`` 행에 구간별 예측 이력 리스트를 붙입니다."""
+    payload = _load_payload()
     for dr in day_reports:
         for r in dr.rows_compare:
             code = str(r.get("code", "")).zfill(6)
-            r["pred_high_history"] = high_pred_history_for_code(code)
-            r["pred_mid_history"] = mid_pred_history_for_code(code)
-            r["pred_all_history"] = all_pred_history_for_code(code)
+            r["pred_high_history"] = _pred_history_for_code_from_payload(
+                payload, code, history_key="high_pred_by_code"
+            )
+            r["pred_mid_history"] = _pred_history_for_code_from_payload(
+                payload, code, history_key="mid_pred_by_code"
+            )
+            r["pred_all_history"] = _pred_history_for_code_from_payload(
+                payload, code, history_key="all_pred_by_code"
+            )
     _patch_today_open_session_intraday_in_histories(day_reports)
     _backfill_closed_high_pred_actuals_from_market(day_reports)
+    payload = _load_payload()
     for dr in day_reports:
         for r in dr.rows_compare:
             code = str(r.get("code", "")).zfill(6)
-            r["pred_high_history"] = high_pred_history_for_code(code)
-            r["pred_mid_history"] = mid_pred_history_for_code(code)
-            r["pred_all_history"] = all_pred_history_for_code(code)
+            r["pred_high_history"] = _pred_history_for_code_from_payload(
+                payload, code, history_key="high_pred_by_code"
+            )
+            r["pred_mid_history"] = _pred_history_for_code_from_payload(
+                payload, code, history_key="mid_pred_by_code"
+            )
+            r["pred_all_history"] = _pred_history_for_code_from_payload(
+                payload, code, history_key="all_pred_by_code"
+            )
 
 
 def mean_ratio_for_code(code: str) -> float | None:
     """캐시에 있는 해당 종목의 모든 관측일 비율 산술 평균."""
     c = str(code).zfill(6)
-    suffix = f":{c}"
-    vals = [
-        min(float(v), 1.0)
-        for k, v in (_load_payload().get("t_code_ratio") or {}).items()
-        if isinstance(k, str) and k.endswith(suffix) and isinstance(v, (int, float))
-    ]
-    if not vals:
-        return None
-    return sum(vals) / len(vals)
+    return _mean_ratio_by_code_from_payload(_load_payload()).get(c)
 
 
 def export_gap_rollup_for_calendar_range(s0: date, s1: date) -> dict[str, object]:
@@ -675,6 +728,7 @@ def build_feedback_context() -> dict[str, object]:
 
 
 def _signal_bucket_key(*, pred_ret: float, keyword_hits: int, mention_score: float) -> str:
+    """예측%·키워드 hit·mention 구간을 묶은 피드백 버킷 키."""
     hit_band = "h0" if keyword_hits <= 0 else ("h1_2" if keyword_hits <= 2 else ("h3_5" if keyword_hits <= 5 else "h6p"))
     m = max(0.0, min(1.0, float(mention_score)))
     mention_band = "m0" if m < 0.08 else ("m1" if m < 0.25 else ("m2" if m < 0.45 else "m3"))
@@ -684,6 +738,7 @@ def _signal_bucket_key(*, pred_ret: float, keyword_hits: int, mention_score: flo
 
 
 def _signal_bucket_mean_stats(payload: dict) -> dict[str, dict[str, float]]:
+    """``feedback_bucket_stats`` 를 버킷별 평균 달성률·괴리로 요약."""
     raw = payload.get("feedback_bucket_stats")
     if not isinstance(raw, dict):
         return {}
@@ -752,6 +807,7 @@ def apply_cached_cumulative_fallback(day_reports: list) -> int:
         값을 채운 행 수.
     """
     n = 0
+    means = _mean_ratio_by_code_from_payload(_load_payload())
     for dr in day_reports:
         for r in dr.rows_compare:
             if r.get("actual_ret") is not None:
@@ -759,7 +815,7 @@ def apply_cached_cumulative_fallback(day_reports: list) -> int:
             if r.get("cumulative_accuracy_avg") is not None:
                 continue
             code = str(r.get("code", "")).zfill(6)
-            m = mean_ratio_for_code(code)
+            m = means.get(code)
             if m is None:
                 continue
             r["cumulative_accuracy_avg"] = m

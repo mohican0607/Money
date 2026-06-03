@@ -68,6 +68,7 @@ def _probe_naver_credentials() -> None:
 
 
 def _parse_yyyymmdd(s: str) -> date:
+    """CLI 인자 ``YYYYMMDD`` 를 ``date`` 로 변환."""
     s = s.strip()
     if len(s) != 8 or not s.isdigit():
         raise ValueError("날짜는 YYYYMMDD 8자리")
@@ -76,6 +77,7 @@ def _parse_yyyymmdd(s: str) -> date:
 
 
 def _unlink_cache_range(d0: date, d1: date) -> None:
+    """구간 ``d0``~``d1`` 각 일자의 네이버 뉴스 캐시 파일을 삭제(``--force``)."""
     d = d0
     while d <= d1:
         for p in news.naver_day_cache_paths_for_purge(d):
@@ -86,6 +88,7 @@ def _unlink_cache_range(d0: date, d1: date) -> None:
 
 
 def main() -> int:
+    """지정 일(또는 구간)의 네이버 뉴스만 수집해 일별 JSON 캐시에 저장."""
     argv = [a for a in sys.argv[1:] if a]
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)

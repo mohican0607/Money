@@ -22,6 +22,7 @@ from . import config, features, news, predict, trading_calendar, train_snapshot,
 def _news_blob_for_trading_day(
     news_by_calendar: dict[date, list[dict[str, str]]], t_day: date
 ) -> str:
+    """거래일 ``t_day`` 의 early 뉴스 텍스트 blob."""
     if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
         blob, _ = news.aggregate_early_late_for_target(news_by_calendar, t_day)
         return blob
@@ -30,6 +31,7 @@ def _news_blob_for_trading_day(
 
 
 def _theme_seed_lexicon() -> set[str]:
+    """설정 뉴스 시드 쿼리에서 테마 프록시용 소문자 키워드 집합."""
     seeds: set[str] = set()
     for s in config.NEWS_QUERY_SEEDS + config.GOOGLE_NEWS_RSS_QUERY_SEEDS_EXTRA:
         t = str(s).strip().lower()
@@ -101,6 +103,7 @@ def _merge_by_trading_day(
     old_rows: list[dict[str, Any]] | None,
     new_rows: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
+    """``trading_day`` 키로 일자별 행을 병합. 동일 일자는 ``new_rows`` 가 덮어씀."""
     by: dict[str, dict[str, Any]] = {}
     for row in old_rows or []:
         if isinstance(row, dict) and row.get("trading_day"):
@@ -114,6 +117,7 @@ def _merge_by_trading_day(
 def _recompute_rebuild_learning_daily_and_summary(
     daily: list[dict[str, Any]], thr: float
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """병합된 ``daily`` 에 누적 통계 필드를 채우고 구간 ``summary`` 를 재계산."""
     cum_abs_gap = 0.0
     cum_gap_n = 0
     cum_ph_hits = 0
@@ -196,6 +200,7 @@ def _recompute_rebuild_learning_daily_and_summary(
 
 
 def merge_rebuild_learning_dict(old: dict[str, Any] | None, new: dict[str, Any]) -> dict[str, Any]:
+    """기존·신규 ``rebuild_learning`` 을 일자 병합 후 요약·``merge_runs`` 를 갱신."""
     old = old if isinstance(old, dict) else {}
     thr = float(
         new.get("big_move_threshold")
@@ -240,6 +245,7 @@ def merge_rebuild_learning_dict(old: dict[str, Any] | None, new: dict[str, Any])
 def _merge_gap_rollup(
     old: dict[str, Any] | None, new: dict[str, Any]
 ) -> dict[str, Any]:
+    """``prediction_gap_rollup`` 에 새 구간 스냅샷을 추가하고 ``latest`` 를 갱신."""
     hist = list((old or {}).get("range_exports") or [])
     hist.append(new)
     hist = hist[-36:]

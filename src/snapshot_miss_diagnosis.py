@@ -17,6 +17,7 @@ from .report import DayReport
 
 
 def _pct_from_actual_ratio(ar: object) -> float | None:
+    """비율 형태 실제 수익률(예: 0.215)을 퍼센트(21.5)로 변환."""
     if ar is None:
         return None
     try:
@@ -81,6 +82,7 @@ def _tags_for_pred_miss(
     thr_pct: float,
     actual_pct: float,
 ) -> tuple[list[str], list[str]]:
+    """고예측·실제 미달 행에 대한 원인 태그·한글 힌트 목록."""
     tags: list[str] = []
     hints: list[str] = []
     if actual_pct < 0:

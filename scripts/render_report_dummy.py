@@ -19,10 +19,12 @@ from src import config, predict, report  # noqa: E402
 
 
 def _hit(cal: date, title: str, matched: str, link: str = "https://example.com/dummy") -> dict:
+    """더미 리포트용 뉴스 히트 행 dict."""
     return {"day": cal, "title": title, "matched": matched, "link": link}
 
 
 def main() -> None:
+    """더미 ``DayReport`` 로 단일일 HTML 리포트 샘플을 생성."""
     n_day = date(2026, 4, 10)
     t_day = date(2026, 4, 13)
 

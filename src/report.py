@@ -1751,6 +1751,7 @@ _DATED_N_CSS_INNER = _m_dated_style.group(1) if _m_dated_style else ""
 
 
 def _dated_n_block_markers(n_compact: str) -> tuple[str, str]:
+    """누적 HTML에서 기준일 N 블록 경계 HTML 주석 ``(begin, end)``."""
     return (
         f"<!-- MONEY_DATED_N_BEGIN:{n_compact} -->",
         f"<!-- MONEY_DATED_N_END:{n_compact} -->",
@@ -1758,6 +1759,7 @@ def _dated_n_block_markers(n_compact: str) -> tuple[str, str]:
 
 
 def _dated_n_block_pattern(n_compact: str) -> re.Pattern[str]:
+    """기준일 ``n_compact`` 블록 전체를 찾는 정규식(교체·삭제용)."""
     beg, end = _dated_n_block_markers(n_compact)
     return re.compile(
         re.escape(beg) + r".*?" + re.escape(end) + r"\s*",
@@ -1766,6 +1768,7 @@ def _dated_n_block_pattern(n_compact: str) -> re.Pattern[str]:
 
 
 def _strip_html_body_inner(full_html: str) -> str:
+    """전체 HTML에서 ``<body>`` 내부 문자열만 추출."""
     m = re.search(r"<body[^>]*>(.*)</body>", full_html, re.DOTALL | re.IGNORECASE)
     if not m:
         raise ValueError("dated N HTML에 <body>…</body>가 없습니다.")
@@ -1828,6 +1831,7 @@ def _rollup_html_shell() -> str:
 
 
 def _has_money_dated_main(html: str) -> bool:
+    """누적 리포트용 ``money-dated-rollup`` main 요소가 있는지 여부."""
     return (
         re.search(r'<main\s+id="money-dated-rollup"\s*>', html, re.IGNORECASE)
         is not None
@@ -1835,6 +1839,7 @@ def _has_money_dated_main(html: str) -> bool:
 
 
 def _insert_into_money_dated_main(html: str, wrapped_block: str) -> str:
+    """``money-dated-rollup`` main 시작 직후에 블록 HTML을 삽입."""
     main_open = re.search(
         r'(<main\s+id="money-dated-rollup"\s*>\s*)',
         html,
@@ -1874,6 +1879,7 @@ def merge_dated_n_rollup(*, rollup_path: Path, n_compact: str, body_inner: str) 
     rollup_path.parent.mkdir(parents=True, exist_ok=True)
 
     def _write_out(s: str) -> None:
+        """누적 HTML을 디스크에 쓰고 인터랙션 스크립트를 보강."""
         rollup_path.write_text(_ensure_report_interaction_script(s), encoding="utf-8")
 
     if not rollup_path.exists():

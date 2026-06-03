@@ -189,6 +189,7 @@ def _download_ohlcv_tasks(
 
 
 def _normalize_ohlcv_df(df: pd.DataFrame) -> pd.DataFrame:
+    """OHLCV DataFrame의 ``Date``·``Code`` 컬럼 형식을 파이프라인 공통 스키마로 맞춤."""
     if "Date" not in df.columns and "index" in df.columns:
         df = df.rename(columns={"index": "Date"})
     df = df.copy()

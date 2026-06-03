@@ -28,10 +28,12 @@ _PROVIDER_DIRS = frozenset({"naver", "google", "mock", "none"})
 
 
 def main() -> int:
+    """구 뉴스 캐시를 ``<provider>/YYYY/day_*.json`` 레이아웃으로 이동."""
     news._CACHE_NEWS.mkdir(parents=True, exist_ok=True)
     moved = conflict = 0
 
     def try_move_to_provider_year(src: Path, provider: str, year_key: str, fname: str) -> None:
+        """소스 JSON을 ``news/<provider>/YYYY/`` 로 이동. 대상 존재 시 건너뜀."""
         nonlocal moved, conflict
         dest_dir = news._CACHE_NEWS / provider / year_key
         dest = dest_dir / fname

@@ -39,15 +39,18 @@ _KIND_RULES: list[tuple[str, str]] = [
 
 
 def naver_disclosure_url(code: str) -> str:
+    """네이버 금융 종목 공시 목록 페이지 URL."""
     c = str(code).zfill(6)
     return f"https://finance.naver.com/item/news_notice.naver?code={c}"
 
 
 def _day_file(target: date) -> Path:
+    """캘린더 일 ``target`` 의 공시 일별 캐시 JSON 경로."""
     return _CACHE_DISC / target.strftime("%Y") / f"day_{target.strftime('%Y%m%d')}.json"
 
 
 def _classify_kind(title: str) -> str:
+    """공시 제목에서 간단 종류 태그(거래정지·실적 등)를 추출."""
     t = (title or "").strip()
     for needle, tag in _KIND_RULES:
         if needle in t:
@@ -56,6 +59,7 @@ def _classify_kind(title: str) -> str:
 
 
 def _parse_ymd_dot(s: str) -> date | None:
+    """``YYYY.MM.DD`` 형식 문자열을 ``date`` 로 파싱. 실패 시 ``None``."""
     m = re.search(r"(\d{4})\.(\d{2})\.(\d{2})", (s or "").strip())
     if not m:
         return None
@@ -65,6 +69,7 @@ def _parse_ymd_dot(s: str) -> date | None:
 def _fetch_one_code_on_day(
     session: requests.Session, code: str, target: date, *, max_pages: int = 2
 ) -> list[dict]:
+    """한 종목·한 캘린더일의 네이버 공시 행을 페이지네이션으로 수집."""
     code = str(code).zfill(6)
     out: list[dict] = []
     for page in range(1, max_pages + 1):

@@ -71,6 +71,7 @@ MIN_POS_SAMPLES = 25
 def _early_blob_for_trading_day(
     news_by_calendar: dict[date, list[dict[str, str]]], d: date
 ) -> str:
+    """거래일 ``d`` 의 early 뉴스 텍스트 blob."""
     if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
         blob, _ = news.aggregate_early_late_for_target(news_by_calendar, d)
         return blob
@@ -86,6 +87,7 @@ def _ohlcv_lookup(returns_ml: pd.DataFrame) -> pd.DataFrame:
     return t.set_index(["_d", "_c"])
 
 
+@lru_cache(maxsize=512)
 def _ks11_market_feats(trading_day: date) -> tuple[float, float]:
     """
     시장흐름 피처(지수):
@@ -97,9 +99,9 @@ def _ks11_market_feats(trading_day: date) -> tuple[float, float]:
     except ValueError:
         return 0.0, 0.0
     # 충분한 과거를 확보하기 위해 넉넉히 60일 범위로 로드(캐시됨)
-    start = prev - pd.Timedelta(days=90)
-    end = prev + pd.Timedelta(days=2)
-    df = _load_ks11_cached(start.date(), end.date())
+    start_d = pd.Timestamp(prev - pd.Timedelta(days=90)).date()
+    end_d   = pd.Timestamp(prev + pd.Timedelta(days=2)).date()
+    df      = _load_ks11_cached(start_d, end_d)
     if df is None or df.empty:
         return 0.0, 0.0
     r1 = market_index.index_daily_return_pct(df, prev)
@@ -129,12 +131,14 @@ def _ks11_market_feats(trading_day: date) -> tuple[float, float]:
 
 @lru_cache(maxsize=4)
 def _load_ks11_cached(start: date, end: date) -> pd.DataFrame:
+    """KOSPI(KS11) 지수 OHLCV를 구간별로 로드(``lru_cache``)."""
     try:
         return market_index.load_index_frame("KS11", start, end)
     except Exception:
         return pd.DataFrame()
 
 def _price_feats_row(idx: pd.DataFrame | None, code: str, trading_day: date) -> list[float]:
+    """``returns_ml`` 인덱스에서 종목·거래일 시세 피처 5개. 없으면 0으로 채움."""
     cols = (
         "ret_lag1",
         "log_vol_lag1",
@@ -217,6 +221,11 @@ def _build_training_arrays(
     pos_boost_keys: set[tuple[str, str]] | None = None,
     neg_boost_keys: set[tuple[str, str]] | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | None:
+    """
+    훈련 구간 거래일별 급등(양)·비급등(음) 샘플 행을 만들어 ``(X, y)`` 배열로 반환.
+
+    표본 부족 시 ``None``.
+    """
     rng = np.random.default_rng(42)
     rows_x: list[list[float]] = []
     rows_y: list[int] = []
@@ -325,6 +334,7 @@ def _build_training_arrays(
 
 
 def _model_path(fp: str) -> Path:
+    """스냅샷 지문 ``fp`` 에 대응하는 ML 랭커 joblib 캐시 경로."""
     return config.CACHE_DIR / "train" / f"move_ranker_v{ML_MODEL_VERSION}_{fp}.joblib"
 
 

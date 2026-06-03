@@ -46,6 +46,7 @@ from src import config, stocks
 
 
 def _parse_yyyymmdd(s: str) -> date:
+    """CLI 인자 ``YYYYMMDD`` 를 ``date`` 로 변환."""
     s = s.strip()
     if len(s) != 8 or not s.isdigit():
         raise ValueError("날짜는 YYYYMMDD 8자리 두 개 또는 인자 생략")

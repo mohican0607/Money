@@ -44,6 +44,7 @@ def fingerprint() -> str:
 
 
 def _event_to_json(e: BreakoutEvent) -> dict[str, Any]:
+    """``BreakoutEvent`` 를 스냅샷 JSON 행 dict로 직렬화."""
     return {
         "trading_day": e.trading_day.isoformat(),
         "code": e.code,
@@ -55,6 +56,7 @@ def _event_to_json(e: BreakoutEvent) -> dict[str, Any]:
 
 
 def _event_from_json(d: dict[str, Any]) -> BreakoutEvent:
+    """스냅샷 JSON 행 dict에서 ``BreakoutEvent`` 를 복원."""
     return BreakoutEvent(
         trading_day=date.fromisoformat(str(d["trading_day"])),
         code=str(d["code"]),
@@ -73,6 +75,7 @@ class TrainSnapshot:
 
 
 def load_snapshot(path: Path | None = None) -> TrainSnapshot | None:
+    """훈련 스냅샷 JSON을 읽어 ``TrainSnapshot`` 으로 반환. 없거나 형식 불일치 시 ``None``."""
     p = path or config.TRAIN_SNAPSHOT_PATH
     if not p.is_file():
         return None
@@ -116,6 +119,7 @@ def save_snapshot(
     path: Path | None = None,
     fp: str | None = None,
 ) -> None:
+    """급등 이벤트·캘린더 커버리지를 JSON에 저장. 기존 확장 필드(``rebuild_learning`` 등)는 보존."""
     p = path or config.TRAIN_SNAPSHOT_PATH
     p.parent.mkdir(parents=True, exist_ok=True)
     fp_use = fp if fp is not None else fingerprint()

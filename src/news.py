@@ -51,15 +51,18 @@ class _NewsHttpCountSink:
     __slots__ = ("_lock", "naver", "rss")
 
     def __init__(self) -> None:
+        """HTTP 호출 카운터(``naver``·``rss``)를 0으로 초기화."""
         self._lock = threading.Lock()
         self.naver = 0
         self.rss = 0
 
     def add_naver(self, n: int = 1) -> None:
+        """네이버 API HTTP 호출 수를 ``n`` 만큼 증가."""
         with self._lock:
             self.naver += n
 
     def add_rss(self, n: int = 1) -> None:
+        """RSS HTTP 호출 수를 ``n`` 만큼 증가."""
         with self._lock:
             self.rss += n
 
@@ -745,6 +748,7 @@ def _naver_rows_for_ticker_on_day(
 
 
 def _ticker_day_fetch_worker(payload: tuple[_NewsHttpCountSink, str, str, date, str]) -> list[dict[str, str]]:
+    """스레드 풀 워커: 한 종목·한 일자 네이버 뉴스를 조회(전용 Session)."""
     http_sink, code, name, target, date_ko = payload
     sess = requests.Session()
     try:
@@ -952,6 +956,7 @@ def fetch_news_for_calendar_day(
     legacy_provider_monthly = _legacy_provider_monthly_news_json_path(target)
 
     def _should_refetch_empty_cache(cached: object) -> bool:
+        """빈 리스트 ``[]`` 만 저장된 실패 캐시면 재수집 대상인지 판별."""
         # 이전에 실패 후 [] 만 저장된 캐시는 무시하고 재수집
         if not isinstance(cached, list) or len(cached) != 0:
             return False
@@ -971,6 +976,7 @@ def fetch_news_for_calendar_day(
         return False
 
     def _migrate_from(path: Path) -> list | None:
+        """구 캐시 경로에서 읽어 현재 ``day_*.json`` 으로 이전. 빈 캐시면 삭제 후 ``None``."""
         if not path.is_file():
             return None
         cached = json.loads(path.read_text(encoding="utf-8"))
