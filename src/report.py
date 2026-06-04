@@ -568,7 +568,7 @@ _TEMPLATE = r"""
           </td>
           <td data-sort-col="stock" data-sort-value="{{ r.name }} {{ r.code }}">
             {{ stock_name_link(r.code, r.name) }}
-            <div class="pill">{{ r.code }}</div>
+            {# <div class="pill">{{ r.code }}</div> #}
           </td>
           <td class="{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
             {{ actual_ret_cell(r) }}
@@ -635,7 +635,8 @@ _TEMPLATE = r"""
     {% for fn in d.false_negatives %}
     <div class="fn-block">
       <strong>{{ stock_name_link(fn.code, fn.name) }}</strong>
-      ({{ fn.code }}) · 예측 {{ "%.2f"|format(fn.pred_ret) }}% · 실제
+      {# ({{ fn.code }}) · #}
+      예측 {{ "%.2f"|format(fn.pred_ret) }}% · 실제
       <span class="bad">{{ "%.2f"|format(fn.actual_ret * 100) }}%</span>
       <p class="reasons" style="margin:8px 0;">{{ fn.analysis }}</p>
       <p class="reasons"><em>예측 시 참고한 키워드:</em>
@@ -1053,7 +1054,7 @@ _COMPACT_TEMPLATE = r"""
       </td>
       <td data-sort-col="stock" data-sort-value="{{ r.name }} {{ r.code }}">
         {{ stock_name_link(r.code, r.name) }}
-        <div class="pill">{{ r.code }}</div>
+        {# <div class="pill">{{ r.code }}</div> #}
       </td>
       <td class="{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
         {{ actual_ret_cell_monthly(r) }}
@@ -1580,7 +1581,7 @@ _DATED_N_TEMPLATE = r"""
           </td>
           <td data-sort-col="stock" data-sort-value="{{ r.name }} {{ r.code }}">
             {{ stock_name_link(r.code, r.name) }}
-            <div class="pill">{{ r.code }}</div>
+            {# <div class="pill">{{ r.code }}</div> #}
           </td>
           <td class="num {% if not meta.prediction_only and r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
             {{ actual_ret_cell_dated(r) }}
@@ -1724,7 +1725,8 @@ _DATED_N_TEMPLATE = r"""
     {% for fn in day.false_negatives %}
     <div class="fn-block">
       <strong>{{ stock_name_link(fn.code, fn.name) }}</strong>
-      ({{ fn.code }}) · 예측 {{ "%.2f"|format(fn.pred_ret) }}% · 실제
+      {# ({{ fn.code }}) · #}
+      예측 {{ "%.2f"|format(fn.pred_ret) }}% · 실제
       <span class="bad">{{ "%.2f"|format(fn.actual_ret * 100) }}%</span>
       <p style="margin:8px 0 0 0;color:var(--muted);">{{ fn.analysis }}</p>
     </div>
