@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import html
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -97,6 +98,154 @@ def build_market_theme_flow(
             }
         )
     return out
+
+
+def theme_overlap_for_code(row: dict[str, Any] | None, code: str) -> list[str]:
+    """``market_theme_flow`` 일자 행에서 종목코드별 early 뉴스·종목명 키워드 겹침."""
+    if not row:
+        return []
+    c = str(code).zfill(6)
+    for leader in row.get("theme_leaders_10pct_plus") or []:
+        if not isinstance(leader, dict):
+            continue
+        if str(leader.get("code", "")).zfill(6) == c:
+            ov = leader.get("name_keyword_overlap_with_news")
+            if isinstance(ov, list):
+                return [str(x) for x in ov if str(x).strip()]
+    return []
+
+
+def format_market_theme_flow_html(
+    row: dict[str, Any] | None,
+    *,
+    news_cutoff_label: str,
+    threshold_pct: float = 20.0,
+) -> str:
+    """
+    ``build_market_theme_flow`` 한 일자 결과를 리포트용 HTML로 변환합니다.
+
+    뉴스 blob은 관측일 ``T`` 예측·학습과 동일한 **early**(``T`` 직전 거래일 ``news_cutoff_label`` 까지)입니다.
+    """
+    if not row:
+        return ""
+    t_iso = str(row.get("trading_day") or "")
+    try:
+        t_day = date.fromisoformat(t_iso)
+    except ValueError:
+        t_day = None
+    n_buy = (
+        trading_calendar.last_trading_day_before(t_day).isoformat()
+        if t_day is not None
+        else "직전 거래일"
+    )
+    n20 = int(row.get("n_movers_ge_20pct") or 0)
+    n10 = int(row.get("n_movers_10_to_20pct") or 0)
+    seeds = row.get("theme_seed_hits") or []
+    top_kw = row.get("top_keywords_sample") or []
+    leaders = row.get("theme_leaders_10pct_plus") or []
+    news_chars = int(row.get("news_chars") or 0)
+
+    def _esc(s: str) -> str:
+        return html.escape(s, quote=True)
+
+    parts = [
+        "<p class=\"sub\" style=\"margin:0 0 10px;line-height:1.55\">",
+        f"<strong>{_esc(t_iso)}</strong> 종가 기준 "
+        f"<strong>10%↑ {n10 + n20}</strong>종 "
+        f"(그중 ≥{threshold_pct:.0f}% <strong>{n20}</strong>종). "
+        f"아래 뉴스·키워드 상관은 예측·ML·휴리스틱과 같은 입력 시점 "
+        f"(<strong>{_esc(n_buy)}</strong> 거래일 <strong>{_esc(news_cutoff_label)}</strong>(KST)까지 early, "
+        f"약 <strong>{news_chars:,}</strong>자)입니다.</p>",
+    ]
+    if seeds:
+        pills = "".join(
+            f'<span class="pill" style="margin:2px 4px 2px 0">{_esc(str(s))}</span>'
+            for s in seeds[:16]
+        )
+        parts.append(
+            f"<p style=\"margin:0 0 8px\"><strong>테마 시드 × 뉴스 상위 키워드</strong> {pills}</p>"
+        )
+    if top_kw:
+        kw_pills = "".join(
+            f'<span class="pill" style="margin:2px 4px 2px 0;background:#1a2d42">{_esc(str(k))}</span>'
+            for k in top_kw[:18]
+        )
+        parts.append(
+            f"<p style=\"margin:0 0 10px\"><strong>early 뉴스 상위 키워드</strong> {kw_pills}</p>"
+        )
+    if leaders:
+        parts.append(
+            "<table class=\"rows-compare\" style=\"font-size:0.82rem;margin-top:6px\">"
+            "<thead><tr>"
+            "<th>종목</th><th>등락%</th><th>종목명·early 뉴스 키워드 겹침</th>"
+            "</tr></thead><tbody>"
+        )
+        for L in leaders[:14]:
+            if not isinstance(L, dict):
+                continue
+            nm = _esc(str(L.get("name") or ""))
+            rp = L.get("return_pct")
+            rp_s = f"{float(rp):+.2f}" if rp is not None else "—"
+            ov = L.get("name_keyword_overlap_with_news") or []
+            if ov:
+                ov_s = ", ".join(_esc(str(x)) for x in ov[:8])
+            else:
+                ov_s = "<span style=\"color:var(--muted)\">겹침 없음</span>"
+            parts.append(
+                f"<tr><td>{nm}</td><td class=\"ok\" style=\"white-space:nowrap\">{rp_s}%</td>"
+                f"<td>{ov_s}</td></tr>"
+            )
+        parts.append("</tbody></table>")
+    else:
+        parts.append(
+            "<p class=\"sub\" style=\"margin:0\">당일 10% 이상 상승 종목이 없거나 집계되지 않았습니다.</p>"
+        )
+    parts.append(
+        "<p class=\"combo-tip-empty\" style=\"margin:10px 0 0;font-size:0.78em\">"
+        "종목명 토큰과 early 뉴스 키워드 집합의 단순 교집합이며, 인과·상관계수 검정이 아닙니다.</p>"
+    )
+    return "".join(parts)
+
+
+def enrich_day_reports_market_theme(
+    day_reports: list[Any],
+    news_by_calendar: dict[date, list[dict[str, str]]],
+    returns_df: pd.DataFrame,
+    listing_names: dict[str, str],
+    *,
+    news_cutoff_label: str,
+) -> list[dict[str, Any]]:
+    """
+    ``DayReport`` 목록에 ``market_theme_html`` 을 채우고, 비교 행 ``rise_reason_html`` 에
+    early 뉴스·종목명 겹침 한 줄을 덧붙입니다. 스냅샷 병합용 ``market_theme_flow`` 행 목록을 반환합니다.
+    """
+    from . import move_reference
+
+    days = sorted({dr.trading_day for dr in day_reports})
+    if not days:
+        return []
+    theme_rows = build_market_theme_flow(
+        days, news_by_calendar, returns_df, listing_names
+    )
+    by_day = {str(r.get("trading_day")): r for r in theme_rows if r.get("trading_day")}
+    thr_pct = float(config.BIG_MOVE_THRESHOLD) * 100.0
+    for dr in day_reports:
+        row = by_day.get(dr.trading_day.isoformat())
+        dr.market_theme_html = format_market_theme_flow_html(
+            row,
+            news_cutoff_label=news_cutoff_label,
+            threshold_pct=thr_pct,
+        )
+        if not row:
+            continue
+        for r in dr.rows_compare or []:
+            code = str(r.get("code", "")).zfill(6)
+            ov = theme_overlap_for_code(row, code)
+            extra = move_reference.theme_early_overlap_html(ov, news_cutoff_label=news_cutoff_label)
+            if extra:
+                base = r.get("rise_reason_html") or ""
+                r["rise_reason_html"] = base + extra
+    return theme_rows
 
 
 def _merge_by_trading_day(

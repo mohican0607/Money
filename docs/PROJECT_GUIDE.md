@@ -139,7 +139,7 @@ python main.py --rebuild-train-snapshot 20260401 20260601
 
 | 파일 | 내용 | 갱신 시점 |
 |------|------|-----------|
-| `breakout_train_snapshot.json` | `train_events`, `rebuild_learning`, `market_theme_flow`, `prediction_gap_rollup` | `--rebuild` / `--append` 말미 병합 |
+| `breakout_train_snapshot.json` | `train_events`, `rebuild_learning`, `market_theme_flow`, `prediction_gap_rollup` | `--rebuild` / `--append` 말미 병합. `market_theme_flow` 는 리포트 「당일 상승·테마와 early 뉴스 상관」에도 표시(매 구간 실행) |
 | `prediction_accuracy_track.json` | `t_code_ratio`, 종목별 예측 이력, `keyword_feedback_weights` | 매 구간 실행 말미 |
 | `prediction_freeze_by_t.json` | 관측일 T별 상위 후보·예측% 고정 | **From~To 구간** 실행마다 해당 T 재계산·저장 |
 | `daily_theme_snapshots.json` | 전일 급등·테마 가중치 | 매 거래일 파이프라인 |
@@ -156,6 +156,17 @@ python main.py --rebuild-train-snapshot 20260401 20260601
 - 괴리 통계(`mean_abs_gap_*`), `pred_high_precision_*`, false positive 키워드 누적
 
 ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 급등·오판 샘플 가중**을 적용합니다.
+
+### 4.2 예측·학습 입력 vs `market_theme_flow` (리포트)
+
+| 구분 | 시점·내용 | 학습/예측 반영 |
+|------|-----------|----------------|
+| **early 뉴스** | 관측일 `T` 직전 거래일 **14:30(KST)** 까지 (`USE_DECISION_NEWS_INTRADAY_CUTOFF`) | `train_events.news_keywords`, 휴리스틱·ML 랭커 피처 |
+| **테마 캐리오버** | `T` 직전일 급등·뉴스 → `daily_theme_snapshots.json` | `theme_carryover` 점수·ML `theme_kw_overlap` |
+| **`market_theme_flow`** | 당일 10%+ 상승 종목 vs early 뉴스 키워드·테마 시드 교집합 | 스냅샷 JSON·**리포트 표** (ML 피처로 직접 넣지 않음) |
+| **`rebuild_learning`** | 예측 괴리·미적중 진단 | ML 샘플 가중(진단 키 복제) |
+
+리포트 각 거래일 상단 **「당일 상승·테마와 예측 입력 뉴스(early) 상관」** 과 종목 **통합 보기 → 상·하락 참고** 의 「테마·early 뉴스 상관」은 위 early blob과 동일 규칙입니다.
 
 ---
 

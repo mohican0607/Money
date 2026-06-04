@@ -30,6 +30,7 @@ class DayReport:
     news_highlight_terms: list[str]
     actual_big_movers: list[dict]
     forward_observation: bool = False
+    market_theme_html: str = ""
 
 
 def naver_chart_url(code: str) -> str:
@@ -529,12 +530,21 @@ _TEMPLATE = r"""
   </div>
 </span>
 {%- endmacro %}
+{% macro market_theme_panel(d) -%}
+{% if d.market_theme_html %}
+<div class="market-theme-ref" style="margin:12px 0 16px;padding:12px 14px;background:#152232;border:1px solid #2a4a6a;border-radius:8px">
+  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">당일 상승·테마와 예측 입력 뉴스(early) 상관</h3>
+  {{ d.market_theme_html | safe }}
+</div>
+{% endif %}
+{%- endmacro %}
 {% macro day_panel(d, meta) -%}
   <section id="day-{{ d.trading_day.isoformat() }}" class="day-market-block">
     <div class="day-heading-row">
       <h2>{{ d.trading_day.isoformat() }} (거래일)</h2>
       {{ market_filter_radios(d.trading_day.isoformat(), d.forward_observation | default(false)) }}
     </div>
+    {{ market_theme_panel(d) }}
     <p class="sub">{% if meta.use_decision_cutoff %}N-1 거래일 {{ meta.cutoff_kst }}(KST)까지 반영한 {% endif %}예측 입력 뉴스 하이라이트 키워드 예시:
       {% for t in d.news_highlight_terms[:20] %}
       <span class="pill">{{ t }}</span>
@@ -590,7 +600,7 @@ _TEMPLATE = r"""
           </td>
           <td class="pred-reason">
             <span class="gap-tip combo-tip">
-              <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 이유, 예측·실제 차이, 상승 이유(참고)를 함께 보기">통합 보기</span>
+              <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 이유, 예측·실제 차이, 상·하락 참고를 함께 보기">통합 보기</span>
               <div class="gap-tip-popup combo-tip-popup" role="tooltip">
                 <div class="combo-tip-inner">
                   <div class="combo-tip-col">
@@ -608,7 +618,7 @@ _TEMPLATE = r"""
                     </div>
                   </div>
                   <div class="combo-tip-rise">
-                    <h4 class="combo-tip-h">상승 이유 (참고)</h4>
+                    <h4 class="combo-tip-h">상·하락 참고 (특징·추세·수급·시장·의견)</h4>
                     <div class="combo-tip-body">{{ r.rise_reason_html | default('') | safe }}</div>
                   </div>
                 </div>
@@ -1076,7 +1086,7 @@ _COMPACT_TEMPLATE = r"""
       </td>
       <td class="pred-reason">
         <span class="gap-tip combo-tip">
-          <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 이유, 예측·실제 차이, 상승 이유(참고)를 함께 보기">통합 보기</span>
+          <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 이유, 예측·실제 차이, 상·하락 참고를 함께 보기">통합 보기</span>
           <div class="gap-tip-popup combo-tip-popup" role="tooltip">
             <div class="combo-tip-inner">
               <div class="combo-tip-col">
@@ -1094,7 +1104,7 @@ _COMPACT_TEMPLATE = r"""
                 </div>
               </div>
               <div class="combo-tip-rise">
-                <h4 class="combo-tip-h">상승 이유 (참고)</h4>
+                <h4 class="combo-tip-h">상·하락 참고 (특징·추세·수급·시장·의견)</h4>
                 <div class="combo-tip-body">{{ r.rise_reason_html | default('') | safe }}</div>
               </div>
             </div>
@@ -1150,6 +1160,7 @@ _COMPACT_TEMPLATE = r"""
           <h2>{{ d.trading_day.isoformat() }}{% if d.forward_observation | default(false) %} <span class="pill" style="font-size:0.72rem;font-weight:500;color:var(--warn)">예측 전용</span>{% endif %}</h2>
           {{ market_filter_radios(d.trading_day.isoformat() ~ "-" ~ w.monday.isoformat(), d.forward_observation | default(false)) }}
         </div>
+        {{ market_theme_panel(d) }}
         {{ compact_day_table(d) }}
       </section>
       {% endfor %}
@@ -1181,6 +1192,7 @@ _COMPACT_TEMPLATE = r"""
       <h2>{{ d.trading_day.isoformat() }}</h2>
       {{ market_filter_radios(d.trading_day.isoformat()) }}
     </div>
+    {{ market_theme_panel(d) }}
     {{ compact_day_table(d) }}
   </section>
   {% endfor %}
@@ -1201,6 +1213,7 @@ _COMPACT_TEMPLATE = r"""
           <h2>{{ d.trading_day.isoformat() }}</h2>
           {{ market_filter_radios(d.trading_day.isoformat() ~ "-daytab-" ~ loop.index0|string) }}
         </div>
+        {{ market_theme_panel(d) }}
         {{ compact_day_table(d) }}
       </div>
     </div>
@@ -1230,6 +1243,7 @@ _COMPACT_TEMPLATE = r"""
       <h2>{{ d.trading_day.isoformat() }} · 실제·예측 {{ meta.threshold }} 이상</h2>
       {{ market_filter_radios(d.trading_day.isoformat() ~ "-single") }}
     </div>
+    {{ market_theme_panel(d) }}
     {{ compact_day_table(d, '장 전 실행 시 데이터 없음') }}
   </section>
   {% endfor %}
@@ -1632,7 +1646,7 @@ _DATED_N_TEMPLATE = r"""
           </td>
           <td class="td-center">
             <span class="gap-tip combo-tip integrate-tip">
-              <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 이유, 예측·실제 차이, 상승 이유(참고)를 함께 보기">통합 보기</span>
+              <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 이유, 예측·실제 차이, 상·하락 참고를 함께 보기">통합 보기</span>
               <div class="gap-tip-popup combo-tip-popup integrate-tip-popup" role="tooltip">
                 <div class="combo-tip-inner">
                   <div class="combo-tip-col">
@@ -1650,7 +1664,7 @@ _DATED_N_TEMPLATE = r"""
                     </div>
                   </div>
                   <div class="combo-tip-rise">
-                    <h4 class="combo-tip-h">상승 이유 (참고)</h4>
+                    <h4 class="combo-tip-h">상·하락 참고 (특징·추세·수급·시장·의견)</h4>
                     <div class="combo-tip-body">{{ r.rise_reason_html | default('') | safe }}</div>
                   </div>
                 </div>

@@ -53,6 +53,7 @@ from src import (
     disclosure,
     features,
     market_index,
+    move_reference,
     news,
     predict,
     prediction_accuracy_cache,
@@ -1873,13 +1874,20 @@ def _run_pipeline(
                 disclosure_hits=list(r.get("disclosure_hits") or []),
                 actual_intraday_pct=r.get("actual_ret_intraday_pct"),
             )
-            r["rise_reason_html"] = predict.explain_rise_reason_html(
+            r["rise_reason_html"] = move_reference.build_move_reference_html(
+                code=code_r,
+                name=str(r.get("name") or names.get(code_r, "")),
+                t_trading_day=T,
                 actual_ret=r.get("actual_ret"),
                 actual_intraday_pct=r.get("actual_ret_intraday_pct"),
-                t_trading_day=T,
                 actual_news_hits=r.get("actual_news_hits"),
+                actual_ctx_rows=actual_ctx_rows if include_target_calendar_news else None,
                 disclosure_hits=r.get("disclosure_hits"),
+                keywords=list(r.get("keywords") or []),
+                kospi_return=kospi_r,
                 news_evidence_collected=include_target_calendar_news,
+                returns_df=returns,
+                returns_ml=returns_ml,
             )
             r["rise_band"] = _rise_band_for_row(r.get("pred_ret"), r.get("actual_ret"))
 
@@ -2005,6 +2013,19 @@ def _run_pipeline(
         out_field="cumulative_accuracy_all_avg",
     )
 
+    theme_flow_rows: list[dict] = []
+    if not forward_prediction_only and day_reports:
+        _cutoff_kst = (
+            f"{config.NEWS_CUTOFF_KST_HOUR:02d}:{config.NEWS_CUTOFF_KST_MINUTE:02d}"
+        )
+        theme_flow_rows = snapshot_rebuild_learning.enrich_day_reports_market_theme(
+            day_reports,
+            news_by_calendar,
+            returns,
+            names,
+            news_cutoff_label=_cutoff_kst,
+        )
+
     if (
         train_snapshot_mode in ("rebuild", "append_learning")
         and train_snapshot_cal_scope is not None
@@ -2012,15 +2033,22 @@ def _run_pipeline(
     ):
         s0, s1 = train_snapshot_cal_scope
         rl = _build_rebuild_learning_payload(day_reports, s0, s1)["rebuild_learning"]
-        theme_days = sorted(
-            {dr.trading_day for dr in day_reports if s0 <= dr.trading_day <= s1}
-        )
-        theme = snapshot_rebuild_learning.build_market_theme_flow(
-            theme_days,
-            news_by_calendar,
-            returns,
-            names,
-        )
+        if theme_flow_rows:
+            theme = [
+                r
+                for r in theme_flow_rows
+                if s0 <= date.fromisoformat(str(r["trading_day"])) <= s1
+            ]
+        else:
+            theme_days = sorted(
+                {dr.trading_day for dr in day_reports if s0 <= dr.trading_day <= s1}
+            )
+            theme = snapshot_rebuild_learning.build_market_theme_flow(
+                theme_days,
+                news_by_calendar,
+                returns,
+                names,
+            )
         gap = prediction_accuracy_cache.export_gap_rollup_for_calendar_range(s0, s1)
         if snapshot_rebuild_learning.merge_extended_rebuild_into_snapshot(
             rebuild_learning=rl,

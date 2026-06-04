@@ -101,11 +101,16 @@ def main() -> None:
     ]
 
     for row in rows:
-        row["rise_reason_html"] = predict.explain_rise_reason_html(
-            actual_ret=row.get("actual_ret"),
+        from src import move_reference
+
+        row["rise_reason_html"] = move_reference.build_move_reference_html(
+            code=str(row.get("code", "")),
+            name=str(row.get("name", "")),
             t_trading_day=t_day,
+            actual_ret=row.get("actual_ret"),
             actual_news_hits=row.get("actual_news_hits"),
             disclosure_hits=row.get("disclosure_hits"),
+            keywords=list(row.get("keywords") or []),
             news_evidence_collected=True,
         )
 
