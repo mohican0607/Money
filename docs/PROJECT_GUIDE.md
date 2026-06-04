@@ -203,6 +203,9 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 | `KEYWORD_FEEDBACK_*` | 오판 키워드 온라인 가중치 |
 | `PRED_RETURN_MIN` / `MAX` | 표시 예측% 하한·상한(기본 0.20~0.35) |
 | `NO_AUTO_OPEN_OUTPUT` | 실행 후 HTML 자동 열기 끔 |
+| `REPORT_SKIP_DISCLOSURE_FETCH` | 1이면 공시 HTTP 조회 생략(캐시만) |
+| `--use-freeze` | 구간 실행 시 예측 고정 캐시 재사용(재예측 생략) |
+| `--no-report-expand` | 구간만 처리·기존 월간 HTML 날짜 병합 안 함 |
 
 코드 상수: `BIG_MOVE_THRESHOLD=0.20`, `TRAIN_START_DEFAULT`, `TEST_START`, `KRX_AD_HOC_SESSION_CLOSURES`(임시 증시 휴장) → `src/config.py`.
 

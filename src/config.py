@@ -222,6 +222,14 @@ GOOGLE_NEWS_RSS_QUERY_SLEEP_SEC = max(
 # 전종목 OHLCV 병렬 다운로드 스레드 수(기본 12). 낮추면 API·회선 부담 감소.
 OHLCV_MAX_WORKERS = _positive_int_env("OHLCV_MAX_WORKERS", 12)
 
+# 1이면 리포트 비교 표에 네이버 종목 공시 HTTP 조회를 생략(캐시만 사용·미스 시 빈 목록).
+REPORT_SKIP_DISCLOSURE_FETCH = os.getenv("REPORT_SKIP_DISCLOSURE_FETCH", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 # 캘린더 **일자별** 뉴스 캐시를 채울 때 동시에 처리할 일 수(기본 4). 1이면 기존처럼 순차.
 # 네이버 API 한도(429)가 나오면 1~2로 낮추세요.
 NEWS_FETCH_MAX_WORKERS = _positive_int_env("NEWS_FETCH_MAX_WORKERS", 4)

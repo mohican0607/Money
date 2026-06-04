@@ -211,14 +211,18 @@ def _technical_bullets(
     t_day: date,
     returns_df: pd.DataFrame | None,
     returns_ml: pd.DataFrame | None,
+    *,
+    returns_sub: pd.DataFrame | None = None,
+    returns_ml_sub: pd.DataFrame | None = None,
 ) -> list[str]:
     """당일·직전 거래일 시세·거래량 특징(일봉 캐시 기준)."""
     code = str(code).zfill(6)
     bullets: list[str] = []
-    if returns_df is None or returns_df.empty:
-        return ["일봉(OHLCV) 데이터가 없어 추세·거래량 요약을 생략했습니다."]
-
-    sub = returns_df[returns_df["Code"].astype(str).str.zfill(6) == code].sort_values("Date")
+    sub = returns_sub
+    if sub is None:
+        if returns_df is None or returns_df.empty:
+            return ["일봉(OHLCV) 데이터가 없어 추세·거래량 요약을 생략했습니다."]
+        sub = returns_df[returns_df["Code"].astype(str).str.zfill(6) == code].sort_values("Date")
     if sub.empty:
         return ["캐시에 해당 종목 일봉이 없습니다."]
 
@@ -251,11 +255,14 @@ def _technical_bullets(
                     f"당일 거래량이 직전 5일 평균 대비 약 <strong>{ratio:.1f}배</strong> (거래 위축)."
                 )
 
-    if returns_ml is not None and not returns_ml.empty:
-        ml = returns_ml[
+    ml_slice = returns_ml_sub
+    if ml_slice is None and returns_ml is not None and not returns_ml.empty:
+        ml_slice = returns_ml[
             (returns_ml["Code"].astype(str).str.zfill(6) == code)
             & (returns_ml["Date"] == ts)
         ]
+    if ml_slice is not None and not ml_slice.empty:
+        ml = ml_slice[ml_slice["Date"] == ts] if "Date" in ml_slice.columns else ml_slice
         if not ml.empty:
             m = ml.iloc[-1]
             ma_r = float(m.get("close_ma20_ratio", 0) or 0)
@@ -345,6 +352,8 @@ def build_move_reference_html(
     news_evidence_collected: bool = False,
     returns_df: Any = None,
     returns_ml: Any = None,
+    returns_sub: pd.DataFrame | None = None,
+    returns_ml_sub: pd.DataFrame | None = None,
 ) -> str:
     """
     리포트 「상·하락 참고」 HTML 블록 전체를 생성합니다.
@@ -382,6 +391,8 @@ def build_move_reference_html(
             t_trading_day,
             returns_df if isinstance(returns_df, pd.DataFrame) else None,
             returns_ml if isinstance(returns_ml, pd.DataFrame) else None,
+            returns_sub=returns_sub,
+            returns_ml_sub=returns_ml_sub,
         )
         chunks.append(_section("종목 특징·추세·거래량 (일봉)", tech))
 

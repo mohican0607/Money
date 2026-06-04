@@ -362,6 +362,7 @@ def predict_for_trading_day(
     ml_bundle: dict[str, Any] | None = None,
     returns_ml: Any = None,
     theme_weights: dict[str, float] | None = None,
+    feedback_ctx: dict[str, object] | None = None,
 ) -> list[PredictionRow]:
     """
     상장 전 종목(또는 리스트)에 대해 스코어를 매기고 상위 ``top_n`` 만 반환합니다.
@@ -394,6 +395,7 @@ def predict_for_trading_day(
             top_n=top_n,
             min_keyword_hits=min_keyword_hits,
             theme_weights=theme_weights,
+            feedback_ctx=feedback_ctx,
         )
     if ml_bundle is not None and ml_bundle.get("pipeline") is not None and returns_ml is None:
         print(
@@ -402,7 +404,8 @@ def predict_for_trading_day(
         )
 
     ctx = build_scoring_context(news_text_blob, train_events)
-    feedback_ctx = prediction_accuracy_cache.build_feedback_context()
+    if feedback_ctx is None:
+        feedback_ctx = prediction_accuracy_cache.build_feedback_context()
     ranked: list[PredictionRow] = []
 
     for code in listing_codes:

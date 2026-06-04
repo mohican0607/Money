@@ -66,6 +66,35 @@ ML_MODEL_VERSION = 5
 MAX_NEG_PER_DAY = 360
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
+ML_CANDIDATE_MIN_CODES = 400
+
+
+def _ml_scoring_candidate_codes(
+    listing_codes: list[str],
+    listing_names: dict[str, str],
+    news_text_blob: str,
+    ctx: tuple[frozenset[str], dict[str, frozenset[str]]],
+    min_keyword_hits: int,
+) -> list[str]:
+    """
+    ML ``predict_proba`` 대상 종목을 휴리스틱 신호가 있는 코드로 축소합니다.
+
+    후보가 너무 적으면 전 종목으로 폴백해 랭킹 누락을 막습니다.
+    """
+    kw_news, profile = ctx
+    out: list[str] = []
+    for code in listing_codes:
+        name = listing_names.get(code, "") or ""
+        if name_mention_score(news_text_blob, name) >= 0.2:
+            out.append(code)
+            continue
+        hist = profile.get(code)
+        if hist and len(kw_news & hist) >= max(1, min_keyword_hits):
+            out.append(code)
+            continue
+    if len(out) < ML_CANDIDATE_MIN_CODES:
+        return listing_codes
+    return out
 
 
 def _early_blob_for_trading_day(
@@ -461,15 +490,33 @@ def rank_predictions_ml(
     top_n: int = 40,
     min_keyword_hits: int = 0,
     theme_weights: dict[str, float] | None = None,
+    feedback_ctx: dict[str, object] | None = None,
 ) -> list[predict.PredictionRow]:
     """전 종목에 대해 급등 확률을 매기고 상위 ``top_n`` ``PredictionRow`` 를 만듭니다."""
     ctx = predict.build_scoring_context(news_text_blob, train_events)
-    feedback_ctx = prediction_accuracy_cache.build_feedback_context()
+    if feedback_ctx is None:
+        feedback_ctx = prediction_accuracy_cache.build_feedback_context()
     kw_news, _ = ctx
     tw = theme_weights or {}
     ohlcv_idx = _ohlcv_lookup(returns_ml)
+    score_codes = _ml_scoring_candidate_codes(
+        listing_codes,
+        listing_names,
+        news_text_blob,
+        ctx,
+        min_keyword_hits,
+    )
+    code_to_ix = {c: i for i, c in enumerate(listing_codes)}
+    cand_ix: list[int] = []
+    for c in score_codes:
+        ix = code_to_ix.get(c)
+        if ix is not None:
+            cand_ix.append(ix)
+    if not cand_ix:
+        cand_ix = list(range(len(listing_codes)))
     feats: list[list[float]] = []
-    for code in listing_codes:
+    for i in cand_ix:
+        code = listing_codes[i]
         name = listing_names.get(code, "")
         feats.append(
             _feat_vector(
@@ -488,10 +535,11 @@ def rank_predictions_ml(
     order = np.argsort(-proba)
 
     out: list[predict.PredictionRow] = []
-    for ix in order:
+    for rank_i in order:
         if len(out) >= top_n:
             break
-        i = int(ix)
+        fi = int(rank_i)
+        i = cand_ix[fi]
         code = listing_codes[i]
         pr = predict.prediction_row_for_code(
             code,
@@ -505,7 +553,7 @@ def rank_predictions_ml(
         )
         if pr is None:
             continue
-        p = float(proba[i])
+        p = float(proba[fi])
         pr.ml_prob = p
         pr.reasons = [
             f"감독학습 랭커(HistGradientBoosting) 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) "

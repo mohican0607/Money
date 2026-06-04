@@ -130,15 +130,19 @@ def _ignore_freeze_for_trading_day(
     *,
     train_snapshot_mode: str,
     cal_scope: tuple[date, date] | None,
+    respect_prediction_freeze: bool = False,
 ) -> bool:
     """
     예측 고정 캐시를 쓰지 않고 다시 예측할 관측일 T 인지 판단.
 
+    - ``--use-freeze``: 구간 실행이어도 고정 캐시가 있으면 재사용(리포트만 빠르게 갱신).
     - ``python main.py From To`` (``cal_scope`` 있음): **From~To 안** 모든 실행에서 freeze 무시.
       (``--rebuild`` / ``--append`` 직후 일반 실행도 동일 — 고정 캐시에 묶이지 않음)
     - 월간 리포트 병합 등으로 루프에만 포함된 **구간 밖** T: freeze 재사용
     - ``--weekly``·단일일 등 ``cal_scope`` 없음: ``rebuild``/``append`` 일 때만 전일 freeze 무시
     """
+    if respect_prediction_freeze:
+        return False
     if train_snapshot_mode in ("rebuild", "append_learning") and cal_scope is None:
         return True
     if cal_scope is None:
@@ -392,7 +396,7 @@ def _parse_yyyymmdd(s: str) -> date | None:
     return date(y, m, d)
 
 
-def _parse_cli() -> tuple[str, date | None, date | None, str]:
+def _parse_cli() -> tuple[str, date | None, date | None, str, bool]:
     """
     ``sys.argv`` 를 파싱해 실행 모드와 날짜 인자를 돌려줍니다.
 
@@ -402,6 +406,7 @@ def _parse_cli() -> tuple[str, date | None, date | None, str]:
         ``range`` 일 때만 ``arg_date`` 와 ``range_end`` 가 둘 다 채워짐.
     """
     raw = [a for a in sys.argv[1:] if a]
+    use_freeze = "--use-freeze" in raw
     has_rebuild = "--rebuild-train-snapshot" in raw
     has_append = "--append-rebuild-learning" in raw
     has_no_snap = "--no-train-snapshot" in raw
@@ -424,26 +429,27 @@ def _parse_cli() -> tuple[str, date | None, date | None, str]:
             "--append-rebuild-learning",
             "--no-train-snapshot",
             "--no-report-expand",
+            "--use-freeze",
         )
     ]
     if not argv:
-        return "daily", None, None, snap_mode
+        return "daily", None, None, snap_mode, use_freeze
     if argv[0] in ("--weekly", "--weekly-report", "-w"):
-        return "weekly", None, None, snap_mode
+        return "weekly", None, None, snap_mode, use_freeze
     if argv[0] in ("-h", "--help"):
-        return "usage", None, None, snap_mode
+        return "usage", None, None, snap_mode, use_freeze
     if len(argv) >= 2:
         d0 = _parse_yyyymmdd(argv[0])
         d1 = _parse_yyyymmdd(argv[1])
         if d0 is not None and d1 is not None:
             if d0 > d1:
                 d0, d1 = d1, d0
-            return "range", d0, d1, snap_mode
+            return "range", d0, d1, snap_mode, use_freeze
     d = _parse_yyyymmdd(argv[0])
     if d is not None:
-        return "dated", d, None, snap_mode
+        return "dated", d, None, snap_mode, use_freeze
     print(f"인식할 수 없는 인자: {argv[0]}", file=sys.stderr)
-    return "usage", None, None, snap_mode
+    return "usage", None, None, snap_mode, use_freeze
 
 
 def _print_usage() -> None:
@@ -486,6 +492,9 @@ def _print_usage() -> None:
   --no-report-expand
       From~To 구간 실행 시 기존 월간 HTML 에 있던 날짜를 자동으로 추가하지 않습니다.
       (인자 거래일만 예측·리포트에 반영)
+  --use-freeze
+      From~To 구간이어도 prediction_freeze_by_t.json 예측 고정 캐시를 재사용합니다.
+      (리포트·표시만 빠르게 갱신할 때. 예측 수치를 다시 맞추려면 플래그 없이 실행)
 
   예: python main.py 20260401 20260414
   예: python main.py --append-rebuild-learning --no-report-expand 20260516 20260601
@@ -1240,6 +1249,7 @@ def _run_pipeline(
     skip_ohlcv_gap_download: bool = False,
     omit_target_calendar_days: frozenset[date] | None = None,
     skip_news_fetch_after: date | None = None,
+    respect_prediction_freeze: bool = False,
 ) -> PipelineOut:
     """
     공통 데이터 파이프라인: OHLCV → 뉴스 캐시 → 급등 이벤트 → 일자별 예측·비교.
@@ -1300,6 +1310,7 @@ def _run_pipeline(
     )
     returns = stocks.daily_returns_table(ohlcv)
     returns_ml = stocks.enrich_daily_returns_for_ml(returns)
+    returns_by_code, returns_ml_by_code = stocks.returns_by_code_index(returns, returns_ml)
 
     trading_days = trading_calendar.trading_sessions_in_range(train_start, end_date)
     news_trading_days = sorted(
@@ -1451,8 +1462,10 @@ def _run_pipeline(
         _load_prediction_freeze_payload() if config.PREDICTION_FREEZE_ENABLED else {}
     )
     freeze_changed = False
+    pipeline_feedback_ctx = prediction_accuracy_cache.build_feedback_context()
 
     for T in tqdm(test_days, desc="테스트일별 예측"):
+        t_loop0 = time.perf_counter()
         day_forward = _observation_day_forward_mode(
             T,
             today=today_kst,
@@ -1523,6 +1536,7 @@ def _run_pipeline(
             T,
             train_snapshot_mode=train_snapshot_mode,
             cal_scope=train_snapshot_cal_scope,
+            respect_prediction_freeze=respect_prediction_freeze,
         )
         use_frozen = (
             config.PREDICTION_FREEZE_ENABLED
@@ -1569,6 +1583,7 @@ def _run_pipeline(
                 ml_bundle=ml_bundle,
                 returns_ml=returns_ml,
                 theme_weights=theme_w or None,
+                feedback_ctx=pipeline_feedback_ctx,
             )
             if config.PREDICTION_FREEZE_ENABLED and (
                 ignore_freeze_for_t
@@ -1855,14 +1870,21 @@ def _run_pipeline(
                 threshold=config.BIG_MOVE_THRESHOLD,
             )
 
-        _enrich_rows_disclosure_hits(rows_compare, T)
+        if not config.REPORT_SKIP_DISCLOSURE_FETCH:
+            _enrich_rows_disclosure_hits(rows_compare, T)
+        else:
+            for r in rows_compare:
+                r.setdefault("disclosure_hits", [])
         if include_target_calendar_news:
             _enrich_rows_news_evidence(rows_compare, early_rows, actual_ctx_rows)
+        code_pr_map = {str(pr.code).zfill(6): pr for pr in preds}
         for r in rows_compare:
-            code_r = str(r.get("code", ""))
-            pr_row = _prediction_row_strict_or_loose(
-                code_r, names, train_events_t, blob, scoring_ctx, min_hits
-            )
+            code_r = str(r.get("code", "")).zfill(6)
+            pr_row = code_pr_map.get(code_r)
+            if pr_row is None:
+                pr_row = _prediction_row_strict_or_loose(
+                    code_r, names, train_events_t, blob, scoring_ctx, min_hits
+                )
             r["gap_analysis_html"] = _gap_analysis_html_for_row(
                 r.get("pred_ret"),
                 r.get("actual_ret"),
@@ -1886,10 +1908,16 @@ def _run_pipeline(
                 keywords=list(r.get("keywords") or []),
                 kospi_return=kospi_r,
                 news_evidence_collected=include_target_calendar_news,
-                returns_df=returns,
-                returns_ml=returns_ml,
+                returns_sub=returns_by_code.get(code_r),
+                returns_ml_sub=returns_ml_by_code.get(code_r),
             )
             r["rise_band"] = _rise_band_for_row(r.get("pred_ret"), r.get("actual_ret"))
+
+        print(
+            f"관측일 T={t_key}: 처리 완료 ({time.perf_counter() - t_loop0:.1f}s, "
+            f"비교표 {len(rows_compare)}행)",
+            flush=True,
+        )
 
         for pr in preds:
             act = None if day_forward else _actual_ret_for_code(pr.code)
@@ -2293,7 +2321,7 @@ def main() -> None:
 
     환경 변수 ``NO_AUTO_OPEN_OUTPUT`` 이 설정되지 않았으면 Windows/macOS에서 이번에 생성한 리포트 HTML 중 최신 파일 하나만 연다.
     """
-    mode, arg_date, range_end, snap_mode = _parse_cli()
+    mode, arg_date, range_end, snap_mode, use_freeze = _parse_cli()
     if mode == "usage":
         _print_usage()
         sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 2)
@@ -2387,6 +2415,12 @@ def main() -> None:
                 flush=True,
             )
 
+        if use_freeze:
+            print(
+                "--use-freeze: From~To 구간도 prediction_freeze_by_t.json 예측 고정 캐시를 재사용합니다.",
+                flush=True,
+            )
+
         po = _run_pipeline(
             test_days,
             end_date,
@@ -2395,6 +2429,7 @@ def main() -> None:
             include_target_calendar_news=True,
             skip_news_fetch_after=today,
             omit_target_calendar_days=omit_t_cal,
+            respect_prediction_freeze=use_freeze,
         )
         test_range_label = (
             f"{d_from.isoformat()} ~ {d_to.isoformat()} "

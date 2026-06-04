@@ -480,6 +480,31 @@ def enrich_daily_returns_for_ml(returns_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def returns_by_code_index(
+    returns_df: pd.DataFrame,
+    returns_ml: pd.DataFrame | None = None,
+) -> tuple[dict[str, pd.DataFrame], dict[str, pd.DataFrame]]:
+    """
+    종목코드(6자리) → 해당 종목만 담은 일봉·ML 시세 DataFrame.
+
+    리포트 ``move_reference`` 등에서 전체 OHLCV(수십만 행)를 행마다 다시 거르지 않도록 합니다.
+    """
+    by_ret: dict[str, pd.DataFrame] = {}
+    by_ml: dict[str, pd.DataFrame] = {}
+    if returns_df is None or returns_df.empty:
+        return by_ret, by_ml
+    r = returns_df.copy()
+    r["Code"] = r["Code"].astype(str).str.zfill(6)
+    for code, sub in r.groupby("Code", sort=False):
+        by_ret[str(code)] = sub.sort_values("Date")
+    if returns_ml is not None and not returns_ml.empty:
+        m = returns_ml.copy()
+        m["Code"] = m["Code"].astype(str).str.zfill(6)
+        for code, sub in m.groupby("Code", sort=False):
+            by_ml[str(code)] = sub.sort_values("Date")
+    return by_ret, by_ml
+
+
 def change_pct_by_code_from_returns(returns_df: pd.DataFrame, d: date) -> dict[str, float]:
     """
     ``daily_returns_table`` 결과에서 거래일 ``d`` 의 종목별 일간 수익률을 **퍼센트 포인트**로 돌려줍니다.
