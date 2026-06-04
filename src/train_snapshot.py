@@ -40,6 +40,7 @@ def fingerprint() -> str:
         # early 뉴스 컷오프를 T 직전 거래일 세션으로 둠(주말·연휴 직전 장 뉴스 포함).
         "news_early_anchor": "last_krx_session_before_t_close",
         "walk_forward_train_events": True,
+        "krx_ad_hoc_closures": sorted(d.isoformat() for d in config.KRX_AD_HOC_SESSION_CLOSURES),
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]

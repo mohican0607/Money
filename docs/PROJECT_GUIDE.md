@@ -14,7 +14,7 @@ KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까�
 | `src/config.py` | 경로, 환경 변수, 훈련·테스트 날짜, 급등 임계값, ML·테마·피드백 플래그 |
 | `src/stocks.py` | KRX 상장·OHLCV Parquet 캐시, 일간 수익률, pykrx 전종목 등락률, 장중 스냅샷 |
 | `src/news.py` | 일자별 뉴스(네이버 API / Google RSS / mock), early·late 분류, 캐시 JSON |
-| `src/trading_calendar.py` | `exchange_calendars` XKRX 거래일, 뉴스 윈도·장 마감 시각 |
+| `src/trading_calendar.py` | XKRX 거래일 + `KRX_AD_HOC_SESSION_CLOSURES`(선거·제헌절 등 임시 휴장) |
 | `src/features.py` | 토큰·키워드, `BreakoutEvent`(과거 급등–뉴스) 구축 |
 | `src/predict.py` | 종목 스코어·예측 수익률·갭 설명 HTML·키워드 피드백 반영 |
 | `src/ml_move_rank.py` | 감독학습 랭커 학습·추론, KS11 시장 피처, miss 진단 가중 |
@@ -193,7 +193,7 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 | `PRED_RETURN_MIN` / `MAX` | 표시 예측% 하한·상한(기본 0.20~0.35) |
 | `NO_AUTO_OPEN_OUTPUT` | 실행 후 HTML 자동 열기 끔 |
 
-코드 상수: `BIG_MOVE_THRESHOLD=0.20`, `TRAIN_START_DEFAULT`, `TEST_START` → `src/config.py`.
+코드 상수: `BIG_MOVE_THRESHOLD=0.20`, `TRAIN_START_DEFAULT`, `TEST_START`, `KRX_AD_HOC_SESSION_CLOSURES`(임시 증시 휴장) → `src/config.py`.
 
 ---
 

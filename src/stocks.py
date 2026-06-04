@@ -119,25 +119,56 @@ def _download_one_ticker(args: tuple[str, str, date, date]) -> pd.DataFrame | No
     return None
 
 
+def _clamp_calendar_gap_to_trading_span(gs: date, ge: date) -> tuple[date, date] | None:
+    """
+    캘린더 구간 [gs, ge] 안에서 첫·마지막 **실거래일**만 남깁니다.
+
+    임시 휴장(예: 지방선거)은 ``trading_calendar.is_trading_day`` 가 False 이므로 보강 대상에서 제외됩니다.
+    """
+    from . import trading_calendar
+
+    if gs > ge:
+        return None
+    d = gs
+    while d <= ge and not trading_calendar.is_trading_day(d):
+        d += timedelta(days=1)
+    if d > ge:
+        return None
+    first = d
+    d = ge
+    while d >= first and not trading_calendar.is_trading_day(d):
+        d -= timedelta(days=1)
+    if d < first:
+        return None
+    return first, d
+
+
 def _ohlcv_calendar_gaps(start: date, end: date, dmin: date, dmax: date) -> list[tuple[date, date]]:
     """
-    캐시가 [dmin, dmax], 요청이 [start, end] 일 때 API로 받아야 할 캘린더 부분 구간들.
+    캐시가 [dmin, dmax], 요청이 [start, end] 일 때 API로 받아야 할 부분 구간들.
 
     겹치지 않으면 전체 [start, end] 한 덩어리. 겹치면 왼쪽(요청 시작~캐시 전날)·오른쪽(캐시 다음날~요청 끝)만.
+    각 구간은 **실거래일** 기준으로 잘라 임시 휴장 캘린더일은 건너뜁니다.
     """
     if start > end:
         return []
     if end < dmin or start > dmax:
-        return [(start, end)]
+        raw = [(start, end)]
+    else:
+        raw = []
+        if start < dmin:
+            ge = min(end, dmin - timedelta(days=1))
+            if start <= ge:
+                raw.append((start, ge))
+        if end > dmax:
+            gs = max(start, dmax + timedelta(days=1))
+            if gs <= end:
+                raw.append((gs, end))
     gaps: list[tuple[date, date]] = []
-    if start < dmin:
-        ge = min(end, dmin - timedelta(days=1))
-        if start <= ge:
-            gaps.append((start, ge))
-    if end > dmax:
-        gs = max(start, dmax + timedelta(days=1))
-        if gs <= end:
-            gaps.append((gs, end))
+    for gs, ge in raw:
+        span = _clamp_calendar_gap_to_trading_span(gs, ge)
+        if span is not None:
+            gaps.append(span)
     return gaps
 
 

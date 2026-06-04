@@ -1,7 +1,8 @@
 """
 한국 거래소(XKRX) 영업일 판별·세션 나열·뉴스 윈도우 경계.
 
-``exchange_calendars`` 의 ``XKRX`` 캘린더를 사용합니다. 장전 스케줄·휴장 반영 목적입니다.
+``exchange_calendars`` 의 ``XKRX`` 캘린더에 ``config.KRX_AD_HOC_SESSION_CLOSURES``(선거·제헌절 등 임시 휴장)를
+추가로 반영합니다.
 """
 from __future__ import annotations
 
@@ -11,13 +12,24 @@ from zoneinfo import ZoneInfo
 import exchange_calendars as ecals
 import pandas as pd
 
+from . import config
+
 KST = ZoneInfo("Asia/Seoul")
 
 _CAL = ecals.get_calendar("XKRX")
 
+_AD_HOC_CLOSURES: frozenset[date] = frozenset(config.KRX_AD_HOC_SESSION_CLOSURES)
+
+
+def ad_hoc_session_closures() -> frozenset[date]:
+    """XKRX 캘린더에 없는 임시 증시 휴장일 집합."""
+    return _AD_HOC_CLOSURES
+
 
 def is_trading_day(d: date) -> bool:
-    """주어진 캘린더일이 KRX 정규 세션(거래일)이면 True."""
+    """주어진 캘린더일이 KRX 정규 세션(거래일)이면 True. 임시 휴장일은 False."""
+    if d in _AD_HOC_CLOSURES:
+        return False
     ts = pd.Timestamp(d)
     return bool(_CAL.is_session(ts))
 
@@ -31,16 +43,18 @@ def last_trading_day_before(day_n: date) -> date:
     ts = pd.Timestamp(day_n)
     sessions = _CAL.sessions
     prior = sessions[sessions < ts]
-    if len(prior) == 0:
-        raise ValueError(f"No XKRX session before {day_n}")
-    return prior[-1].date()
+    for t in reversed(prior):
+        d = t.date()
+        if d not in _AD_HOC_CLOSURES:
+            return d
+    raise ValueError(f"No XKRX session before {day_n}")
 
 
 def trading_sessions_in_range(start: date, end: date) -> list[date]:
-    """``start``~``end``(포함) 사이의 KRX 거래일을 날짜 리스트로 반환합니다."""
+    """``start``~``end``(포함) 사이의 KRX 거래일을 날짜 리스트로 반환합니다(임시 휴장 제외)."""
     s, e = pd.Timestamp(start), pd.Timestamp(end)
     sess = _CAL.sessions_in_range(s, e)
-    return [x.date() for x in sess]
+    return [x.date() for x in sess if x.date() not in _AD_HOC_CLOSURES]
 
 
 def news_window_for_target_trading_day(target: date) -> tuple[date, date]:

@@ -129,6 +129,12 @@ TRAIN_START_DEFAULT = date(2025, 4, 11)  # 급등–뉴스 이벤트·스냅샷 
 # --weekly 등 날짜 인자 없을 때 관측(리포트) 시작일. 학습 라벨 상한은 관측일 T 직전(워크포워드).
 TEST_START = date(2026, 1, 1)
 
+# KRX 정규 휴장 외 임시 휴장(``exchange_calendars`` XKRX 미반영). ``trading_calendar``·OHLCV 보강에 사용.
+KRX_AD_HOC_SESSION_CLOSURES: tuple[date, ...] = (
+    date(2026, 6, 3),  # 제9회 전국동시지방선거
+    date(2026, 7, 17),  # 제헌절(2026~ 법정 공휴일·증시 휴장)
+)
+
 # 매수 시나리오: N거래일 장마감 전(약 14:00~14:50)에 주문해 N+1일 급등을 노릴 때,
 # 예측·훈련에 쓰는 뉴스는 'N-1 거래일' 14:30(KST)까지로 제한한다. (N = T 직전 거래일, T = 수익률 관측일)
 USE_DECISION_NEWS_INTRADAY_CUTOFF = os.getenv("USE_DECISION_NEWS_INTRADAY_CUTOFF", "1").strip() in (
