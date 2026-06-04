@@ -1711,7 +1711,8 @@ def _run_pipeline(
 
         if not day_forward:
             preds_by_code: dict[str, predict.PredictionRow] = {pr.code: pr for pr in preds}
-            for m in list(actual_10up_by_code.values()) + list(actual_10dn_by_code.values()):
+            # 비교 표: 당일 실제 10%↑(상승) + 예측 후보만. 10%↓ 급락은 theme 스냅샷용으로만 씀.
+            for m in list(actual_10up_by_code.values()):
                 code = m["code"]
                 act = float(m["ret_pct"]) / 100.0
                 pr = preds_by_code.get(code)
@@ -1833,6 +1834,13 @@ def _run_pipeline(
                 late_blob=late_blob,
             )
 
+        rows_compare = [
+            r
+            for r in rows_compare
+            if r.get("actual_big")
+            or r.get("pred_high")
+            or r.get("pred_mid")
+        ]
         rows_compare.sort(key=lambda r: (not r["actual_big"], not r["pred_high"], r["code"]))
 
         today_td = now_kst_td.date()

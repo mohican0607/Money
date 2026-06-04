@@ -799,7 +799,9 @@ def big_movers_from_krx_pct_map(
 
     각 원소는 ``code``, ``name``, ``ret_pct`` 키를 가집니다.
     """
-    thr_pct = threshold * 100.0
+    # ``threshold`` 는 소수(0.1=10%). pykrx 등락률은 퍼센트 포인트(15=15%).
+    # 하락 쪽에 음수 threshold(-0.1)를 넘겨도 크기만 씁니다(예: -thr_pct 로 -10% 이하).
+    mag_pct = abs(float(threshold)) * 100.0
     direction = (direction or "up").strip().lower()
     if direction not in ("up", "down"):
         direction = "up"
@@ -807,14 +809,14 @@ def big_movers_from_krx_pct_map(
         rows = [
             {"code": c, "name": listing_names.get(c, c), "ret_pct": pct}
             for c, pct in pct_by_code.items()
-            if pct >= thr_pct
+            if pct is not None and math.isfinite(float(pct)) and float(pct) >= mag_pct
         ]
         rows.sort(key=lambda r: -r["ret_pct"])
         return rows
     rows = [
         {"code": c, "name": listing_names.get(c, c), "ret_pct": pct}
         for c, pct in pct_by_code.items()
-        if pct <= -thr_pct
+        if pct is not None and math.isfinite(float(pct)) and float(pct) <= -mag_pct
     ]
     rows.sort(key=lambda r: r["ret_pct"])
     return rows
