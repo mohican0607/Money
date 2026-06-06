@@ -534,7 +534,7 @@ _TEMPLATE = r"""
 {% macro market_theme_panel(d) -%}
 {% if d.market_theme_html %}
 <div class="market-theme-ref" style="margin:12px 0 16px;padding:12px 14px;background:#152232;border:1px solid #2a4a6a;border-radius:8px">
-  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">당일 상승·테마와 예측 입력 뉴스(early) 상관</h3>
+  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">당일 테마 요약</h3>
   {{ d.market_theme_html | safe }}
 </div>
 {% endif %}
@@ -1061,7 +1061,7 @@ _COMPACT_TEMPLATE = r"""
 {% macro market_theme_panel(d) -%}
 {% if d.market_theme_html %}
 <div class="market-theme-ref" style="margin:12px 0 16px;padding:12px 14px;background:#152232;border:1px solid #2a4a6a;border-radius:8px">
-  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">당일 상승·테마와 예측 입력 뉴스(early) 상관</h3>
+  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">당일 테마 요약</h3>
   {{ d.market_theme_html | safe }}
 </div>
 {% endif %}

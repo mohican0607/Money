@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,164 @@ def _news_blob_for_trading_day(
         return blob
     ws, we = trading_calendar.news_window_for_target_trading_day(t_day)
     return predict.aggregate_news_for_window(news_by_calendar, ws, we)
+
+
+# (표시 라벨, 뉴스·종목명 매칭용 별칭들) — 첫 별칭이 문장 원인 추출 시 대표 키워드.
+_THEME_SECTORS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("반도체 관련주", ("반도체", "HBM", "메모리", "칩", "파운드리", "SOC", "반도체장비", "웨이퍼")),
+    ("2차전지·배터리 관련주", ("2차전지", "배터리", "양극재", "음극재", "전해질", "리튬", "전고체")),
+    ("바이오·제약 관련주", ("바이오", "제약", "신약", "임상", "바이오시밀러", "의료기기", "헬스케어")),
+    ("AI·데이터 관련주", ("AI", "인공지능", "LLM", "챗봇", "딥러닝", "데이터센터", "GPU")),
+    ("로봇·자동화 관련주", ("로봇", "휴머노이드", "자동화", "스마트팩토리", "협동로봇")),
+    ("조선·해운 관련주", ("조선", "LNG선", "해운", "선박", "컨테이너선")),
+    ("방산·국방 관련주", ("방산", "국방", "무기", "K방산", "우주항공")),
+    ("원전·SMR 관련주", ("원전", "SMR", "핵융합", "원자력", "모듈원전")),
+    ("전력·전력기기 관련주", ("전력", "전력기기", "변압기", "송전", "전선", "전기차충전")),
+    ("전기차·모빌리티 관련주", ("전기차", "EV", "완성차", "자율주행", "모빌리티", "충전소")),
+    ("디스플레이 관련주", ("디스플레이", "OLED", "LCD", "패널", "마이크로LED")),
+    ("게임·엔터 관련주", ("게임", "엔터", "콘텐츠", "IP", "웹툰", "OTT")),
+    ("화장품·뷰티 관련주", ("화장품", "K뷰티", "뷰티", "코스메틱")),
+    ("유통·소비재 관련주", ("유통", "소비", "백화점", "면세", "리테일", "음식료")),
+    ("건설·부동산 관련주", ("건설", "부동산", "리츠", "재건축", "인프라", "토목")),
+    ("금융·은행 관련주", ("금융", "은행", "보험", "증권", "카드", "핀테크", "결제")),
+    ("화학·소재 관련주", ("화학", "석유화학", "정유", "소재", "철강", "비철", "골판지")),
+    ("수소·연료전지 관련주", ("수소", "연료전지", "그린수소", "암모니아")),
+    ("신재생·에너지 관련주", ("태양광", "풍력", "신재생", "ESS", "에너지저장")),
+    ("통신·플랫폼 관련주", ("통신", "5G", "6G", "플랫폼", "클라우드", "SaaS", "IT")),
+    ("미국·글로벌 증시 연관주", ("미국증시", "나스닥", "다우", "뉴욕증시", "S&P", "연준", "FOMC")),
+    ("환율·금리 민감주", ("환율", "원달러", "금리", "한국은행", "기준금리", "채권")),
+    ("수출·무역 관련주", ("수출", "무역", "관세", "수입", "환헤지")),
+    ("실적·어닝 관련주", ("실적", "분기실적", "영업이익", "컨센서스", "어닝", "가이던스")),
+    ("배당·가치 관련주", ("배당", "배당금", "자사주", "주주환원")),
+    ("IPO·상장 관련주", ("IPO", "상장", "공모", "스팩", "딜리스팅")),
+    ("M&A·지배구조 관련주", ("합병", "인수", "M&A", "지분", "경영권", "유상증자", "무상증자")),
+    ("여행·항공·레저 관련주", ("항공", "여행", "관광", "호텔", "면세점", "레저")),
+    ("의료·병원 관련주", ("병원", "의료", "원격의료", "디지털헬스")),
+    ("교육·에듀테크 관련주", ("교육", "에듀테크", "학원", "온라인교육")),
+    ("농업·식품 관련주", ("농업", "식품", "사료", "축산", "수산")),
+    ("해양·수산 관련주", ("해양", "수산", "양식", "어업")),
+    ("중국·신흥국 관련주", ("중국", "중국경제", "신흥국", "베트남", "인도")),
+    ("지정학·안보 이슈 관련주", ("지정학", "중동", "우크라이나", "대만", "북한")),
+    ("규제·정책 수혜·피해주", ("규제", "정책", "세제", "보조금", "규제완화")),
+)
+
+_GENERIC_THEME_KW = frozenset(
+    {
+        "코스피",
+        "코스닥",
+        "증시",
+        "주가",
+        "급등",
+        "상한가",
+        "거래량",
+        "테마주",
+        "한국거래소",
+        "kospi",
+        "kosdaq",
+        "상장",
+        "공시",
+        "금융",
+        "증권",
+        "주식시장",
+        "국내증시",
+    }
+)
+
+_EVENT_KW = (
+    "실적",
+    "예상실적",
+    "컨센서스",
+    "하회",
+    "상회",
+    "부진",
+    "호실적",
+    "수주",
+    "규제",
+    "급락",
+    "급등",
+    "전망",
+    "우려",
+    "악재",
+    "호재",
+)
+
+
+def _alias_in_blob(blob: str, aliases: tuple[str, ...]) -> bool:
+    low = blob.lower()
+    for alias in aliases:
+        a = str(alias).strip().lower()
+        if len(a) >= 2 and a in low:
+            return True
+    return False
+
+
+def _stock_matches_sector(stock: dict[str, Any], aliases: tuple[str, ...]) -> bool:
+    name = str(stock.get("name") or "")
+    if _alias_in_blob(name, aliases):
+        return True
+    overlap = stock.get("name_keyword_overlap_with_news") or []
+    overlap_blob = " ".join(str(x) for x in overlap)
+    return _alias_in_blob(overlap_blob, aliases)
+
+
+def _catalyst_phrase(top_kw: list[str], sector_key: str) -> str:
+    """early 뉴스 상위 키워드에서 테마 문장용 원인 구절을 뽑습니다."""
+    candidates = [
+        str(k).strip()
+        for k in top_kw
+        if str(k).strip() and str(k).lower() not in _GENERIC_THEME_KW and str(k) != sector_key
+    ]
+    if not candidates:
+        return sector_key
+    eng = [k for k in candidates if re.fullmatch(r"[A-Za-z][A-Za-z0-9&.\-]{1,24}", k)]
+    events = [k for k in candidates if any(ev in k for ev in _EVENT_KW)]
+    if eng and events:
+        lead = eng[0].upper() if eng[0].isascii() else eng[0]
+        return f"{lead}의 {events[0]}"
+    if events:
+        return events[0]
+    return candidates[0]
+
+
+def _sector_active_in_news(aliases: tuple[str, ...], seeds: list, top_kw: list) -> bool:
+    pool_blob = " ".join(str(x) for x in list(seeds) + list(top_kw))
+    return _alias_in_blob(pool_blob, aliases)
+
+
+def _build_theme_narratives(row: dict[str, Any]) -> list[str]:
+    """'○○○ 이유로 로봇 관련주가 상승함' 형태의 서술 문장 목록."""
+    seeds = list(row.get("theme_seed_hits") or [])
+    top_kw = list(row.get("top_keywords_sample") or [])
+    leaders = list(row.get("theme_leaders_10pct_plus") or [])
+    decliners = list(row.get("theme_decliners_8pct_minus") or [])
+    narratives: list[str] = []
+    for sector_label, aliases in _THEME_SECTORS:
+        if not _sector_active_in_news(aliases, seeds, top_kw):
+            continue
+        up_n = sum(
+            1 for s in leaders if isinstance(s, dict) and _stock_matches_sector(s, aliases)
+        )
+        down_n = sum(
+            1 for s in decliners if isinstance(s, dict) and _stock_matches_sector(s, aliases)
+        )
+        if up_n == 0 and down_n == 0:
+            continue
+        catalyst = _catalyst_phrase(top_kw, aliases[0])
+        if up_n >= down_n and up_n > 0:
+            narratives.append(f"{catalyst} 등으로 {sector_label} 부분이 상승함")
+        elif down_n > 0:
+            narratives.append(f"{catalyst}로 {sector_label}가 하락함")
+    if not narratives and (seeds or top_kw):
+        catalyst = _catalyst_phrase(top_kw, "")
+        if leaders and not decliners:
+            narratives.append(f"{catalyst} 등으로 시장 내 강세 종목이 다수 출현함")
+        elif decliners and not leaders:
+            narratives.append(f"{catalyst} 등으로 시장 내 약세 종목이 다수 출현함")
+        elif leaders or decliners:
+            narratives.append(
+                f"{catalyst} 등으로 당일 강세·약세 종목이 섞여 나타남"
+            )
+    return narratives[:12]
 
 
 def _theme_seed_lexicon() -> set[str]:
@@ -70,15 +229,22 @@ def build_market_theme_flow(
             .sort_values("return_pct", ascending=False)
             .head(18)
         )
+        losers = (
+            day_slice[day_slice["return_pct"] <= -0.08]
+            .sort_values("return_pct", ascending=True)
+            .head(12)
+        )
         leaders: list[dict[str, Any]] = []
+        decliners: list[dict[str, Any]] = []
         kw_set = features.keyword_set(blob, k=120) if blob.strip() else frozenset()
-        for _, row in movers.iterrows():
-            code = str(row["Code"]).zfill(6)
-            name = str(row.get("Name") or listing_names.get(code, ""))
-            rp = float(row["return_pct"])
+
+        def _append_stock(bucket: list[dict[str, Any]], stock_row: pd.Series) -> None:
+            code = str(stock_row["Code"]).zfill(6)
+            name = str(stock_row.get("Name") or listing_names.get(code, ""))
+            rp = float(stock_row["return_pct"])
             name_kw = features.keyword_set(name, k=12)
             overlap = sorted(name_kw & kw_set)[:6]
-            leaders.append(
+            bucket.append(
                 {
                     "code": code,
                     "name": name,
@@ -86,17 +252,23 @@ def build_market_theme_flow(
                     "name_keyword_overlap_with_news": overlap,
                 }
             )
-        out.append(
-            {
-                "trading_day": t_day.isoformat(),
-                "news_chars": len(blob),
-                "top_keywords_sample": top_kw[:24],
-                "theme_seed_hits": seed_hits[:20],
-                "n_movers_ge_20pct": n20,
-                "n_movers_10_to_20pct": n10,
-                "theme_leaders_10pct_plus": leaders,
-            }
-        )
+
+        for _, row in movers.iterrows():
+            _append_stock(leaders, row)
+        for _, row in losers.iterrows():
+            _append_stock(decliners, row)
+        flow_row = {
+            "trading_day": t_day.isoformat(),
+            "news_chars": len(blob),
+            "top_keywords_sample": top_kw[:24],
+            "theme_seed_hits": seed_hits[:20],
+            "n_movers_ge_20pct": n20,
+            "n_movers_10_to_20pct": n10,
+            "theme_leaders_10pct_plus": leaders,
+            "theme_decliners_8pct_minus": decliners,
+        }
+        flow_row["theme_narratives"] = _build_theme_narratives(flow_row)
+        out.append(flow_row)
     return out
 
 
@@ -148,61 +320,60 @@ def format_market_theme_flow_html(
     def _esc(s: str) -> str:
         return html.escape(s, quote=True)
 
+    narratives = list(row.get("theme_narratives") or []) or _build_theme_narratives(row)
     parts = [
         "<p class=\"sub\" style=\"margin:0 0 10px;line-height:1.55\">",
         f"<strong>{_esc(t_iso)}</strong> 종가 기준 "
         f"<strong>10%↑ {n10 + n20}</strong>종 "
         f"(그중 ≥{threshold_pct:.0f}% <strong>{n20}</strong>종). "
-        f"아래 뉴스·키워드 상관은 예측·ML·휴리스틱과 같은 입력 시점 "
-        f"(<strong>{_esc(n_buy)}</strong> 거래일 <strong>{_esc(news_cutoff_label)}</strong>(KST)까지 early, "
-        f"약 <strong>{news_chars:,}</strong>자)입니다.</p>",
+        f"테마 문장은 <strong>{_esc(n_buy)}</strong> 거래일 "
+        f"<strong>{_esc(news_cutoff_label)}</strong>(KST)까지 early 뉴스·당일 등락을 단순 매칭한 참고입니다.",
+        "</p>",
     ]
-    if seeds:
-        pills = "".join(
-            f'<span class="pill" style="margin:2px 4px 2px 0">{_esc(str(s))}</span>'
-            for s in seeds[:16]
-        )
-        parts.append(
-            f"<p style=\"margin:0 0 8px\"><strong>테마 시드 × 뉴스 상위 키워드</strong> {pills}</p>"
-        )
-    if top_kw:
-        kw_pills = "".join(
-            f'<span class="pill" style="margin:2px 4px 2px 0;background:#1a2d42">{_esc(str(k))}</span>'
-            for k in top_kw[:18]
-        )
-        parts.append(
-            f"<p style=\"margin:0 0 10px\"><strong>early 뉴스 상위 키워드</strong> {kw_pills}</p>"
-        )
-    if leaders:
-        parts.append(
-            "<table class=\"rows-compare\" style=\"font-size:0.82rem;margin-top:6px\">"
-            "<thead><tr>"
-            "<th>종목</th><th>등락%</th><th>종목명·early 뉴스 키워드 겹침</th>"
-            "</tr></thead><tbody>"
-        )
-        for L in leaders[:14]:
-            if not isinstance(L, dict):
-                continue
-            nm = _esc(str(L.get("name") or ""))
-            rp = L.get("return_pct")
-            rp_s = f"{float(rp):+.2f}" if rp is not None else "—"
-            ov = L.get("name_keyword_overlap_with_news") or []
-            if ov:
-                ov_s = ", ".join(_esc(str(x)) for x in ov[:8])
-            else:
-                ov_s = "<span style=\"color:var(--muted)\">겹침 없음</span>"
-            parts.append(
-                f"<tr><td>{nm}</td><td class=\"ok\" style=\"white-space:nowrap\">{rp_s}%</td>"
-                f"<td>{ov_s}</td></tr>"
-            )
-        parts.append("</tbody></table>")
+    if narratives:
+        parts.append("<ul class=\"nl\" style=\"margin:0 0 10px\">")
+        for sent in narratives:
+            parts.append(f"<li style=\"margin-bottom:6px\">{_esc(sent)}</li>")
+        parts.append("</ul>")
     else:
         parts.append(
-            "<p class=\"sub\" style=\"margin:0\">당일 10% 이상 상승 종목이 없거나 집계되지 않았습니다.</p>"
+            "<p class=\"sub\" style=\"margin:0 0 10px\">"
+            "당일 뚜렷한 테마 문장을 만들 키워드·등락 패턴이 부족합니다.</p>"
         )
+    if seeds or top_kw:
+        ref_bits: list[str] = []
+        if seeds:
+            ref_bits.append(
+                "테마 시드: "
+                + ", ".join(_esc(str(s)) for s in seeds[:8])
+            )
+        if top_kw:
+            ref_bits.append(
+                "early 키워드: "
+                + ", ".join(_esc(str(k)) for k in top_kw[:10])
+            )
+        parts.append(
+            "<p style=\"margin:0 0 8px;font-size:0.8rem;color:var(--muted)\">"
+            + " · ".join(ref_bits)
+            + f" (뉴스 약 {news_chars:,}자)</p>"
+        )
+    if leaders:
+        sample = []
+        for L in leaders[:5]:
+            if not isinstance(L, dict):
+                continue
+            nm = str(L.get("name") or "")
+            rp = L.get("return_pct")
+            rp_s = f"{float(rp):+.1f}%" if rp is not None else "—"
+            sample.append(f"{nm} {rp_s}")
+        if sample:
+            parts.append(
+                "<p style=\"margin:0;font-size:0.8rem;color:var(--muted)\">"
+                f"<strong>강세 샘플</strong> — {_esc(', '.join(sample))}</p>"
+            )
     parts.append(
         "<p class=\"combo-tip-empty\" style=\"margin:10px 0 0;font-size:0.78em\">"
-        "종목명 토큰과 early 뉴스 키워드 집합의 단순 교집합이며, 인과·상관계수 검정이 아닙니다.</p>"
+        "자동 생성 문장이며 인과 단정이 아닙니다. 종목명·뉴스 키워드·당일 등락 분포를 휴리스틱으로 묶었습니다.</p>"
     )
     return "".join(parts)
 

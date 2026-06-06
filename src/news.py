@@ -374,12 +374,36 @@ def rows_for_actual_context(
     return late_rows + t_rows
 
 
+def news_timing_bucket(
+    target_trading_day: date,
+    cal_d: date,
+    row: dict[str, str],
+) -> tuple[str, str]:
+    """
+    관측일 ``T`` 기준 뉴스 한 건의 시점 구간.
+
+    Returns:
+        ``(bucket, label)`` — ``early``=14:30까지, ``late``=14:30이후, ``t_day``=관측일 당일.
+    """
+    if cal_d == target_trading_day:
+        return "t_day", "관측일 당일"
+    if not config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
+        return "early", "예측 뉴스 구간"
+    _, _, cutoff, n_buy = _decision_news_bounds(target_trading_day)
+    pub = row_published_kst(row, cal_d)
+    bucket = _news_row_bucket(cal_d, pub, n_buy, cutoff)
+    if bucket == "early":
+        return "early", "14:30까지"
+    return "late", "14:30이후"
+
+
 def match_stock_news_rows(
     rows: list[tuple[date, dict]],
     stock_name: str,
     keywords: list[str],
     *,
     limit: int = 8,
+    target_trading_day: date | None = None,
 ) -> list[dict]:
     """종목명 또는 키워드(2글자 이상)가 제목·요약에 들어가는 기사만."""
     name = (stock_name or "").strip()
@@ -406,15 +430,18 @@ def match_stock_news_rows(
         if not matched:
             continue
         seen.add(key)
-        hits.append(
-            {
-                "day": cal_d,
-                "title": title,
-                "description": desc[:220],
-                "link": (row.get("link") or "").strip(),
-                "matched": matched,
-            }
-        )
+        hit: dict = {
+            "day": cal_d,
+            "title": title,
+            "description": desc[:220],
+            "link": (row.get("link") or "").strip(),
+            "matched": matched,
+        }
+        if target_trading_day is not None:
+            bucket, label = news_timing_bucket(target_trading_day, cal_d, row)
+            hit["timing_bucket"] = bucket
+            hit["timing_label"] = label
+        hits.append(hit)
         if len(hits) >= limit:
             break
     return hits

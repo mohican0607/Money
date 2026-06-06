@@ -573,6 +573,8 @@ def _enrich_rows_news_evidence(
     rows: list[dict],
     early_rows: list[tuple[date, dict]],
     actual_ctx_rows: list[tuple[date, dict]],
+    *,
+    target_trading_day: date,
 ) -> None:
     """
     비교 표 row에 ``pred_news_hits`` / ``actual_news_hits`` 를 채웁니다.
@@ -582,8 +584,12 @@ def _enrich_rows_news_evidence(
     for r in rows:
         nm = r["name"]
         kw = r.get("keywords") or []
-        r["pred_news_hits"] = news.match_stock_news_rows(early_rows, nm, kw, limit=8)
-        r["actual_news_hits"] = news.match_stock_news_rows(actual_ctx_rows, nm, kw, limit=8)
+        r["pred_news_hits"] = news.match_stock_news_rows(
+            early_rows, nm, kw, limit=8, target_trading_day=target_trading_day
+        )
+        r["actual_news_hits"] = news.match_stock_news_rows(
+            actual_ctx_rows, nm, kw, limit=8, target_trading_day=target_trading_day
+        )
 
 
 def _open_report_outputs(html_paths: Sequence[Path]) -> None:
@@ -1926,7 +1932,9 @@ def _run_pipeline(
             for r in rows_compare:
                 r.setdefault("disclosure_hits", [])
         if include_target_calendar_news:
-            _enrich_rows_news_evidence(rows_compare, early_rows, actual_ctx_rows)
+            _enrich_rows_news_evidence(
+                rows_compare, early_rows, actual_ctx_rows, target_trading_day=T
+            )
         code_pr_map = {str(pr.code).zfill(6): pr for pr in preds}
         for r in rows_compare:
             code_r = str(r.get("code", "")).zfill(6)
@@ -1952,6 +1960,7 @@ def _run_pipeline(
                 t_trading_day=T,
                 actual_ret=r.get("actual_ret"),
                 actual_intraday_pct=r.get("actual_ret_intraday_pct"),
+                pred_news_hits=r.get("pred_news_hits"),
                 actual_news_hits=r.get("actual_news_hits"),
                 actual_ctx_rows=actual_ctx_rows if include_target_calendar_news else None,
                 disclosure_hits=r.get("disclosure_hits"),

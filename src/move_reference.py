@@ -25,6 +25,8 @@ class _NewsClip:
     link: str
     matched: str
     category: str
+    timing_bucket: str = ""
+    timing_label: str = ""
 
 
 _INVESTOR_KW = (
@@ -101,13 +103,20 @@ def _clip_li(c: _NewsClip) -> str:
     te = _esc(c.title)
     desc = (c.description or "").strip()
     desc_html = f" <span style=\"color:var(--muted)\">{_esc(desc[:160])}</span>" if desc else ""
+    timing_html = ""
+    if c.timing_label:
+        tone = "#9fd3ff" if c.timing_bucket == "early" else ("#e6c07b" if c.timing_bucket == "late" else "#3ecf8e")
+        timing_html = (
+            f'<code style="font-size:0.7rem;color:{tone};margin-right:6px">'
+            f"{_esc(c.timing_label)}</code>"
+        )
     if c.link:
         le = html.escape(c.link, quote=True)
         body = f'<a href="{le}" target="_blank" rel="noopener">{te}</a>{desc_html}'
     else:
         body = f"{te}{desc_html}"
     return (
-        f'<li><span class="pill">{day_s}</span> '
+        f'<li><span class="pill">{day_s}</span> {timing_html}'
         f'<code style="font-size:0.72rem;color:#9fd3ff">{me}</code> {body}</li>'
     )
 
@@ -148,9 +157,80 @@ def _news_clips_from_hits(hits: list[dict] | None, *, limit: int = 12) -> list[_
                 link=str(h.get("link") or "").strip(),
                 matched=str(h.get("matched") or ""),
                 category=_classify_blob(blob),
+                timing_bucket=str(h.get("timing_bucket") or ""),
+                timing_label=str(h.get("timing_label") or ""),
             )
         )
     return out
+
+
+def _merge_rise_news_hits(
+    pred_news_hits: list[dict] | None,
+    actual_news_hits: list[dict] | None,
+    *,
+    limit: int = 14,
+) -> list[dict]:
+    """early(14:30까지) + late/당일 뉴스 hit을 제목 기준 중복 제거 후 합칩니다."""
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for h in list(pred_news_hits or []) + list(actual_news_hits or []):
+        title = str(h.get("title") or "").strip()
+        if not title:
+            continue
+        key = str(h.get("link") or title)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(h)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _news_timing_summary_html(hits: list[dict]) -> str:
+    """상승 참고 뉴스가 14:30까지/이후/당일 중 어디에 주로 있는지 요약."""
+    if not hits:
+        return ""
+    counts = {"early": 0, "late": 0, "t_day": 0}
+    for h in hits:
+        b = str(h.get("timing_bucket") or "")
+        if b in counts:
+            counts[b] += 1
+    total = sum(counts.values())
+    if total <= 0:
+        return ""
+    n_early, n_late, n_t = counts["early"], counts["late"], counts["t_day"]
+    parts = []
+    if n_early:
+        parts.append(f"14:30까지 <strong>{n_early}</strong>건")
+    if n_late:
+        parts.append(f"14:30이후 <strong>{n_late}</strong>건")
+    if n_t:
+        parts.append(f"관측일 당일 <strong>{n_t}</strong>건")
+    detail = " · ".join(parts)
+    ranked = sorted(counts.items(), key=lambda x: (-x[1], x[0]))
+    top_bucket, top_n = ranked[0]
+    if top_n <= 0:
+        attribution = ""
+    elif top_n == total:
+        label = {"early": "14:30까지 뉴스", "late": "14:30이후 뉴스", "t_day": "관측일 당일 뉴스"}.get(
+            top_bucket, ""
+        )
+        attribution = f" → 상승 참고는 <strong>{label}</strong> 쪽에 모여 있습니다."
+    else:
+        second_bucket, second_n = ranked[1] if len(ranked) > 1 else ("", 0)
+        if second_n > 0 and top_n == second_n:
+            attribution = " → 14:30 전·후·당일 뉴스가 고르게 겹칩니다."
+        else:
+            label = {"early": "14:30까지 뉴스", "late": "14:30이후 뉴스", "t_day": "관측일 당일 뉴스"}.get(
+                top_bucket, ""
+            )
+            attribution = f" → 상승 참고는 주로 <strong>{label}</strong> 때문으로 보입니다."
+    return (
+        "<p style=\"margin:0 0 10px;padding:8px 10px;background:#152232;"
+        "border-left:3px solid var(--accent);border-radius:6px;font-size:0.84rem\">"
+        f"<strong>뉴스 시점</strong> — {detail}{attribution}</p>"
+    )
 
 
 def _scan_context_news(
@@ -344,6 +424,7 @@ def build_move_reference_html(
     t_trading_day: date | None,
     actual_ret: float | None,
     actual_intraday_pct: float | None = None,
+    pred_news_hits: list[dict] | None = None,
     actual_news_hits: list[dict] | None = None,
     actual_ctx_rows: list[tuple[date, dict]] | None = None,
     disclosure_hits: list[dict] | None = None,
@@ -407,7 +488,11 @@ def build_move_reference_html(
             "수급·전망·테마 뉴스 분류가 채워집니다.</p>"
         )
     else:
-        clips = _news_clips_from_hits(actual_news_hits, limit=10)
+        merged_hits = _merge_rise_news_hits(pred_news_hits, actual_news_hits, limit=14)
+        timing_html = _news_timing_summary_html(merged_hits)
+        if timing_html:
+            chunks.append(timing_html)
+        clips = _news_clips_from_hits(merged_hits, limit=14)
         extra = _scan_context_news(
             actual_ctx_rows,
             stock_name=name,
