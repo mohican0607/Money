@@ -449,6 +449,8 @@ def enrich_daily_returns_for_ml(returns_df: pd.DataFrame) -> pd.DataFrame:
     - ``ret_roll_std5``: 직전 영업일까지 5영업일 수익률 표준편차
     - ``log_vol_roll_mean5``: 직전 영업일까지 5영업일 ``log1p(Volume)`` 평균
     - ``close_ma20_ratio``: 직전 종가가 20일 이평(직전일까지) 대비 얼마나 떨어져 있는지 ``(C-MA)/MA``
+    - ``ret_roll_mean5``: 직전 5영업일 수익률 평균(단기 모멘텀)
+    - ``vol_surge_ratio``: 직전 거래량 log 대비 5일 평균 log 차이(거래량 급증)
     """
     df = returns_df.sort_values(["Code", "Date"]).copy()
     if "Volume" not in df.columns:
@@ -470,13 +472,20 @@ def enrich_daily_returns_for_ml(returns_df: pd.DataFrame) -> pd.DataFrame:
     ma20 = g["Close"].transform(lambda s: s.shift(1).rolling(20, min_periods=1).mean())
     prev_c = g["Close"].shift(1)
     df["close_ma20_ratio"] = (prev_c - ma20) / ma20.replace(0, np.nan)
+    df["ret_roll_mean5"] = g["return_pct"].transform(
+        lambda s: s.shift(1).rolling(5, min_periods=1).mean()
+    )
+    df["vol_surge_ratio"] = df["log_vol_lag1"] - df["log_vol_roll_mean5"]
 
-    for c in ("ret_lag1", "ret_roll_std5", "close_ma20_ratio"):
+    for c in ("ret_lag1", "ret_roll_std5", "close_ma20_ratio", "ret_roll_mean5"):
         df[c] = pd.to_numeric(df[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
     df["log_vol_lag1"] = pd.to_numeric(df["log_vol_lag1"], errors="coerce").fillna(0.0)
     df["log_vol_roll_mean5"] = pd.to_numeric(df["log_vol_roll_mean5"], errors="coerce").fillna(0.0)
     df["close_ma20_ratio"] = df["close_ma20_ratio"].clip(-1.0, 1.0)
     df["ret_roll_std5"] = df["ret_roll_std5"].clip(0.0, 0.6)
+    df["ret_roll_mean5"] = df["ret_roll_mean5"].clip(-0.25, 0.25)
+    df["vol_surge_ratio"] = pd.to_numeric(df["vol_surge_ratio"], errors="coerce").fillna(0.0)
+    df["vol_surge_ratio"] = df["vol_surge_ratio"].clip(-4.0, 4.0)
     return df
 
 

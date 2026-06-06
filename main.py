@@ -57,6 +57,7 @@ from src import (
     news,
     predict,
     prediction_accuracy_cache,
+    prediction_ranking,
     report,
     snapshot_miss_diagnosis,
     snapshot_rebuild_learning,
@@ -174,6 +175,17 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
                     ),
                     keyword_hits=int(x.get("keyword_hits", 0) or 0),
                     mention_score=float(x.get("mention_score", 0.0) or 0.0),
+                    rank_score=(
+                        float(x["rank_score"])
+                        if x.get("rank_score") is not None
+                        else None
+                    ),
+                    rank_position=(
+                        int(x["rank_position"])
+                        if x.get("rank_position") is not None
+                        else None
+                    ),
+                    confidence_tier=str(x.get("confidence_tier") or "none"),
                 )
             )
         except (TypeError, ValueError):
@@ -194,6 +206,15 @@ def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[
             "ml_prob": (None if r.ml_prob is None else float(r.ml_prob)),
             "keyword_hits": int(getattr(r, "keyword_hits", 0) or 0),
             "mention_score": float(getattr(r, "mention_score", 0.0) or 0.0),
+            "rank_score": (
+                None if getattr(r, "rank_score", None) is None else float(r.rank_score)
+            ),
+            "rank_position": (
+                None
+                if getattr(r, "rank_position", None) is None
+                else int(r.rank_position)
+            ),
+            "confidence_tier": str(getattr(r, "confidence_tier", "none") or "none"),
         }
         for r in rows
     ]
@@ -214,8 +235,8 @@ def _append_compare_row_from_prediction(
     pr_for_gap: predict.PredictionRow | None,
 ) -> None:
     """``PredictionRow`` 한 건을 비교 표 ``rows_compare`` 행 dict로 append합니다."""
-    ph = pr.predicted_return_pct >= pred_pct_min
-    pm = pred_pct_mid_min <= pr.predicted_return_pct < pred_pct_min
+    ph = prediction_ranking.is_high_confidence_prediction(pr)
+    pm = prediction_ranking.is_mid_confidence_prediction(pr)
     rows_compare.append(
         {
             "code": pr.code,
@@ -226,6 +247,9 @@ def _append_compare_row_from_prediction(
             "keyword_hits": pr.keyword_hits,
             "mention_score": pr.mention_score,
             "pred_ret": pr.predicted_return_pct,
+            "ml_prob": pr.ml_prob,
+            "rank_position": getattr(pr, "rank_position", None),
+            "confidence_tier": getattr(pr, "confidence_tier", "none"),
             "actual_ret": actual_ret,
             "actual_big": actual_ret is not None and actual_ret >= config.BIG_MOVE_THRESHOLD,
             "pred_high": ph,
@@ -271,10 +295,11 @@ def _sync_forward_day_rows_from_predictions(
         existing = by_code.get(code)
         if existing is not None:
             existing["pred_ret"] = pr.predicted_return_pct
-            existing["pred_high"] = pr.predicted_return_pct >= pred_pct_min
-            existing["pred_mid"] = (
-                pred_pct_mid_min <= pr.predicted_return_pct < pred_pct_min
-            )
+            existing["ml_prob"] = pr.ml_prob
+            existing["rank_position"] = getattr(pr, "rank_position", None)
+            existing["confidence_tier"] = getattr(pr, "confidence_tier", "none")
+            existing["pred_high"] = prediction_ranking.is_high_confidence_prediction(pr)
+            existing["pred_mid"] = prediction_ranking.is_mid_confidence_prediction(pr)
             existing["rise_band"] = _rise_band_for_row(
                 pr.predicted_return_pct, existing.get("actual_ret")
             )
@@ -880,6 +905,7 @@ def _build_rebuild_learning_payload(
 
         missed_rows, pred_miss_rows = snapshot_miss_diagnosis.build_miss_rows_for_day(dr)
 
+        hit_row = getattr(dr, "hit_at_k_metrics", None) or {}
         daily.append(
             {
                 "trading_day": dr.trading_day.isoformat(),
@@ -887,6 +913,7 @@ def _build_rebuild_learning_payload(
                 "news_highlight_terms_count": len(terms),
                 "news_highlight_terms_sample": terms[:12],
                 "compare_rows": len(dr.rows_compare),
+                "hit_at_k": hit_row if isinstance(hit_row, dict) else {},
                 "rows_pred_actual_both": n_both,
                 "mean_abs_gap_pred_minus_actual_pct": round(day_mae, 4)
                 if day_mae is not None
@@ -1578,7 +1605,7 @@ def _run_pipeline(
                 names,
                 train_events_t,
                 blob,
-                top_n=40,
+                top_n=config.PRED_RANK_POOL_N,
                 min_keyword_hits=min_hits,
                 ml_bundle=ml_bundle,
                 returns_ml=returns_ml,
@@ -1729,10 +1756,15 @@ def _run_pipeline(
                     keywords = []
                     pred_ret = None
 
-                pred_high = pred_ret is not None and pred_ret >= pred_pct_min
+                pred_high = (
+                    prediction_ranking.is_high_confidence_prediction(pr)
+                    if pr is not None
+                    else False
+                )
                 pred_mid = (
-                    pred_ret is not None
-                    and pred_pct_mid_min <= pred_ret < pred_pct_min
+                    prediction_ranking.is_mid_confidence_prediction(pr)
+                    if pr is not None
+                    else False
                 )
                 row_d = {
                     "code": code,
@@ -1743,6 +1775,13 @@ def _run_pipeline(
                     "keyword_hits": (pr.keyword_hits if pr is not None else len(keywords)),
                     "mention_score": (pr.mention_score if pr is not None else 0.0),
                     "pred_ret": pred_ret,
+                    "ml_prob": (pr.ml_prob if pr is not None else None),
+                    "rank_position": (
+                        getattr(pr, "rank_position", None) if pr is not None else None
+                    ),
+                    "confidence_tier": (
+                        getattr(pr, "confidence_tier", "none") if pr is not None else "none"
+                    ),
                     "actual_ret": act,
                     "actual_big": act >= config.BIG_MOVE_THRESHOLD,
                     "pred_high": pred_high,
@@ -1783,8 +1822,8 @@ def _run_pipeline(
                 reasons_html += "<br/><em>일치 키워드</em> " + ", ".join(
                     f"<mark>{w}</mark>" for w in pr.matched_keywords[:10]
                 )
-            ph = pr.predicted_return_pct >= pred_pct_min
-            pm = pred_pct_mid_min <= pr.predicted_return_pct < pred_pct_min
+            ph = prediction_ranking.is_high_confidence_prediction(pr)
+            pm = prediction_ranking.is_mid_confidence_prediction(pr)
             rows_compare.append(
                 {
                     "code": pr.code,
@@ -1795,6 +1834,9 @@ def _run_pipeline(
                     "keyword_hits": pr.keyword_hits,
                     "mention_score": pr.mention_score,
                     "pred_ret": pr.predicted_return_pct,
+                    "ml_prob": pr.ml_prob,
+                    "rank_position": getattr(pr, "rank_position", None),
+                    "confidence_tier": getattr(pr, "confidence_tier", "none"),
                     "actual_ret": act,
                     "actual_big": act is not None and act >= config.BIG_MOVE_THRESHOLD,
                     "pred_high": ph,
@@ -1970,6 +2012,17 @@ def _run_pipeline(
                 threshold=config.BIG_MOVE_THRESHOLD,
             )
 
+        hit_at_k_metrics: dict | None = None
+        if not day_forward and preds:
+            actual_big_codes = {
+                str(m.get("code", "")).zfill(6) for m in actual_big_movers if m.get("code")
+            }
+            hit_at_k_metrics = prediction_ranking.compute_hit_at_k_metrics(
+                [pr.code for pr in preds],
+                actual_big_codes,
+                universe_size=len(codes),
+            )
+
         day_reports.append(
             report.DayReport(
                 trading_day=T,
@@ -1980,6 +2033,7 @@ def _run_pipeline(
                 news_highlight_terms=hl_terms,
                 actual_big_movers=actual_big_movers,
                 forward_observation=day_forward,
+                hit_at_k_metrics=hit_at_k_metrics,
             )
         )
 
@@ -2019,6 +2073,7 @@ def _run_pipeline(
 
     _enrich_cumulative_accuracy_avg(day_reports)
     prediction_accuracy_cache.merge_from_day_reports(day_reports)
+    prediction_accuracy_cache.merge_hit_at_k_from_day_reports(day_reports)
     prediction_accuracy_cache.merge_feedback_buckets_from_day_reports(day_reports)
     prediction_accuracy_cache.merge_keyword_feedback_from_day_reports(
         day_reports, threshold=config.BIG_MOVE_THRESHOLD
@@ -2217,6 +2272,7 @@ def _render_monthly_batch(po: PipelineOut, *, test_range_label: str) -> list[Pat
         "use_decision_cutoff": config.USE_DECISION_NEWS_INTRADAY_CUTOFF,
         "cutoff_kst": f"{config.NEWS_CUTOFF_KST_HOUR:02d}:{config.NEWS_CUTOFF_KST_MINUTE:02d}",
         "run_subtitle": "",
+        "ranking_mode": config.PRED_RANKING_MODE,
     }
     if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
 

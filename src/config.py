@@ -124,7 +124,51 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.35)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 2
+PREDICTION_FREEZE_SCHEMA_VERSION = 3
+
+# --- 랭킹 우선 예측(구조적 정확도 개선) ---
+# 1: ML 확률·순위 기반, pred_high=확신구간 / 0: 레거시(표시%≥20%)
+PRED_RANKING_MODE = os.getenv("PRED_RANKING_MODE", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+# 1: 상위 N개를 20~35% 구간에 일괄 매핑(기본 OFF — 랭킹 모드와 분리)
+PRED_USE_DISPLAY_RANK_MAPPING = os.getenv("PRED_USE_DISPLAY_RANK_MAPPING", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+PRED_RANK_POOL_N = _positive_int_env("PRED_RANK_POOL_N", 40)
+PRED_OUTPUT_MAX = _positive_int_env("PRED_OUTPUT_MAX", 12)
+PRED_ML_HIGH_CONFIDENCE_PROB = _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.035)
+PRED_ML_MID_CONFIDENCE_PROB = _float_env("PRED_ML_MID_CONFIDENCE_PROB", 0.018)
+PRED_ML_MIN_OUTPUT_PROB = _float_env("PRED_ML_MIN_OUTPUT_PROB", 0.008)
+PRED_HEURISTIC_HIGH_RANK_MAX = _positive_int_env("PRED_HEURISTIC_HIGH_RANK_MAX", 5)
+PRED_HEURISTIC_MID_RANK_MAX = _positive_int_env("PRED_HEURISTIC_MID_RANK_MAX", 15)
+PRED_HEURISTIC_MIN_SCORE = _float_env("PRED_HEURISTIC_MIN_SCORE", 2.5)
+PRED_REGIME_GATE_ENABLED = os.getenv("PRED_REGIME_GATE_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+# KOSPI 전일 수익률(소수)이 이 값 미만이면 추천 수·확신 임계를 보수적으로 조정
+PRED_REGIME_KS11_SOFT_MIN = _float_env("PRED_REGIME_KS11_SOFT_MIN", -0.025)
+PRED_REGIME_OUTPUT_SCALE = _float_env("PRED_REGIME_OUTPUT_SCALE", 0.55)
+# Hit@K 평가에 쓸 K 목록(쉼표 구분 환경 변수 ``PRED_EVAL_HIT_AT_K=5,10,20,40``)
+_hit_k_raw = os.getenv("PRED_EVAL_HIT_AT_K", "5,10,20,40").strip()
+PRED_EVAL_HIT_AT_K: tuple[int, ...] = tuple(
+    sorted(
+        {
+            int(x.strip())
+            for x in _hit_k_raw.split(",")
+            if x.strip().isdigit() and int(x.strip()) >= 1
+        }
+    )
+) or (5, 10, 20, 40)
 TRAIN_START_DEFAULT = date(2025, 4, 11)  # 급등–뉴스 이벤트·스냅샷 수집 시작
 # --weekly 등 날짜 인자 없을 때 관측(리포트) 시작일. 학습 라벨 상한은 관측일 T 직전(워크포워드).
 TEST_START = date(2026, 1, 1)

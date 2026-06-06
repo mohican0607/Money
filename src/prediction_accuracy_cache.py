@@ -41,9 +41,9 @@ def _ratio(pred_ret: float | None, actual_ret: float | None) -> float | None:
 
 
 def _default_payload() -> dict:
-    """빈 추적 캐시 페이로드(version 4) 기본 구조를 만듭니다."""
+    """빈 추적 캐시 페이로드(version 5) 기본 구조를 만듭니다."""
     return {
-        "version": 4,
+        "version": 5,
         "t_code_ratio": {},
         "t_code_actual_pct": {},
         "high_pred_by_code": {},
@@ -51,6 +51,7 @@ def _default_payload() -> dict:
         "all_pred_by_code": {},
         "feedback_bucket_stats": {},
         "keyword_feedback_weights": {},
+        "hit_at_k_by_day": {},
     }
 
 
@@ -110,6 +111,9 @@ def _load_payload() -> dict:
     kw = raw.get("keyword_feedback_weights")
     if isinstance(kw, dict):
         out["keyword_feedback_weights"] = kw
+    hak = raw.get("hit_at_k_by_day")
+    if isinstance(hak, dict):
+        out["hit_at_k_by_day"] = hak
     _payload_cache = out
     return out
 
@@ -119,7 +123,7 @@ def _save_payload(payload: dict) -> None:
     _invalidate_payload_cache()
     TRACK_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": 4,
+        "version": 5,
         "t_code_ratio": dict(payload.get("t_code_ratio") or {}),
         "t_code_actual_pct": dict(payload.get("t_code_actual_pct") or {}),
         "high_pred_by_code": dict(payload.get("high_pred_by_code") or {}),
@@ -127,6 +131,7 @@ def _save_payload(payload: dict) -> None:
         "all_pred_by_code": dict(payload.get("all_pred_by_code") or {}),
         "feedback_bucket_stats": dict(payload.get("feedback_bucket_stats") or {}),
         "keyword_feedback_weights": dict(payload.get("keyword_feedback_weights") or {}),
+        "hit_at_k_by_day": dict(payload.get("hit_at_k_by_day") or {}),
     }
     TRACK_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -337,14 +342,23 @@ def merge_pred_history_from_day_reports(
         t = dr.trading_day
         t_iso = t.isoformat()
         for r in dr.rows_compare:
+            if config.PRED_RANKING_MODE:
+                tier = str(r.get("confidence_tier") or "")
+                if history_key == "high_pred_by_code" and tier != "high":
+                    continue
+                if history_key == "mid_pred_by_code" and tier != "mid":
+                    continue
+                if history_key == "all_pred_by_code" and tier not in ("high", "mid", "low"):
+                    continue
             pr = r.get("pred_ret")
             if pr is None:
                 continue
             prf = float(pr)
-            if prf + 1e-9 < thr_lo:
-                continue
-            if thr_hi is not None and not (prf < thr_hi - 1e-9):
-                continue
+            if not config.PRED_RANKING_MODE:
+                if prf + 1e-9 < thr_lo:
+                    continue
+                if thr_hi is not None and not (prf < thr_hi - 1e-9):
+                    continue
             code = str(r.get("code", "")).zfill(6)
             k = _key(t, code)
             prev_row = next(
@@ -821,3 +835,22 @@ def apply_cached_cumulative_fallback(day_reports: list) -> int:
             r["cumulative_accuracy_avg"] = m
             n += 1
     return n
+
+
+def merge_hit_at_k_from_day_reports(day_reports: list) -> None:
+    """``DayReport.hit_at_k_metrics`` 를 ``hit_at_k_by_day`` 맵에 병합합니다."""
+    p = _load_payload()
+    by_day: dict = dict(p.get("hit_at_k_by_day") or {})
+    changed = False
+    for dr in day_reports:
+        m = getattr(dr, "hit_at_k_metrics", None)
+        if not isinstance(m, dict) or not m:
+            continue
+        t_iso = dr.trading_day.isoformat()
+        row = {"trading_day": t_iso, **m}
+        if by_day.get(t_iso) != row:
+            by_day[t_iso] = row
+            changed = True
+    if changed:
+        p["hit_at_k_by_day"] = by_day
+        _save_payload(p)

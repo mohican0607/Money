@@ -3,7 +3,7 @@
 
 **입력(의사결정 시점)**: N−1~N 거래일 **14:30(KST)까지** 수집·분류한 뉴스(시장·국제·테마·종목),
 전일 급등·테마 가중치, 시세·KOSPI 흐름, (보조) 과거 급등 종목의 뉴스 프로필·피드백 가중치.
-**출력**: T일 20%↑ 후보 순위·표시 예측 상승률(상위 후보를 20~35% 구간에 순위 매핑).
+**출력**: T일 20%↑ 후보 **랭킹**(ML 확률·확신 구간). 레거시 표시 매핑은 ``PRED_USE_DISPLAY_RANK_MAPPING=1``.
 """
 from __future__ import annotations
 
@@ -32,6 +32,9 @@ class PredictionRow:
     ml_prob: float | None = None
     keyword_hits: int = 0
     mention_score: float = 0.0
+    rank_score: float | None = None
+    rank_position: int | None = None
+    confidence_tier: str = "none"
 
 
 def _build_code_keyword_profile(train_events: list[BreakoutEvent]) -> dict[str, frozenset[str]]:
@@ -424,12 +427,20 @@ def predict_for_trading_day(
 
     ranked.sort(key=lambda x: x.score, reverse=True)
     top = ranked[:top_n]
-    apply_display_return_pct_ranking(
+    from . import prediction_ranking
+
+    ks11_ret = None
+    try:
+        from . import ml_move_rank
+
+        ks11_ret, _ = ml_move_rank._ks11_market_feats(target_day)
+    except Exception:
+        ks11_ret = None
+    return prediction_ranking.finalize_ranked_predictions(
         top,
-        rank_value=lambda r: r.score,
-        reason_prefix="표시 예측 상승률은 휴리스틱 점수(키워드·종목명·테마) 기준으로",
+        target_day=target_day,
+        ks11_ret_lag1=ks11_ret,
     )
-    return top
 
 
 def aggregate_news_for_window(

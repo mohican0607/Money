@@ -2,7 +2,7 @@
 
 KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까지)** 수집·분류한 **뉴스(시장·테마·종목·국제정세 등)**, **전일 급등·테마 가중치**, **시세·KOSPI 흐름**, (보조) 과거 급등 종목 프로필·오판 피드백을 이용해 **다음 거래일(관측일 T) 수익률** 후보를 HTML 리포트로 출력하는 도구입니다.
 
-예측은 **휴리스틱**과 **ML 랭커(HistGradientBoosting)** 를 함께 쓰며, `PRED_USE_ML_RANKER=0` 이면 휴리스틱만 사용합니다. 표시 예측 상승률은 상위 후보 **순위 기준 20~35%** 구간으로 매핑합니다.
+예측은 **휴리스틱**과 **ML 랭커(HistGradientBoosting)** 를 함께 쓰며, `PRED_USE_ML_RANKER=0` 이면 휴리스틱만 사용합니다. 기본(**랭킹 모드**)에서는 상위 40개를 **ML 급등 확률 순**으로 정렬하고, **고확신/중확신**만 `pred_high`·`pred_mid`로 표시합니다(`PRED_RANKING_MODE=1`, `PRED_USE_DISPLAY_RANK_MAPPING=0`). 레거시 20~35% 일괄 매핑은 `PRED_USE_DISPLAY_RANK_MAPPING=1` 로 되돌릴 수 있습니다.
 
 ---
 
@@ -17,6 +17,7 @@ KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까�
 | `src/trading_calendar.py` | XKRX 거래일 + `KRX_AD_HOC_SESSION_CLOSURES`(선거·제헌절 등 임시 휴장) |
 | `src/features.py` | 토큰·키워드, `BreakoutEvent`(과거 급등–뉴스) 구축 |
 | `src/predict.py` | 종목 스코어·예측 수익률·갭 설명 HTML·키워드 피드백 반영 |
+| `src/prediction_ranking.py` | 랭킹 확정·확신 게이트·Hit@K·레짐 보수 조정 |
 | `src/ml_move_rank.py` | 감독학습 랭커 학습·추론, KS11 시장 피처, miss 진단 가중 |
 | `src/market_index.py` | KOSPI 등 지수 일봉·당일 수익률 |
 | `src/report.py` | Jinja2 HTML(월간 탭·단일일·dated 누적 리포트) |
@@ -323,9 +324,23 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 
 ---
 
-## 12. 한계·주의
+## 12. 랭킹 모드(구조적 정확도 개선)
+
+| 항목 | 내용 |
+|------|------|
+| **문제 정의** | 절대 20% 회귀 대신 **상위 K 랭킹 + ML 확률(P)** · 확신 구간(`high`/`mid`) |
+| **평가** | 일별 **Hit@5/10/20/40**·lift·recall → `prediction_accuracy_track.json` `hit_at_k_by_day`·리포트 패널 |
+| **피처** | ML v6: `ret_roll_mean5`, `vol_surge_ratio`, `ret_vs_ks11_lag1`, `ks11_regime_risk_off` |
+| **레짐 게이트** | KOSPI 전일 수익률 &lt; `PRED_REGIME_KS11_SOFT_MIN` 이면 고확신 출력 수 축소 |
+| **ML 재학습** | 피처 변경 후 `python main.py --rebuild-train-snapshot From To` 권장 |
+
+주요 환경 변수: `PRED_ML_HIGH_CONFIDENCE_PROB`, `PRED_OUTPUT_MAX`, `PRED_RANK_POOL_N`, `PRED_EVAL_HIT_AT_K`.
+
+---
+
+## 13. 한계·주의
 
 - 투자 권유가 아닌 **패턴 탐색·리포트**용입니다.
 - 뉴스·공시 검색 결과에 의존하며, 수급·재무 등 비뉴스 요인은 제한적으로만 반영됩니다.
-- 표시 예측%는 **순위 매핑·캘리브레이션** 결과이며, 확률校정된 투자 수익률 보장이 아닙니다.
+- 표시 예측%는 **확률→표시 변환** 또는(레거시) 순위 매핑 결과이며, 투자 수익률 보장이 아닙니다.
 - `rebuild_learning` 은 `--rebuild` / `--append` + **From~To** 실행이 **정상 완료**되어야 해당 구간에 쌓입니다.

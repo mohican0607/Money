@@ -60,9 +60,13 @@ FEATURE_NAMES = (
     "ret_roll_std5",
     "log_vol_roll_mean5",
     "close_ma20_ratio",
+    "ret_roll_mean5",
+    "vol_surge_ratio",
+    "ret_vs_ks11_lag1",
+    "ks11_regime_risk_off",
 )
 
-ML_MODEL_VERSION = 5
+ML_MODEL_VERSION = 6
 MAX_NEG_PER_DAY = 360
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
@@ -167,13 +171,15 @@ def _load_ks11_cached(start: date, end: date) -> pd.DataFrame:
         return pd.DataFrame()
 
 def _price_feats_row(idx: pd.DataFrame | None, code: str, trading_day: date) -> list[float]:
-    """``returns_ml`` 인덱스에서 종목·거래일 시세 피처 5개. 없으면 0으로 채움."""
+    """``returns_ml`` 인덱스에서 종목·거래일 시세 피처. 없으면 0으로 채움."""
     cols = (
         "ret_lag1",
         "log_vol_lag1",
         "ret_roll_std5",
         "log_vol_roll_mean5",
         "close_ma20_ratio",
+        "ret_roll_mean5",
+        "vol_surge_ratio",
     )
     if idx is None:
         return [0.0] * len(cols)
@@ -221,6 +227,14 @@ def _feat_vector(
     overlap = theme_carryover.theme_kw_overlap_score(kw_news, theme_weights)
     # 시장흐름(지수) 피처: KOSPI(KS11) 전일 수익률 및 최근 변동성
     ks11_ret_lag1, ks11_std5 = _ks11_market_feats(before_exclusive)
+    price = _price_feats_row(ohlcv_idx, code, before_exclusive)
+    ret_lag1 = price[0] if price else 0.0
+    ret_vs_ks11 = float(ret_lag1) - float(ks11_ret_lag1)
+    risk_off = (
+        1.0
+        if float(ks11_ret_lag1) < float(config.PRED_REGIME_KS11_SOFT_MIN)
+        else 0.0
+    )
     base = [
         float(n_hit),
         float(mention),
@@ -235,7 +249,7 @@ def _feat_vector(
         float(ks11_ret_lag1),
         float(ks11_std5),
     ]
-    return base + _price_feats_row(ohlcv_idx, code, before_exclusive)
+    return base + price + [float(ret_vs_ks11), float(risk_off)]
 
 
 def _build_training_arrays(
@@ -561,24 +575,28 @@ def rank_predictions_ml(
         ] + list(pr.reasons)
         out.append(pr)
 
-    predict.apply_display_return_pct_ranking(
+    from . import prediction_ranking
+
+    ks11_ret, _ = _ks11_market_feats(target_day)
+    out = prediction_ranking.finalize_ranked_predictions(
         out,
-        rank_value=lambda r: float(r.ml_prob or 0.0),
-        reason_prefix="표시 예측 상승률은 ML 급등 확률 순위 기준으로",
+        target_day=target_day,
+        ks11_ret_lag1=ks11_ret,
     )
-    for pr in out:
-        n_hit = int(getattr(pr, "keyword_hits", 0) or 0)
-        mention = float(getattr(pr, "mention_score", 0.0) or 0.0)
-        pr.predicted_return_pct = (
-            predict._feedback_calibrated_return(
-                pr.predicted_return_pct / 100.0,
-                code=pr.code,
-                n_hit=n_hit,
-                mention=mention,
-                feedback_ctx=feedback_ctx,
-                clamp_lo=float(config.PRED_RETURN_MIN),
-                clamp_hi=float(config.PRED_RETURN_MAX),
+    if config.PRED_USE_DISPLAY_RANK_MAPPING and config.PRED_ERROR_FEEDBACK_ENABLED:
+        for pr in out:
+            n_hit = int(getattr(pr, "keyword_hits", 0) or 0)
+            mention = float(getattr(pr, "mention_score", 0.0) or 0.0)
+            pr.predicted_return_pct = (
+                predict._feedback_calibrated_return(
+                    pr.predicted_return_pct / 100.0,
+                    code=pr.code,
+                    n_hit=n_hit,
+                    mention=mention,
+                    feedback_ctx=feedback_ctx,
+                    clamp_lo=float(config.PRED_RETURN_MIN),
+                    clamp_hi=float(config.PRED_RETURN_MAX),
+                )
+                * 100.0
             )
-            * 100.0
-        )
     return out

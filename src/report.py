@@ -31,6 +31,7 @@ class DayReport:
     actual_big_movers: list[dict]
     forward_observation: bool = False
     market_theme_html: str = ""
+    hit_at_k_metrics: dict | None = None
 
 
 def naver_chart_url(code: str) -> str:
@@ -538,6 +539,23 @@ _TEMPLATE = r"""
 </div>
 {% endif %}
 {%- endmacro %}
+{% macro hit_at_k_panel(d, meta) -%}
+{% if d.hit_at_k_metrics %}
+<div class="hit-at-k-panel" style="margin:8px 0 14px;padding:10px 12px;background:#1a2433;border:1px solid #334;border-radius:8px;font-size:0.88rem">
+  <strong style="color:var(--ok)">순위 평가 Hit@K</strong>
+  <span class="sub" style="margin-left:8px">실제 {{ meta.threshold }} {{ d.hit_at_k_metrics.actual_big_count }}종 · 무작위 대비 lift</span>
+  <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:8px">
+    {% for k in [5,10,20,40] %}
+    {% if d.hit_at_k_metrics['hit_at_' ~ k] is defined %}
+    <span class="pill">@{{ k }}: {{ d.hit_at_k_metrics['hit_at_' ~ k] }}/{{ k }}
+      {% if d.hit_at_k_metrics['lift_at_' ~ k] is not none %} (×{{ "%.1f"|format(d.hit_at_k_metrics['lift_at_' ~ k]) }}){% endif %}
+    </span>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{%- endmacro %}
 {% macro day_panel(d, meta) -%}
   <section id="day-{{ d.trading_day.isoformat() }}" class="day-market-block">
     <div class="day-heading-row">
@@ -545,6 +563,7 @@ _TEMPLATE = r"""
       {{ market_filter_radios(d.trading_day.isoformat(), d.forward_observation | default(false)) }}
     </div>
     {{ market_theme_panel(d) }}
+    {{ hit_at_k_panel(d, meta) }}
     <p class="sub">{% if meta.use_decision_cutoff %}N-1 거래일 {{ meta.cutoff_kst }}(KST)까지 반영한 {% endif %}예측 입력 뉴스 하이라이트 키워드 예시:
       {% for t in d.news_highlight_terms[:20] %}
       <span class="pill">{{ t }}</span>
@@ -574,7 +593,7 @@ _TEMPLATE = r"""
         <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
           <td style="white-space:nowrap;vertical-align:top" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
             {% if r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
-            {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">예측≥{{ meta.threshold }}</span>{% endif %}
+            {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측≥{{ meta.threshold }}{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
           </td>
           <td data-sort-col="stock" data-sort-value="{{ r.name }} {{ r.code }}">
             {{ stock_name_link(r.code, r.name) }}
@@ -585,6 +604,7 @@ _TEMPLATE = r"""
           </td>
           <td class="{% if r.pred_high | default(false) %}warn{% endif %}" style="vertical-align:top;{% if r.pred_high | default(false) %}color:var(--warn);font-weight:600{% endif %}" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
             {% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}
+            {% if r.ml_prob is not none %}<div style="font-size:0.72rem;color:var(--muted);margin-top:2px">P={{ "%.2f"|format(r.ml_prob * 100) }}%{% if r.rank_position is not none %} · #{{ r.rank_position }}{% endif %}</div>{% endif %}
           </td>
           <td style="vertical-align:top">
             {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
@@ -1046,7 +1066,24 @@ _COMPACT_TEMPLATE = r"""
 </div>
 {% endif %}
 {%- endmacro %}
-{% macro compact_day_table(d, empty_extra='') -%}
+{% macro hit_at_k_panel(d, meta) -%}
+{% if d.hit_at_k_metrics %}
+<div class="hit-at-k-panel" style="margin:8px 0 14px;padding:10px 12px;background:#1a2433;border:1px solid #334;border-radius:8px;font-size:0.88rem">
+  <strong style="color:var(--ok)">순위 평가 Hit@K</strong>
+  <span class="sub" style="margin-left:8px">실제 {{ meta.threshold }} {{ d.hit_at_k_metrics.actual_big_count }}종 · 무작위 대비 lift</span>
+  <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:8px">
+    {% for k in [5,10,20,40] %}
+    {% if d.hit_at_k_metrics['hit_at_' ~ k] is defined %}
+    <span class="pill">@{{ k }}: {{ d.hit_at_k_metrics['hit_at_' ~ k] }}/{{ k }}
+      {% if d.hit_at_k_metrics['lift_at_' ~ k] is not none %} (×{{ "%.1f"|format(d.hit_at_k_metrics['lift_at_' ~ k]) }}){% endif %}
+    </span>
+    {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{%- endmacro %}
+{% macro compact_day_table(d, meta, empty_extra='') -%}
 {% if d.rows_compare %}
 <table class="rows-compare">
   <thead>
@@ -1068,7 +1105,7 @@ _COMPACT_TEMPLATE = r"""
     <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
       <td style="white-space:nowrap;vertical-align:top" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
         {% if r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제</span>{% endif %}
-        {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">예측</span>{% endif %}
+        {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
       </td>
       <td data-sort-col="stock" data-sort-value="{{ r.name }} {{ r.code }}">
         {{ stock_name_link(r.code, r.name) }}
@@ -1079,6 +1116,7 @@ _COMPACT_TEMPLATE = r"""
       </td>
       <td class="{% if r.pred_high | default(false) %}warn{% endif %}" style="vertical-align:top" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
         {% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}
+        {% if r.ml_prob is not none %}<div style="font-size:0.72rem;color:var(--muted);margin-top:2px">P={{ "%.2f"|format(r.ml_prob * 100) }}%{% if r.rank_position is not none %} · #{{ r.rank_position }}{% endif %}</div>{% endif %}
       </td>
       <td style="vertical-align:top">
         {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
@@ -1169,7 +1207,8 @@ _COMPACT_TEMPLATE = r"""
           {{ market_filter_radios(d.trading_day.isoformat() ~ "-" ~ w.monday.isoformat(), d.forward_observation | default(false)) }}
         </div>
         {{ market_theme_panel(d) }}
-        {{ compact_day_table(d) }}
+        {{ hit_at_k_panel(d, meta) }}
+        {{ compact_day_table(d, meta) }}
       </section>
       {% endfor %}
     </div>
@@ -1201,7 +1240,8 @@ _COMPACT_TEMPLATE = r"""
       {{ market_filter_radios(d.trading_day.isoformat()) }}
     </div>
     {{ market_theme_panel(d) }}
-    {{ compact_day_table(d) }}
+    {{ hit_at_k_panel(d, meta) }}
+    {{ compact_day_table(d, meta) }}
   </section>
   {% endfor %}
   {% elif days|length > 1 %}
@@ -1222,7 +1262,8 @@ _COMPACT_TEMPLATE = r"""
           {{ market_filter_radios(d.trading_day.isoformat() ~ "-daytab-" ~ loop.index0|string) }}
         </div>
         {{ market_theme_panel(d) }}
-        {{ compact_day_table(d) }}
+        {{ hit_at_k_panel(d, meta) }}
+        {{ compact_day_table(d, meta) }}
       </div>
     </div>
     {% endfor %}
@@ -1252,7 +1293,8 @@ _COMPACT_TEMPLATE = r"""
       {{ market_filter_radios(d.trading_day.isoformat() ~ "-single") }}
     </div>
     {{ market_theme_panel(d) }}
-    {{ compact_day_table(d, '장 전 실행 시 데이터 없음') }}
+    {{ hit_at_k_panel(d, meta) }}
+    {{ compact_day_table(d, meta, '장 전 실행 시 데이터 없음') }}
   </section>
   {% endfor %}
   {% endif %}
