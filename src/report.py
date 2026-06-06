@@ -159,8 +159,59 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       apply();
     });
   }
+  function bindIntegrateTips(root) {
+    var scope = root || document;
+    scope.querySelectorAll(".integrate-tip").forEach(function (tip) {
+      var popup = tip.querySelector(".integrate-tip-popup");
+      if (!popup) return;
+      var margin = 12;
+      var gap = 8;
+      function place() {
+        popup.style.position = "fixed";
+        popup.style.setProperty("left", "auto", "important");
+        popup.style.setProperty("right", "auto", "important");
+        popup.style.setProperty("top", "auto", "important");
+        popup.style.visibility = "hidden";
+        popup.style.display = "block";
+        var pw = popup.offsetWidth;
+        var ph = popup.offsetHeight;
+        var tr = tip.getBoundingClientRect();
+        var vw = window.innerWidth;
+        var vh = window.innerHeight;
+        var left = tr.left;
+        var top = tr.bottom + gap;
+        if (left + pw > vw - margin) left = vw - pw - margin;
+        if (left < margin) left = margin;
+        if (top + ph > vh - margin) top = Math.max(margin, tr.top - ph - gap);
+        popup.style.setProperty("left", left + "px", "important");
+        popup.style.setProperty("top", top + "px", "important");
+        popup.style.zIndex = "2500";
+        popup.style.visibility = "";
+      }
+      function reset() {
+        popup.style.position = "";
+        popup.style.removeProperty("left");
+        popup.style.removeProperty("right");
+        popup.style.removeProperty("top");
+        popup.style.zIndex = "";
+        popup.style.visibility = "";
+      }
+      function repositionIfOpen() {
+        if (tip.matches(":hover") || tip.contains(document.activeElement)) place();
+      }
+      tip.addEventListener("mouseenter", place);
+      tip.addEventListener("focusin", place);
+      tip.addEventListener("mouseleave", reset);
+      tip.addEventListener("focusout", function (e) {
+        if (!tip.contains(e.relatedTarget)) reset();
+      });
+      window.addEventListener("resize", repositionIfOpen);
+      window.addEventListener("scroll", repositionIfOpen, true);
+    });
+  }
   document.querySelectorAll("table.rows-compare").forEach(bindSortTable);
   bindMarketRowFilters(document);
+  bindIntegrateTips(document);
 })();
 </script>"""
 
@@ -343,6 +394,11 @@ _TEMPLATE = r"""
       max-height: 90vh;
       overflow: auto;
       padding: 14px 16px !important;
+    }
+    .integrate-tip-popup {
+      left: auto !important;
+      right: 0 !important;
+      top: calc(100% + 8px) !important;
     }
     .combo-tip-inner {
       display: grid;
@@ -619,9 +675,9 @@ _TEMPLATE = r"""
             {% if r.cumulative_accuracy_all_avg is defined and r.cumulative_accuracy_all_avg is not none %}{{ "%.2f"|format(r.cumulative_accuracy_all_avg * 100) }}%{% else %}—{% endif %}
           </td>
           <td class="pred-reason">
-            <span class="gap-tip combo-tip">
+            <span class="gap-tip combo-tip integrate-tip">
               <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 이유, 예측·실제 차이, 상·하락 참고를 함께 보기">통합 보기</span>
-              <div class="gap-tip-popup combo-tip-popup" role="tooltip">
+              <div class="gap-tip-popup combo-tip-popup integrate-tip-popup" role="tooltip">
                 <div class="combo-tip-inner">
                   <div class="combo-tip-col">
                     <h4 class="combo-tip-h">예측 이유</h4>
@@ -879,6 +935,11 @@ _COMPACT_TEMPLATE = r"""
       overflow: auto;
       padding: 14px 16px !important;
     }
+    .integrate-tip-popup {
+      left: auto !important;
+      right: 0 !important;
+      top: calc(100% + 8px) !important;
+    }
     .combo-tip-inner {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1131,9 +1192,9 @@ _COMPACT_TEMPLATE = r"""
         {% if r.cumulative_accuracy_all_avg is defined and r.cumulative_accuracy_all_avg is not none %}{{ "%.2f"|format(r.cumulative_accuracy_all_avg * 100) }}%{% else %}—{% endif %}
       </td>
       <td class="pred-reason">
-        <span class="gap-tip combo-tip">
+        <span class="gap-tip combo-tip integrate-tip">
           <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 이유, 예측·실제 차이, 상·하락 참고를 함께 보기">통합 보기</span>
-          <div class="gap-tip-popup combo-tip-popup" role="tooltip">
+          <div class="gap-tip-popup combo-tip-popup integrate-tip-popup" role="tooltip">
             <div class="combo-tip-inner">
               <div class="combo-tip-col">
                 <h4 class="combo-tip-h">예측 이유</h4>
@@ -1424,7 +1485,12 @@ _DATED_N_TEMPLATE = r"""
       overflow: auto;
       padding: 14px 16px !important;
     }
-    .integrate-tip-popup { text-align: center; }
+    .integrate-tip-popup {
+      left: auto !important;
+      right: 0 !important;
+      top: calc(100% + 8px) !important;
+      text-align: center;
+    }
     .integrate-tip-popup .combo-tip-inner { text-align: left; margin: 0 auto; }
     .integrate-tip-popup .combo-tip-h { text-align: center; }
     .combo-tip-inner {
