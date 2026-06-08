@@ -248,6 +248,80 @@ def render_report(
     out_path.write_text(html, encoding="utf-8")
 
 
+_DAY_SECTION_RE = re.compile(
+    r'<section\s[^>]*\bid="day-(\d{4}-\d{2}-\d{2})"[^>]*>.*?</section>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def extract_monthly_report_day_sections(source: Path | str) -> dict[date, str]:
+    """
+    월간 리포트 HTML에서 거래일별 ``<section id="day-…">`` 블록 전체를 추출합니다.
+    """
+    if isinstance(source, Path):
+        try:
+            html = source.read_text(encoding="utf-8")
+        except OSError:
+            return {}
+    else:
+        html = source
+    out: dict[date, str] = {}
+    for m in _DAY_SECTION_RE.finditer(html):
+        try:
+            d = date.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        out[d] = m.group(0)
+    return out
+
+
+def parse_monthly_report_trading_days(source: Path | str) -> list[date]:
+    """
+    월간 리포트 HTML에서 ``id="day-YYYY-MM-DD"`` 앵커를 읽어 거래일 목록을 반환합니다.
+    """
+    if isinstance(source, Path):
+        try:
+            html = source.read_text(encoding="utf-8")
+        except OSError:
+            return []
+    else:
+        html = source
+    hits = re.findall(r'id="day-(\d{4}-\d{2}-\d{2})"', html)
+    seen: set[date] = set()
+    out: list[date] = []
+    for s in hits:
+        try:
+            d = date.fromisoformat(s)
+        except ValueError:
+            continue
+        if d in seen:
+            continue
+        seen.add(d)
+        out.append(d)
+    return sorted(out)
+
+
+def collect_monthly_report_index_links(output_dir: Path | None = None) -> list[tuple[str, str]]:
+    """
+    ``output/report_YYYY.MM.html`` 파일을 스캔해 월간 목차용 ``(파일명, 라벨)`` 목록을 만듭니다.
+    """
+    root = output_dir or config.OUTPUT_DIR
+    links: list[tuple[str, str]] = []
+    for path in sorted(root.glob("report_*.html")):
+        low = path.name.lower()
+        if "index" in low or "dated" in low:
+            continue
+        if not re.fullmatch(r"report_\d{4}\.\d{2}\.html", path.name):
+            continue
+        days = parse_monthly_report_trading_days(path)
+        if days:
+            label = f"{path.name} · {days[0].isoformat()} ~ {days[-1].isoformat()} ({len(days)}일)"
+        else:
+            label = path.name
+        links.append((path.name, label))
+    return links
+
+
 def render_movers_index(week_links: list[tuple[str, str]], out_path: Path, title: str) -> None:
     """
     여러 월/주 HTML 파일로의 링크 목차 페이지를 생성합니다.
@@ -267,6 +341,45 @@ def _monday_of_iso_week(d: date) -> date:
     return d - timedelta(days=d.weekday())
 
 
+def _panel_days_from_reports_and_preserved(
+    reports: list[DayReport],
+    preserved_day_html: dict[date, str] | None,
+) -> list[dict]:
+    """렌더용 일자 목록: 이번 실행 ``DayReport`` + 기존 HTML 조각(유지 일자)."""
+    preserved = preserved_day_html or {}
+    by_day = {dr.trading_day: dr for dr in reports}
+    out: list[dict] = []
+    for d in sorted(set(by_day.keys()) | set(preserved.keys())):
+        if d in by_day:
+            out.append(
+                {"trading_day": d, "report": by_day[d], "preserved_html": None}
+            )
+        else:
+            out.append(
+                {"trading_day": d, "report": None, "preserved_html": preserved[d]}
+            )
+    return out
+
+
+def _week_panels_from_panel_days(panel_days: list[dict]) -> list[dict]:
+    by_week: dict[date, list[dict]] = {}
+    for pd in panel_days:
+        d = pd["trading_day"]
+        by_week.setdefault(_monday_of_iso_week(d), []).append(pd)
+    week_panels: list[dict] = []
+    for mon in sorted(by_week.keys()):
+        wdays = sorted(by_week[mon], key=lambda x: x["trading_day"])
+        fd, ld = wdays[0]["trading_day"], wdays[-1]["trading_day"]
+        week_panels.append(
+            {
+                "monday": mon,
+                "label": f"{mon.isoformat()} 주 · {fd.isoformat()} ~ {ld.isoformat()}",
+                "days": wdays,
+            }
+        )
+    return week_panels
+
+
 def render_compact_tabbed_report(
     title: str,
     days: list[DayReport],
@@ -276,6 +389,7 @@ def render_compact_tabbed_report(
     week_note: str | None = None,
     stack_days: bool = False,
     week_tabs_stack_days: bool = False,
+    preserved_day_html: dict[date, str] | None = None,
 ) -> None:
     """
     실제 20%↑·예측 후보 비교 표 중심의 컴팩트 리포트를 ``out_path`` 에 씁니다.
@@ -285,23 +399,12 @@ def render_compact_tabbed_report(
         stack_days: ISO 주 탭 없이 일자별 섹션만 세로 스택.
         week_tabs_stack_days: True이면 월요일 기준 주별 탭 → 탭 내부에서 거래일 오름차순 스택
             (``main`` 월간/구간 배치에서 사용).
+        preserved_day_html: 기존 월간 HTML에서 가져온 일자 블록(이번 실행에 없는 날).
     """
     week_panels: list[dict] | None = None
     if week_tabs_stack_days:
-        by_week: dict[date, list[DayReport]] = {}
-        for dr in days:
-            by_week.setdefault(_monday_of_iso_week(dr.trading_day), []).append(dr)
-        week_panels = []
-        for mon in sorted(by_week.keys()):
-            wdays = sorted(by_week[mon], key=lambda x: x.trading_day)
-            fd, ld = wdays[0].trading_day, wdays[-1].trading_day
-            week_panels.append(
-                {
-                    "monday": mon,
-                    "label": f"{mon.isoformat()} 주 · {fd.isoformat()} ~ {ld.isoformat()}",
-                    "days": wdays,
-                }
-            )
+        panel_days = _panel_days_from_reports_and_preserved(days, preserved_day_html)
+        week_panels = _week_panels_from_panel_days(panel_days)
     env = Environment(autoescape=select_autoescape(["html", "xml"]))
     tpl = env.from_string(_COMPACT_TEMPLATE)
     html = tpl.render(
@@ -1261,7 +1364,11 @@ _COMPACT_TEMPLATE = r"""
     </div>
     {% for w in week_panels %}
     <div class="tab-panel{% if loop.first %} active{% endif %}" role="tabpanel" data-tab-panel="{{ loop.index0 }}">
-      {% for d in w.days %}
+      {% for day in w.days %}
+      {% if day.preserved_html %}
+      {{ day.preserved_html | safe }}
+      {% else %}
+      {% set d = day.report %}
       <section class="day-stack day-market-block{% if d.forward_observation | default(false) %} day-forward-obs{% endif %}" id="day-{{ d.trading_day.isoformat() }}">
         <div class="day-heading-row">
           <h2>{{ d.trading_day.isoformat() }}{% if d.forward_observation | default(false) %} <span class="pill" style="font-size:0.72rem;font-weight:500;color:var(--warn)">예측 전용</span>{% endif %}</h2>
@@ -1271,6 +1378,7 @@ _COMPACT_TEMPLATE = r"""
         {{ hit_at_k_panel(d, meta) }}
         {{ compact_day_table(d, meta) }}
       </section>
+      {% endif %}
       {% endfor %}
     </div>
     {% endfor %}

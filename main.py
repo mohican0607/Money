@@ -13,7 +13,8 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
     → T가 오늘/미래면 예측 후보 중심, T가 과거면 pykrx로 시장 20%↑와 예측을 함께 표시(OHLCV 샘플 밖 급등 포함).
 
   python main.py 20260102 20260410
-    → 관측 거래일 T가 위 구간에 있는 날만 배치, 월별 HTML·목차 (--weekly 와 동일 형식)
+    → 관측 거래일 T가 위 구간(From~To)에 있는 날만 예측·계산, 월별 HTML·목차 (--weekly 와 동일 형식)
+    → 같은 달 report_YYYY.MM.html 이 있으면 From~To 일자만 갱신·추가하고, 그 밖의 기존 일자 HTML은 유지(기본). 끄려면 --no-report-expand
 
   python main.py --weekly
     → config REPORT_TEST_DAY_START~END 구간을 달력 월 단위로 묶어
@@ -487,7 +488,8 @@ def _print_usage() -> None:
       지정 관측일 T(YYYYMMDD), 기준일 N은 T 직전 거래일로 자동 계산.
       output/report_dated_by_MMDD.html 에 해당 T 블록만 추가·갱신
   python main.py YYYYMMDD YYYYMMDD
-      From~To 거래일 구간 배치, report_YYYY.MM.html 및 report_index_monthly.html
+      From~To 거래일만 예측·계산, report_YYYY.MM.html 및 report_index_monthly.html
+      (같은 달 HTML이 있으면 From~To 일자만 갱신·추가, 그 외 일자는 기존 HTML 유지 — 기본)
   python main.py --weekly
       월간 배치 (config REPORT_TEST_DAY_START ~ END, --weekly 이름은 호환용)
 
@@ -515,8 +517,8 @@ def _print_usage() -> None:
       기존 모델을 로드합니다. From~To 안은 예측·freeze·rebuild_learning 병합(구간 보강용).
       플래그 없이 ``python main.py From To`` 만 실행해도 From~To 안은 freeze 를 무시하고 재예측합니다.
   --no-report-expand
-      From~To 구간 실행 시 기존 월간 HTML 에 있던 날짜를 자동으로 추가하지 않습니다.
-      (인자 거래일만 예측·리포트에 반영)
+      월간 HTML 병합 없이 이번 From~To 거래일만으로 해당 월 파일을 덮어씁니다.
+      (기존 일자 HTML 유지·append 안 함)
   --use-freeze
       From~To 구간이어도 prediction_freeze_by_t.json 예측 고정 캐시를 재사용합니다.
       (리포트·표시만 빠르게 갱신할 때. 예측 수치를 다시 맞추려면 플래그 없이 실행)
@@ -2261,10 +2263,18 @@ def _should_skip_ohlcv_right_gap(n_day: date, *, now_kst: datetime) -> bool:
     return False
 
 
-def _render_monthly_batch(po: PipelineOut, *, test_range_label: str) -> list[Path]:
+def _render_monthly_batch(
+    po: PipelineOut,
+    *,
+    test_range_label: str,
+    merge_existing_monthly_days: bool = True,
+) -> list[Path]:
     """
     ``PipelineOut.day_reports`` 를 달력 **월** 단위로 나눠 ``report_YYYY.MM.html`` 을 쓰고,
     ``report_index_monthly.html`` 목차를 갱신합니다.
+
+    ``merge_existing_monthly_days`` 가 True이면 해당 월 HTML이 이미 있을 때
+    이번 실행에 포함된 거래일만 새로 렌더하고, 나머지 일자 블록은 기존 HTML을 그대로 둡니다.
 
     Returns:
         생성·갱신된 HTML 경로 목록(폴더 자동 열기용).
@@ -2309,7 +2319,6 @@ def _render_monthly_batch(po: PipelineOut, *, test_range_label: str) -> list[Pat
         month_batches.setdefault((t.year, t.month), []).append(dr)
 
     sorted_months = sorted(month_batches.keys())
-    month_links: list[tuple[str, str]] = []
     written_paths: list[Path] = []
 
     for ym in sorted_months:
@@ -2317,23 +2326,47 @@ def _render_monthly_batch(po: PipelineOut, *, test_range_label: str) -> list[Pat
         y, m = ym
         fname = f"report_{y}.{m:02d}.html"
         out_month = config.OUTPUT_DIR / fname
-        first_d, last_d = batch[0].trading_day, batch[-1].trading_day
+        preserved_day_html: dict[date, str] = {}
+        if merge_existing_monthly_days and out_month.is_file():
+            existing_sections = report.extract_monthly_report_day_sections(out_month)
+            update_days = {dr.trading_day for dr in batch}
+            preserved_day_html = {
+                d: html
+                for d, html in existing_sections.items()
+                if d not in update_days
+            }
+            if existing_sections:
+                n_keep = len(preserved_day_html)
+                n_update = len(update_days & set(existing_sections.keys()))
+                n_append = len(update_days - set(existing_sections.keys()))
+                print(
+                    f"월간 리포트 병합: {fname} — "
+                    f"이번 실행 반영 {len(update_days)}일 "
+                    f"(갱신 {n_update}, 추가 {n_append}), 기존 유지 {n_keep}일",
+                    flush=True,
+                )
+        all_days = sorted(
+            set(preserved_day_html.keys()) | {dr.trading_day for dr in batch}
+        )
+        first_d, last_d = all_days[0], all_days[-1]
         month_note = (
-            f"{y}년 {m}월 · 포함 거래일 {first_d.isoformat()} ~ {last_d.isoformat()} ({len(batch)}일, 주간 탭·탭 내 일자 순)"
+            f"{y}년 {m}월 · 포함 거래일 {first_d.isoformat()} ~ {last_d.isoformat()} "
+            f"({len(all_days)}일, 주간 탭·탭 내 일자 순)"
         )
         report.render_compact_tabbed_report(
             title=f"실제 20%↑ 종목 · 예측 상승률 · {fname.replace('.html', '')}",
             days=batch,
-            meta={**meta_base, "n_days": len(batch)},
+            meta={**meta_base, "n_days": len(all_days)},
             out_path=out_month,
             week_note=month_note,
             week_tabs_stack_days=True,
+            preserved_day_html=preserved_day_html or None,
         )
-        month_links.append((fname, f"{fname} · {first_d.isoformat()} ~ {last_d.isoformat()}"))
         written_paths.append(out_month)
         print(f"완료: {out_month}")
 
     index_html = config.OUTPUT_DIR / "report_index_monthly.html"
+    month_links = report.collect_monthly_report_index_links(config.OUTPUT_DIR)
     report.render_movers_index(
         month_links,
         index_html,
@@ -2342,50 +2375,6 @@ def _render_monthly_batch(po: PipelineOut, *, test_range_label: str) -> list[Pat
     written_paths.append(index_html)
     print(f"완료: {index_html}")
     return written_paths
-
-
-def _expand_range_test_days_with_existing_report_days(
-    test_days: list[date],
-    *,
-    all_sessions: list[date],
-) -> list[date]:
-    """
-    구간 실행 시, 기존 월간 리포트에 이미 들어 있는 날짜만 추가로 포함합니다.
-
-    즉, ``test_days``(이번 실행 범위) + ``기존 파일에 이미 있던 day-YYYY-MM-DD`` 집합으로
-    재계산 범위를 구성합니다. 월 전체 강제 확장은 하지 않습니다.
-    """
-    if not test_days:
-        return test_days
-    session_set = set(all_sessions)
-    months = {(d.year, d.month) for d in test_days}
-    expanded: set[date] = set(test_days)
-    for y, m in months:
-        report_path = config.OUTPUT_DIR / f"report_{y}.{m:02d}.html"
-        if not report_path.is_file():
-            continue
-        try:
-            html = report_path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        hits = re.findall(r'id="day-(\d{4}-\d{2}-\d{2})"', html)
-        old_days: set[date] = set()
-        for s in hits:
-            try:
-                yy, mm, dd = s.split("-")
-                d = date(int(yy), int(mm), int(dd))
-            except ValueError:
-                continue
-            if d.year == y and d.month == m and d in session_set:
-                old_days.add(d)
-        expanded.update(old_days)
-        if old_days:
-            print(
-                f"기존 월간 리포트 감지: {report_path.name} → "
-                f"기존 포함일 {len(old_days)}일 + 이번 범위를 병합해 갱신합니다.",
-                flush=True,
-            )
-    return sorted(expanded)
 
 
 def main() -> None:
@@ -2439,7 +2428,12 @@ def main() -> None:
         test_range_label = (
             f"{rs} ~ {re} (데이터·거래일: {end_date}까지)" if rs and re else f"{test_start} ~ {end_date}"
         )
-        out_files = _render_monthly_batch(po, test_range_label=test_range_label)
+        merge_monthly = "--no-report-expand" not in sys.argv[1:]
+        out_files = _render_monthly_batch(
+            po,
+            test_range_label=test_range_label,
+            merge_existing_monthly_days=merge_monthly,
+        )
         _open_report_outputs(out_files)
         return
 
@@ -2452,14 +2446,10 @@ def main() -> None:
         if not test_days:
             print(f"구간 {d_from} ~ {d_to} 에 포함되는 거래일이 없습니다. (데이터 상한 {end_date})")
             return
-        if "--no-report-expand" not in sys.argv[1:]:
-            test_days = _expand_range_test_days_with_existing_report_days(
-                test_days,
-                all_sessions=sessions,
-            )
-        else:
+        merge_monthly = "--no-report-expand" not in sys.argv[1:]
+        if not merge_monthly:
             print(
-                "--no-report-expand: 인자 구간 거래일만 사용합니다(기존 월간 리포트 날짜 병합 안 함).",
+                "--no-report-expand: 파이프라인·월간 HTML 모두 From~To 일자만 반영합니다.",
                 flush=True,
             )
 
@@ -2508,7 +2498,11 @@ def main() -> None:
             f"{d_from.isoformat()} ~ {d_to.isoformat()} "
             f"(거래일만 · OHLCV/뉴스 조회 기준일 {today}까지, 리포트 범위는 {end_date}까지)"
         )
-        out_files = _render_monthly_batch(po, test_range_label=test_range_label)
+        out_files = _render_monthly_batch(
+            po,
+            test_range_label=test_range_label,
+            merge_existing_monthly_days=merge_monthly,
+        )
         _open_report_outputs(out_files)
         return
 
