@@ -161,53 +161,64 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
   }
   function bindIntegrateTips(root) {
     var scope = root || document;
-    scope.querySelectorAll(".integrate-tip").forEach(function (tip) {
+
+    function positionIntegratePopup(tip) {
+      var popup = tip.querySelector(".integrate-tip-popup");
+      var anchor = tip.querySelector(".gap-tip-trigger");
+      if (!popup || !anchor) return;
+      var margin = 10;
+      var gap = 6;
+      popup.classList.add("integrate-tip-floating");
+      popup.style.setProperty("display", "block", "important");
+      var pw = popup.offsetWidth;
+      var ph = popup.offsetHeight;
+      var ar = anchor.getBoundingClientRect();
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
+      var left = ar.right - pw;
+      if (left < margin) left = margin;
+      if (left + pw > vw - margin) left = Math.max(margin, vw - pw - margin);
+      var top = ar.bottom + gap;
+      if (top + ph > vh - margin) top = ar.top - ph - gap;
+      if (top < margin) top = margin;
+      popup.style.setProperty("left", left + "px", "important");
+      popup.style.setProperty("top", top + "px", "important");
+    }
+
+    function resetIntegratePopup(tip) {
       var popup = tip.querySelector(".integrate-tip-popup");
       if (!popup) return;
-      var margin = 12;
-      var gap = 8;
-      function place() {
-        popup.style.position = "fixed";
-        popup.style.setProperty("left", "auto", "important");
-        popup.style.setProperty("right", "auto", "important");
-        popup.style.setProperty("top", "auto", "important");
-        popup.style.visibility = "hidden";
-        popup.style.display = "block";
-        var pw = popup.offsetWidth;
-        var ph = popup.offsetHeight;
-        var tr = tip.getBoundingClientRect();
-        var vw = window.innerWidth;
-        var vh = window.innerHeight;
-        var left = tr.left;
-        var top = tr.bottom + gap;
-        if (left + pw > vw - margin) left = vw - pw - margin;
-        if (left < margin) left = margin;
-        if (top + ph > vh - margin) top = Math.max(margin, tr.top - ph - gap);
-        popup.style.setProperty("left", left + "px", "important");
-        popup.style.setProperty("top", top + "px", "important");
-        popup.style.zIndex = "2500";
-        popup.style.visibility = "";
-      }
-      function reset() {
-        popup.style.position = "";
-        popup.style.removeProperty("left");
-        popup.style.removeProperty("right");
-        popup.style.removeProperty("top");
-        popup.style.zIndex = "";
-        popup.style.visibility = "";
-      }
-      function repositionIfOpen() {
-        if (tip.matches(":hover") || tip.contains(document.activeElement)) place();
-      }
-      tip.addEventListener("mouseenter", place);
-      tip.addEventListener("focusin", place);
-      tip.addEventListener("mouseleave", reset);
-      tip.addEventListener("focusout", function (e) {
-        if (!tip.contains(e.relatedTarget)) reset();
+      popup.classList.remove("integrate-tip-floating");
+      popup.style.removeProperty("left");
+      popup.style.removeProperty("top");
+      popup.style.removeProperty("display");
+    }
+
+    function refreshOpenIntegrateTips() {
+      scope.querySelectorAll(".integrate-tip").forEach(function (tip) {
+        if (tip.matches(":hover") || tip.matches(":focus-within")) {
+          positionIntegratePopup(tip);
+        }
       });
-      window.addEventListener("resize", repositionIfOpen);
-      window.addEventListener("scroll", repositionIfOpen, true);
+    }
+
+    scope.querySelectorAll(".integrate-tip").forEach(function (tip) {
+      tip.addEventListener("mouseenter", function () { positionIntegratePopup(tip); });
+      tip.addEventListener("focusin", function () { positionIntegratePopup(tip); });
+      tip.addEventListener("mouseleave", function (e) {
+        var to = e.relatedTarget;
+        if (to && tip.contains(to)) return;
+        resetIntegratePopup(tip);
+      });
+      tip.addEventListener("focusout", function (e) {
+        var to = e.relatedTarget;
+        if (to && tip.contains(to)) return;
+        resetIntegratePopup(tip);
+      });
     });
+
+    window.addEventListener("resize", refreshOpenIntegrateTips);
+    window.addEventListener("scroll", refreshOpenIntegrateTips, true);
   }
   document.querySelectorAll("table.rows-compare").forEach(bindSortTable);
   bindMarketRowFilters(document);
@@ -482,7 +493,33 @@ _TEMPLATE = r"""
     .gap-tip-popup p { margin: 0 0 6px 0; }
     .gap-tip-popup ul { margin: 4px 0 0 16px; padding: 0; }
     .gap-tip-popup li { margin-bottom: 4px; }
-    .gap-tip:hover .gap-tip-popup, .gap-tip:focus-within .gap-tip-popup { display: block; }
+    .gap-tip:not(.integrate-tip):hover .gap-tip-popup,
+    .gap-tip:not(.integrate-tip):focus-within .gap-tip-popup { display: block; }
+    .gap-tip.integrate-tip:hover .gap-tip-trigger,
+    .gap-tip.integrate-tip:focus-within .gap-tip-trigger { color: #7ec4ff; border-bottom-color: #7ec4ff; }
+    .gap-tip.integrate-tip:hover .integrate-tip-popup,
+    .gap-tip.integrate-tip:focus-within .integrate-tip-popup { display: block !important; }
+    .kw-count-tip { display: inline; vertical-align: baseline; margin: 0 1px; }
+    .kw-count-tip .gap-tip-trigger { font-size: inherit; font-weight: 700; color: var(--warn); border-bottom-color: var(--warn); }
+    .kw-list-popup { min-width: 280px; max-width: min(520px, 92vw) !important; width: auto !important; max-height: 70vh; z-index: 4100; }
+    .integrate-tip-floating .kw-list-popup { z-index: 4100; }
+    .integrate-tip-popup.integrate-tip-floating {
+      display: block !important;
+      position: fixed !important;
+      z-index: 4000 !important;
+      transform: none !important;
+      width: min(920px, calc(100vw - 24px)) !important;
+      max-width: min(920px, calc(100vw - 24px)) !important;
+      min-width: 320px !important;
+      max-height: 90vh !important;
+      overflow: auto !important;
+      box-sizing: border-box;
+      padding: 14px 16px !important;
+      background: #1a2838;
+      border: 1px solid #3d6a9e;
+      border-radius: 8px;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.5);
+    }
     .pred-reason-plain { font-size: 0.82rem; color: var(--muted); line-height: 1.45; max-width: 28em; display: inline-block; vertical-align: middle; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
     .combo-tip { margin-left: 8px; vertical-align: middle; white-space: nowrap; }
     .combo-tip-popup {
@@ -497,11 +534,6 @@ _TEMPLATE = r"""
       max-height: 90vh;
       overflow: auto;
       padding: 14px 16px !important;
-    }
-    .integrate-tip-popup {
-      left: auto !important;
-      right: 0 !important;
-      top: calc(100% + 8px) !important;
     }
     .combo-tip-inner {
       display: grid;
@@ -667,6 +699,9 @@ _TEMPLATE = r"""
   {% endif %}
 </div>
 {%- endmacro %}
+{% macro prediction_signal_cell(r) -%}
+{{ r.prediction_signal_html | default('—') | safe }}
+{%- endmacro %}
 {% macro disclosure_tip(r, trading_day=none) -%}
 <span class="gap-tip combo-tip disclosure-tip{% if trading_day is not none %} gap-tip-end{% endif %}">
   <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="당일 종목 공시 목록 보기">공시</span>
@@ -744,7 +779,7 @@ _TEMPLATE = r"""
           <th>누적정확도(10~20)</th>
           <th>누적정확도(전체)</th>
           <th>이유/차이</th>
-          <th>일치 키워드</th>
+          <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간">예측 신호</th>
         </tr>
       </thead>
       <tbody>
@@ -763,7 +798,6 @@ _TEMPLATE = r"""
           </td>
           <td class="{% if r.pred_high | default(false) %}warn{% endif %}" style="vertical-align:top;{% if r.pred_high | default(false) %}color:var(--warn);font-weight:600{% endif %}" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
             {% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}
-            {% if r.ml_prob is not none %}<div style="font-size:0.72rem;color:var(--muted);margin-top:2px">P={{ "%.2f"|format(r.ml_prob * 100) }}%{% if r.rank_position is not none %} · #{{ r.rank_position }}{% endif %}</div>{% endif %}
           </td>
           <td style="vertical-align:top">
             {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
@@ -806,11 +840,7 @@ _TEMPLATE = r"""
             <span style="margin-left:10px">{{ disclosure_tip(r, d.trading_day) }}</span>
             <span class="pred-reason-plain" style="margin-left:10px">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') }}</span>
           </td>
-          <td>
-            <span class="kw-pills">
-              {% for k in r.keywords[:12] %}<span class="pill">{{ k }}</span>{% endfor %}
-            </span>
-          </td>
+          <td>{{ prediction_signal_cell(r) }}</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -1022,7 +1052,33 @@ _COMPACT_TEMPLATE = r"""
     .gap-tip-popup p { margin: 0 0 6px 0; }
     .gap-tip-popup ul { margin: 4px 0 0 14px; padding: 0; }
     .gap-tip-popup li { margin-bottom: 4px; }
-    .gap-tip:hover .gap-tip-popup, .gap-tip:focus-within .gap-tip-popup { display: block; }
+    .gap-tip:not(.integrate-tip):hover .gap-tip-popup,
+    .gap-tip:not(.integrate-tip):focus-within .gap-tip-popup { display: block; }
+    .gap-tip.integrate-tip:hover .gap-tip-trigger,
+    .gap-tip.integrate-tip:focus-within .gap-tip-trigger { color: #7ec4ff; border-bottom-color: #7ec4ff; }
+    .gap-tip.integrate-tip:hover .integrate-tip-popup,
+    .gap-tip.integrate-tip:focus-within .integrate-tip-popup { display: block !important; }
+    .kw-count-tip { display: inline; vertical-align: baseline; margin: 0 1px; }
+    .kw-count-tip .gap-tip-trigger { font-size: inherit; font-weight: 700; color: var(--warn); border-bottom-color: var(--warn); }
+    .kw-list-popup { min-width: 280px; max-width: min(520px, 92vw) !important; width: auto !important; max-height: 70vh; z-index: 4100; }
+    .integrate-tip-floating .kw-list-popup { z-index: 4100; }
+    .integrate-tip-popup.integrate-tip-floating {
+      display: block !important;
+      position: fixed !important;
+      z-index: 4000 !important;
+      transform: none !important;
+      width: min(920px, calc(100vw - 24px)) !important;
+      max-width: min(920px, calc(100vw - 24px)) !important;
+      min-width: 320px !important;
+      max-height: 90vh !important;
+      overflow: auto !important;
+      box-sizing: border-box;
+      padding: 14px 16px !important;
+      background: #1a2838;
+      border: 1px solid #3d6a9e;
+      border-radius: 8px;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.5);
+    }
     .pred-reason-plain { font-size: 0.82rem; color: var(--muted); line-height: 1.45; max-width: 26em; display: inline-block; vertical-align: middle; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
     .combo-tip { margin-left: 6px; vertical-align: middle; white-space: nowrap; }
     .combo-tip-popup {
@@ -1037,11 +1093,6 @@ _COMPACT_TEMPLATE = r"""
       max-height: 90vh;
       overflow: auto;
       padding: 14px 16px !important;
-    }
-    .integrate-tip-popup {
-      left: auto !important;
-      right: 0 !important;
-      top: calc(100% + 8px) !important;
     }
     .combo-tip-inner {
       display: grid;
@@ -1199,6 +1250,9 @@ _COMPACT_TEMPLATE = r"""
   {% endif %}
 </div>
 {%- endmacro %}
+{% macro prediction_signal_cell(r) -%}
+{{ r.prediction_signal_html | default('—') | safe }}
+{%- endmacro %}
 {% macro disclosure_tip(r, trading_day=none) -%}
 <span class="gap-tip combo-tip disclosure-tip{% if trading_day is not none %} gap-tip-end{% endif %}">
   <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="당일 종목 공시 목록 보기">공시</span>
@@ -1261,7 +1315,7 @@ _COMPACT_TEMPLATE = r"""
       <th>누적정확도(10~20)</th>
       <th>누적정확도(전체)</th>
       <th>이유/차이</th>
-      <th>일치 키워드</th>
+      <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간">예측 신호</th>
     </tr>
   </thead>
   <tbody>
@@ -1280,7 +1334,6 @@ _COMPACT_TEMPLATE = r"""
       </td>
       <td class="{% if r.pred_high | default(false) %}warn{% endif %}" style="vertical-align:top" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
         {% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}
-        {% if r.ml_prob is not none %}<div style="font-size:0.72rem;color:var(--muted);margin-top:2px">P={{ "%.2f"|format(r.ml_prob * 100) }}%{% if r.rank_position is not none %} · #{{ r.rank_position }}{% endif %}</div>{% endif %}
       </td>
       <td style="vertical-align:top">
         {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
@@ -1323,11 +1376,7 @@ _COMPACT_TEMPLATE = r"""
         <span style="margin-left:10px">{{ disclosure_tip(r, d.trading_day) }}</span>
         <span class="pred-reason-plain" style="margin-left:10px">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') }}</span>
       </td>
-      <td>
-        <span class="kw-pills">
-          {% for k in r.keywords[:8] %}<span class="pill">{{ k }}</span>{% endfor %}
-        </span>
-      </td>
+      <td>{{ prediction_signal_cell(r) }}</td>
     </tr>
     {% endfor %}
   </tbody>
@@ -1577,7 +1626,36 @@ _DATED_N_TEMPLATE = r"""
     .gap-tip-popup p { margin: 0 0 8px 0; }
     .gap-tip-popup ul { margin: 6px 0 0 16px; padding: 0; }
     .gap-tip-popup li { margin-bottom: 6px; }
-    .gap-tip:hover .gap-tip-popup, .gap-tip:focus-within .gap-tip-popup { display: block; }
+    .gap-tip:not(.integrate-tip):hover .gap-tip-popup,
+    .gap-tip:not(.integrate-tip):focus-within .gap-tip-popup { display: block; }
+    .gap-tip.integrate-tip:hover .gap-tip-trigger,
+    .gap-tip.integrate-tip:focus-within .gap-tip-trigger { color: #7ec4ff; border-bottom-color: #7ec4ff; }
+    .gap-tip.integrate-tip:hover .integrate-tip-popup,
+    .gap-tip.integrate-tip:focus-within .integrate-tip-popup { display: block !important; }
+    .kw-count-tip { display: inline; vertical-align: baseline; margin: 0 1px; }
+    .kw-count-tip .gap-tip-trigger { font-size: inherit; font-weight: 700; color: var(--warn); border-bottom-color: var(--warn); }
+    .kw-list-popup { min-width: 280px; max-width: min(520px, 92vw) !important; width: auto !important; max-height: 70vh; z-index: 4100; }
+    .integrate-tip-floating .kw-list-popup { z-index: 4100; }
+    .integrate-tip-popup.integrate-tip-floating {
+      display: block !important;
+      position: fixed !important;
+      z-index: 4000 !important;
+      transform: none !important;
+      width: min(920px, calc(100vw - 24px)) !important;
+      max-width: min(920px, calc(100vw - 24px)) !important;
+      min-width: 320px !important;
+      max-height: 90vh !important;
+      overflow: auto !important;
+      box-sizing: border-box;
+      padding: 14px 16px !important;
+      background: #1a2838;
+      border: 1px solid #3d6a9e;
+      border-radius: 10px;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.5);
+      text-align: center;
+    }
+    .integrate-tip-popup.integrate-tip-floating .combo-tip-inner { text-align: left; margin: 0 auto; }
+    .integrate-tip-popup.integrate-tip-floating .combo-tip-h { text-align: center; }
     .pred-reason-plain { font-size: 0.86rem; color: var(--muted); line-height: 1.5; display: inline-block; max-width: 100%; vertical-align: middle; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
     .combo-tip { margin-left: 0; vertical-align: middle; white-space: nowrap; }
     .combo-tip-popup {
@@ -1593,14 +1671,6 @@ _DATED_N_TEMPLATE = r"""
       overflow: auto;
       padding: 14px 16px !important;
     }
-    .integrate-tip-popup {
-      left: auto !important;
-      right: 0 !important;
-      top: calc(100% + 8px) !important;
-      text-align: center;
-    }
-    .integrate-tip-popup .combo-tip-inner { text-align: left; margin: 0 auto; }
-    .integrate-tip-popup .combo-tip-h { text-align: center; }
     .combo-tip-inner {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1712,6 +1782,9 @@ _DATED_N_TEMPLATE = r"""
   {% endif %}
 </div>
 {%- endmacro %}
+{% macro prediction_signal_cell(r) -%}
+{{ r.prediction_signal_html | default('—') | safe }}
+{%- endmacro %}
 {% macro disclosure_tip(r, trading_day=none) -%}
 <span class="gap-tip combo-tip disclosure-tip gap-tip-end">
   <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="당일 종목 공시 목록 보기">공시</span>
@@ -1789,7 +1862,7 @@ _DATED_N_TEMPLATE = r"""
       <h2>종목별 상세 <span style="font-size:0.82rem;font-weight:500;color:var(--muted)">(관측일 {{ t_day.isoformat() }})</span></h2>
       {{ market_filter_radios(n_day.strftime("%Y%m%d")) }}
     </div>
-    <p class="sub" style="margin-top:0">한 줄이 한 종목입니다. <strong>통합 보기</strong>·<strong>공시</strong>·<strong>이유/차이</strong>·<strong>뉴스</strong>에 마우스를 올리면 상세를 볼 수 있습니다. 키워드는 과거 20%↑ 사례와의 문자열 일치입니다.</p>
+    <p class="sub" style="margin-top:0">한 줄이 한 종목입니다. <strong>통합 보기</strong>·<strong>공시</strong>·<strong>뉴스</strong>에 마우스를 올리면 상세를 볼 수 있습니다. <strong>예측 신호</strong> 열은 교집합·ML·순위 요약입니다.</p>
     {% if day.rows_compare|length > 0 %}
     <div class="table-wrap">
     <table class="rows-compare">
@@ -1807,7 +1880,7 @@ _DATED_N_TEMPLATE = r"""
           <th>공시</th>
           <th>이유/차이</th>
           <th>뉴스</th>
-          <th>일치 키워드</th>
+          <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간">예측 신호</th>
         </tr>
       </thead>
       <tbody>
@@ -1942,11 +2015,7 @@ _DATED_N_TEMPLATE = r"""
               </div>
             </span>
           </td>
-          <td>
-            <span class="kw-pills">
-              {% for k in r.keywords[:16] %}<span class="pill">{{ k }}</span>{% else %}<span class="muted">—</span>{% endfor %}
-            </span>
-          </td>
+          <td>{{ prediction_signal_cell(r) }}</td>
         </tr>
         {% endfor %}
       </tbody>

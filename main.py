@@ -289,10 +289,6 @@ def _sync_forward_day_rows_from_predictions(
             continue
         code = str(pr.code).zfill(6)
         reasons_html = "<br/>".join(pr.reasons)
-        if pr.matched_keywords:
-            reasons_html += "<br/><em>일치 키워드</em> " + ", ".join(
-                f"<mark>{w}</mark>" for w in pr.matched_keywords[:10]
-            )
         existing = by_code.get(code)
         if existing is not None:
             existing["pred_ret"] = pr.predicted_return_pct
@@ -630,16 +626,60 @@ def _open_report_outputs(html_paths: Sequence[Path]) -> None:
 
 
 def _pred_reason_hit_line(pr: predict.PredictionRow | None) -> str:
-    """표 ``이유/차이`` 열: 키워드 일치 개수만 짧게 (예: ``36개 일치``). 상세 문장은 툴팁."""
+    """표 ``이유/차이`` 열: 키워드 교집합 개수만 짧게 (예: ``68개 교집합``). 상세는 툴팁."""
     if pr is None:
         return "—"
     for line in pr.reasons:
-        if "급등일 뉴스 키워드" in line and "일치" in line:
-            m = re.search(r"(\d+)\s*개\s*일치", line)
+        if "교집합" in line:
+            m = re.search(r"교집합\s+(\d+)개", line)
             if m:
-                return f"{m.group(1)}개 일치"
-            return line
+                return f"{m.group(1)}개 교집합"
     return "—"
+
+
+def _prediction_signal_html(r: dict) -> str:
+    """표 ``예측 신호`` 열: 교집합·종목명 언급·ML·순위·확신 요약."""
+    parts: list[str] = []
+    kh = r.get("keyword_hits")
+    if kh is not None:
+        kh_i = int(kh)
+        if kh_i > 0:
+            parts.append(
+                f'<span title="당일 early 뉴스 ∩ 과거 급등 프로필">교집합 {kh_i}</span>'
+            )
+    ms = r.get("mention_score")
+    if ms is not None:
+        fv = float(ms)
+        if fv >= 0.15:
+            parts.append(f'<span title="뉴스 제목·본문 종목명 언급">언급 {fv:.2f}</span>')
+    mp = r.get("ml_prob")
+    if mp is not None and math.isfinite(float(mp)):
+        parts.append(f'<span class="warn" title="ML 급등 확률">P {float(mp) * 100:.0f}%</span>')
+    rp = r.get("rank_position")
+    if rp is not None:
+        parts.append(f'<span title="당일 예측 순위">#{int(rp)}</span>')
+    ct = str(r.get("confidence_tier") or "")
+    if ct == "high":
+        parts.append(
+            '<span class="pill" style="font-size:0.68rem;background:#3d2a1a;color:var(--warn)">고확신</span>'
+        )
+    elif ct == "mid":
+        parts.append('<span class="pill" style="font-size:0.68rem">중확신</span>')
+    if r.get("late_news_hit") is True:
+        parts.append(
+            '<span class="pill" style="font-size:0.68rem;background:#1e3d2f;color:var(--ok)" '
+            'title="컷오프 이후 뉴스에도 키워드 등장">14:30+</span>'
+        )
+    if not parts:
+        if r.get("pred_ret") is None:
+            return "—"
+        return '<span class="muted" style="font-size:0.82rem">신호 약함</span>'
+    return '<span style="font-size:0.8rem;line-height:1.55">' + " · ".join(parts) + "</span>"
+
+
+def _enrich_rows_prediction_signal(rows_compare: list[dict]) -> None:
+    for r in rows_compare:
+        r["prediction_signal_html"] = _prediction_signal_html(r)
 
 
 def _actual_over_pred_ratio(pred_ret: float | None, actual_ret: float | None) -> float | None:
@@ -1087,7 +1127,7 @@ def _pred_reason_fields(
     """
     hit_line = _pred_reason_hit_line(pr)
     if pr is not None:
-        detail_html = "<br/>".join(pr.reasons)
+        detail_html = predict.format_prediction_reason_detail_html(pr)
         plain = " ".join(pr.reasons)
     else:
         detail_html = reasons_html
@@ -1753,10 +1793,6 @@ def _run_pipeline(
                 pr = preds_by_code.get(code)
                 if pr is not None:
                     reasons_html = "<br/>".join(pr.reasons)
-                    if pr.matched_keywords:
-                        reasons_html += "<br/><em>일치 키워드</em> " + ", ".join(
-                            f"<mark>{w}</mark>" for w in pr.matched_keywords[:10]
-                        )
                     keywords = pr.matched_keywords
                     pred_ret = pr.predicted_return_pct
                 else:
@@ -1826,10 +1862,6 @@ def _run_pipeline(
             seen_row_codes.add(pr.code)
             act = None if day_forward else _actual_ret_for_code(pr.code)
             reasons_html = "<br/>".join(pr.reasons)
-            if pr.matched_keywords:
-                reasons_html += "<br/><em>일치 키워드</em> " + ", ".join(
-                    f"<mark>{w}</mark>" for w in pr.matched_keywords[:10]
-                )
             ph = prediction_ranking.is_high_confidence_prediction(pr)
             pm = prediction_ranking.is_mid_confidence_prediction(pr)
             rows_compare.append(
@@ -1973,6 +2005,9 @@ def _run_pipeline(
                 returns_ml_sub=returns_ml_by_code.get(code_r),
             )
             r["rise_band"] = _rise_band_for_row(r.get("pred_ret"), r.get("actual_ret"))
+            if pr_row is not None:
+                r.update(_pred_reason_fields(pr_row, r.get("reasons_html") or ""))
+        _enrich_rows_prediction_signal(rows_compare)
 
         print(
             f"관측일 T={t_key}: 처리 완료 ({time.perf_counter() - t_loop0:.1f}s, "

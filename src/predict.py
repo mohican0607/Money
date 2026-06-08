@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -17,6 +18,47 @@ from typing import Any
 
 from . import config, prediction_accuracy_cache
 from .features import BreakoutEvent, keyword_set, name_mention_score
+
+
+_INTERSECTION_REASON_RE = re.compile(
+    r"당일 뉴스·과거 급등 프로필 키워드 교집합\s+(\d+)개"
+)
+
+
+def keyword_intersection_count_html(n_hit: int, keywords: list[str]) -> str:
+    """교집합 개수 숫자에 hover 툴팁으로 전체 키워드 목록을 붙입니다."""
+    if n_hit <= 0:
+        return str(n_hit)
+    kw_list = keywords or []
+    pills = "".join(
+        f'<span class="pill" style="margin:2px 4px 2px 0">{html.escape(k)}</span>'
+        for k in kw_list[:120]
+    )
+    if len(kw_list) > 120:
+        pills += f'<span class="pill">+{len(kw_list) - 120}</span>'
+    return (
+        f'<span class="gap-tip kw-count-tip">'
+        f'<span class="gap-tip-trigger" tabindex="0" role="button" '
+        f'aria-label="교집합 키워드 {n_hit}개 전체 보기">{n_hit}</span>'
+        f'<div class="gap-tip-popup kw-list-popup" role="tooltip">'
+        f'<p style="margin:0 0 6px;font-weight:600">교집합 키워드 ({n_hit}개)</p>'
+        f'<p style="margin:0;font-size:0.76rem;color:var(--muted)">'
+        f"당일 early 뉴스 토큰 ∩ 과거 급등일 뉴스 프로필</p>"
+        f'<div class="kw-pills" style="margin-top:8px;line-height:1.8">{pills}</div>'
+        f"</div></span>"
+    )
+
+
+def format_prediction_reason_detail_html(pr: PredictionRow) -> str:
+    """``pr.reasons`` 를 HTML로 변환. 교집합 줄의 숫자에는 전체 키워드 툴팁을 붙입니다."""
+    lines: list[str] = []
+    for line in pr.reasons:
+        if pr.keyword_hits and _INTERSECTION_REASON_RE.search(line):
+            trigger = keyword_intersection_count_html(pr.keyword_hits, pr.matched_keywords)
+            lines.append(f"당일 뉴스·과거 급등 프로필 키워드 교집합 {trigger}개")
+            continue
+        lines.append(html.escape(line))
+    return "<br/>".join(lines)
 
 
 @dataclass
@@ -303,7 +345,7 @@ def prediction_row_for_code(
                 score += float(config.KEYWORD_FEEDBACK_SCORE_SCALE) * s
     if n_hit < min_keyword_hits and mention < 0.2:
         return None
-    matched = sorted(inter, key=len, reverse=True)[:25]
+    matched = sorted(inter, key=len, reverse=True)
     reasons: list[str] = []
     if theme_hit >= 0.06 and config.THEME_CARRYOVER_ENABLED:
         reasons.append(
