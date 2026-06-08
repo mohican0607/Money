@@ -545,6 +545,9 @@ class PipelineOut:
     late_gte_n: int
     late_gte_kw: int
     movers_data_note: str | None = None
+    returns_df: Any = None
+    news_by_calendar: dict | None = None
+    listing_names: dict[str, str] | None = None
 
 
 def _movers_data_note_for_report(krx_unavailable: bool) -> str | None:
@@ -2167,6 +2170,14 @@ def _run_pipeline(
             names,
             news_cutoff_label=_cutoff_kst,
         )
+        _refresh_incomplete_market_theme_on_day_reports(
+            day_reports,
+            news_by_calendar=news_by_calendar,
+            returns_df=returns,
+            listing_names=names,
+            news_cutoff_label=_cutoff_kst,
+            now_kst=now_end_kst,
+        )
 
     if (
         train_snapshot_mode in ("rebuild", "append_learning")
@@ -2219,6 +2230,9 @@ def _run_pipeline(
         movers_data_note=_movers_data_note_for_report(
             krx_movers_unavailable_any and not forward_prediction_only
         ),
+        returns_df=returns,
+        news_by_calendar=news_by_calendar,
+        listing_names=names,
     )
 
 
@@ -2303,6 +2317,47 @@ def _should_skip_ohlcv_right_gap(n_day: date, *, now_kst: datetime) -> bool:
     return False
 
 
+def _refresh_incomplete_market_theme_on_day_reports(
+    day_reports: list[report.DayReport],
+    *,
+    news_by_calendar: dict,
+    returns_df,
+    listing_names: dict[str, str],
+    news_cutoff_label: str,
+    now_kst: datetime | None = None,
+) -> None:
+    """장 마감 후에도 테마 요약이 placeholder 인 ``DayReport`` 를 종가·뉴스 기준으로 다시 채웁니다."""
+    now = now_kst or datetime.now(trading_calendar.KST)
+    refreshed = 0
+    for dr in day_reports:
+        if dr.forward_observation:
+            continue
+        if not trading_calendar.is_krx_daily_bar_effective_closed(
+            dr.trading_day, now_kst=now
+        ):
+            continue
+        if not snapshot_rebuild_learning.market_theme_html_is_incomplete(
+            dr.market_theme_html
+        ):
+            continue
+        theme_inner = snapshot_rebuild_learning.market_theme_html_for_trading_day(
+            dr.trading_day,
+            news_by_calendar,
+            returns_df,
+            listing_names,
+            news_cutoff_label=news_cutoff_label,
+        )
+        if snapshot_rebuild_learning.market_theme_html_is_incomplete(theme_inner):
+            continue
+        dr.market_theme_html = theme_inner
+        refreshed += 1
+    if refreshed:
+        print(
+            f"장 마감 반영: 당일 테마 요약 재생성 {refreshed}일(이번 실행 거래일)",
+            flush=True,
+        )
+
+
 def _render_monthly_batch(
     po: PipelineOut,
     *,
@@ -2385,6 +2440,38 @@ def _render_monthly_batch(
                     f"(갱신 {n_update}, 추가 {n_append}), 기존 유지 {n_keep}일",
                     flush=True,
                 )
+        if preserved_day_html and po.returns_df is not None and po.listing_names:
+            news_map = dict(po.news_by_calendar or {})
+            need_news_days = [
+                d
+                for d in preserved_day_html
+                if report.preserved_day_section_needs_market_theme_backfill(
+                    preserved_day_html[d],
+                    d,
+                    now_kst=datetime.now(trading_calendar.KST),
+                )
+            ]
+            if need_news_days:
+                cal_for_news = _collect_calendar_days_for_trading_range(
+                    need_news_days,
+                    include_target_calendar_days=True,
+                    target_calendar_trading_days=frozenset(need_news_days),
+                )
+                missing_cal = [d for d in cal_for_news if d not in news_map]
+                if missing_cal:
+                    news_map.update(
+                        _fetch_news_for_calendar_days(missing_cal)
+                    )
+            preserved_day_html = report.backfill_preserved_day_sections_market_theme(
+                preserved_day_html,
+                news_by_calendar=news_map,
+                returns_df=po.returns_df,
+                listing_names=po.listing_names,
+                news_cutoff_label=(
+                    f"{config.NEWS_CUTOFF_KST_HOUR:02d}:"
+                    f"{config.NEWS_CUTOFF_KST_MINUTE:02d}"
+                ),
+            )
         all_days = sorted(
             set(preserved_day_html.keys()) | {dr.trading_day for dr in batch}
         )

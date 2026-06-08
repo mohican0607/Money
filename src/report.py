@@ -9,13 +9,23 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from jinja2 import Environment, select_autoescape
 
-from . import config
+from . import config, trading_calendar
 from .features import highlight_terms
+
+_MARKET_THEME_REF_RE = re.compile(
+    r'<div class="market-theme-ref"[^>]*>.*?</div>',
+    re.DOTALL | re.IGNORECASE,
+)
+_DAY_HEADING_ROW_RE = re.compile(
+    r'(<div class="day-heading-row"[^>]*>.*?</div>)',
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 @dataclass
@@ -32,6 +42,101 @@ class DayReport:
     forward_observation: bool = False
     market_theme_html: str = ""
     hit_at_k_metrics: dict | None = None
+
+
+def build_market_theme_ref_block(theme_inner_html: str) -> str:
+    """``당일 테마 요약`` 패널 HTML(``market_theme_panel`` 매크로와 동일 구조)."""
+    inner = (theme_inner_html or "").strip()
+    if not inner:
+        return ""
+    return (
+        '<div class="market-theme-ref" style="margin:12px 0 16px;padding:12px 14px;'
+        'background:#152232;border:1px solid #2a4a6a;border-radius:8px">'
+        '<h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">당일 테마 요약</h3>'
+        f"{inner}</div>"
+    )
+
+
+def inject_market_theme_into_day_section(section_html: str, theme_inner_html: str) -> str:
+    """기존 일자 ``<section>`` HTML에 ``당일 테마 요약`` 블록을 삽입하거나 교체합니다."""
+    block = build_market_theme_ref_block(theme_inner_html)
+    if not block:
+        return section_html
+    if _MARKET_THEME_REF_RE.search(section_html):
+        return _MARKET_THEME_REF_RE.sub(block, section_html, count=1)
+    m = _DAY_HEADING_ROW_RE.search(section_html)
+    if m:
+        pos = m.end()
+        return section_html[:pos] + "\n        " + block + section_html[pos:]
+    return block + "\n" + section_html
+
+
+def preserved_day_section_needs_market_theme_backfill(
+    section_html: str,
+    t_day: date,
+    *,
+    now_kst: datetime | None = None,
+) -> bool:
+    """
+    월간 병합으로 유지된 일자 블록이 장 마감 후 테마 요약 보강 대상인지 판단합니다.
+
+    장중에 만들어져 테마가 비었거나 placeholder 인 **이미 마감된** 거래일만 True.
+    """
+    if not trading_calendar.is_trading_day(t_day):
+        return False
+    now = now_kst or datetime.now(trading_calendar.KST)
+    if t_day > now.date():
+        return False
+    if not trading_calendar.is_krx_daily_bar_effective_closed(t_day, now_kst=now):
+        return False
+    m = _MARKET_THEME_REF_RE.search(section_html or "")
+    if not m:
+        return True
+    from . import snapshot_rebuild_learning
+
+    return snapshot_rebuild_learning.market_theme_html_is_incomplete(m.group(0))
+
+
+def backfill_preserved_day_sections_market_theme(
+    preserved_day_html: dict[date, str],
+    *,
+    news_by_calendar: dict[date, list[dict[str, str]]],
+    returns_df: Any,
+    listing_names: dict[str, str],
+    news_cutoff_label: str,
+    now_kst: datetime | None = None,
+) -> dict[date, str]:
+    """병합 유지 일자 HTML에 장 마감 후 ``당일 테마 요약`` 을 채웁니다."""
+    from . import snapshot_rebuild_learning
+
+    if not preserved_day_html or returns_df is None:
+        return preserved_day_html
+    now = now_kst or datetime.now(trading_calendar.KST)
+    out = dict(preserved_day_html)
+    patched = 0
+    for t_day in sorted(preserved_day_html.keys()):
+        html = preserved_day_html[t_day]
+        if not preserved_day_section_needs_market_theme_backfill(
+            html, t_day, now_kst=now
+        ):
+            continue
+        theme_inner = snapshot_rebuild_learning.market_theme_html_for_trading_day(
+            t_day,
+            news_by_calendar,
+            returns_df,
+            listing_names,
+            news_cutoff_label=news_cutoff_label,
+        )
+        if snapshot_rebuild_learning.market_theme_html_is_incomplete(theme_inner):
+            continue
+        out[t_day] = inject_market_theme_into_day_section(html, theme_inner)
+        patched += 1
+    if patched:
+        print(
+            f"월간 리포트 병합: 장 마감 후 당일 테마 요약 보강 {patched}일(기존 HTML 유지 일자)",
+            flush=True,
+        )
+    return out
 
 
 def naver_chart_url(code: str) -> str:

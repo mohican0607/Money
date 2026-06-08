@@ -378,6 +378,46 @@ def format_market_theme_flow_html(
     return "".join(parts)
 
 
+def market_theme_html_is_incomplete(html: str) -> bool:
+    """리포트 「당일 테마 요약」이 장 마감 후에도 채울 여지가 있는지(비었거나 placeholder)."""
+    s = (html or "").strip()
+    if not s:
+        return True
+    if "등락 패턴이 부족" in s:
+        return True
+    if 'class="nl"' in s and "<li" in s:
+        return False
+    if "<strong>강세 샘플</strong>" in s:
+        return False
+    return True
+
+
+def market_theme_html_for_trading_day(
+    t_day: date,
+    news_by_calendar: dict[date, list[dict[str, str]]],
+    returns_df: pd.DataFrame,
+    listing_names: dict[str, str],
+    *,
+    news_cutoff_label: str,
+    threshold_pct: float | None = None,
+) -> str:
+    """거래일 하나에 대한 ``당일 테마 요약`` HTML(내부 블록만)."""
+    thr = (
+        float(threshold_pct)
+        if threshold_pct is not None
+        else float(config.BIG_MOVE_THRESHOLD) * 100.0
+    )
+    rows = build_market_theme_flow(
+        [t_day], news_by_calendar, returns_df, listing_names
+    )
+    row = rows[0] if rows else None
+    return format_market_theme_flow_html(
+        row,
+        news_cutoff_label=news_cutoff_label,
+        threshold_pct=thr,
+    )
+
+
 def enrich_day_reports_market_theme(
     day_reports: list[Any],
     news_by_calendar: dict[date, list[dict[str, str]]],
