@@ -2,7 +2,7 @@
 
 KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까지)** 수집·분류한 **뉴스(시장·테마·종목·국제정세 등)**, **전일 급등·테마 가중치**, **시세·KOSPI 흐름**, (보조) 과거 급등 종목 프로필·오판 피드백을 이용해 **다음 거래일(관측일 T) 수익률** 후보를 HTML 리포트로 출력하는 도구입니다.
 
-예측은 **휴리스틱**과 **ML 랭커(HistGradientBoosting)** 를 함께 쓰며, `PRED_USE_ML_RANKER=0` 이면 휴리스틱만 사용합니다. 기본(**랭킹 모드**)에서는 상위 40개를 **ML 급등 확률 순**으로 정렬하고, **고확신/중확신**만 `pred_high`·`pred_mid`로 표시합니다(`PRED_RANKING_MODE=1`, `PRED_USE_DISPLAY_RANK_MAPPING=0`). 레거시 20~35% 일괄 매핑은 `PRED_USE_DISPLAY_RANK_MAPPING=1` 로 되돌릴 수 있습니다.
+예측은 **휴리스틱**과 **ML 랭커(HistGradientBoosting)** 를 함께 쓰며, `PRED_USE_ML_RANKER=0` 이면 휴리스틱만 사용합니다. 기본(**랭킹 모드**)에서는 상위 40개를 **ML 급등 확률 순**으로 정렬하고, **고확신/중확신**만 `pred_high`·`pred_mid`로 표시합니다(`PRED_RANKING_MODE=1`, `PRED_USE_DISPLAY_RANK_MAPPING=0`). **예측 상승률(%)** 은 종목별 과거 급등 평균·키워드 보정값이며, ML 확률은 순위·확신만 반영합니다(확률을 %로 바꿔 붙이지 않음). 레거시 순위→20~30% 일괄 매핑은 `PRED_USE_DISPLAY_RANK_MAPPING=1` 로 되돌릴 수 있습니다.
 
 ---
 
@@ -202,7 +202,7 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 | `PREDICTION_FREEZE_ENABLED` | T별 예측 고정 캐시(기본 1) |
 | `THEME_CARRYOVER_ENABLED` | 전일 테마 가중치(기본 1) |
 | `KEYWORD_FEEDBACK_*` | 오판 키워드 온라인 가중치 |
-| `PRED_RETURN_MIN` / `MAX` | 표시 예측% 하한·상한(기본 0.20~0.35) |
+| `PRED_RETURN_MIN` / `MAX` | 표시 예측% 하한·상한(기본 0.20~0.30) |
 | `NO_AUTO_OPEN_OUTPUT` | 실행 후 HTML 자동 열기 끔 |
 | `REPORT_SKIP_DISCLOSURE_FETCH` | 1이면 공시 HTTP 조회 생략(캐시만) |
 | `--use-freeze` | 구간 실행 시 예측 고정 캐시 재사용(재예측 생략) |
@@ -239,7 +239,7 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 |------|------|
 | `predict_for_trading_day` | 전 종목 스코어 → 상위 N, ML 또는 휴리스틱 |
 | `prediction_row_for_code` | 단일 종목 점수·키워드·피드백 |
-| `apply_display_return_pct_ranking` | 순위 → 20~35% 표시 매핑 |
+| `apply_display_return_pct_ranking` | 순위 → 20~30% 표시 매핑 |
 | `explain_return_gap_html` | 예측 vs 실제 갭 HTML |
 
 ### `src/ml_move_rank.py`

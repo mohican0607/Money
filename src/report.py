@@ -838,7 +838,7 @@ _TEMPLATE = r"""
               </div>
             </span>
             <span style="margin-left:10px">{{ disclosure_tip(r, d.trading_day) }}</span>
-            <span class="pred-reason-plain" style="margin-left:10px">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') }}</span>
+            <span class="pred-reason-plain" style="margin-left:10px">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}</span>
           </td>
           <td>{{ prediction_signal_cell(r) }}</td>
         </tr>
@@ -1374,7 +1374,7 @@ _COMPACT_TEMPLATE = r"""
           </div>
         </span>
         <span style="margin-left:10px">{{ disclosure_tip(r, d.trading_day) }}</span>
-        <span class="pred-reason-plain" style="margin-left:10px">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') }}</span>
+        <span class="pred-reason-plain" style="margin-left:10px">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}</span>
       </td>
       <td>{{ prediction_signal_cell(r) }}</td>
     </tr>
@@ -1971,7 +1971,7 @@ _DATED_N_TEMPLATE = r"""
           <td class="td-center">
             {{ disclosure_tip(r, t_day) }}
           </td>
-          <td class="pred-reason-cell">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') }}</td>
+          <td class="pred-reason-cell">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}</td>
           <td class="td-center">
             <span class="gap-tip combo-tip">
               <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 입력 구간 뉴스와 참고 뉴스를 함께 보기">뉴스</span>

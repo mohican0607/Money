@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import html
 import math
-import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -20,9 +19,11 @@ from . import config, prediction_accuracy_cache
 from .features import BreakoutEvent, keyword_set, name_mention_score
 
 
-_INTERSECTION_REASON_RE = re.compile(
-    r"당일 뉴스·과거 급등 프로필 키워드 교집합\s+(\d+)개"
-)
+def keyword_intersection_hit_line_html(n_hit: int, keywords: list[str]) -> str:
+    """표 ``이유/차이`` 열용 ``{n}개 교집합`` — 숫자에만 키워드 목록 툴팁."""
+    if n_hit <= 0:
+        return "—"
+    return f"{keyword_intersection_count_html(n_hit, keywords)}개 교집합"
 
 
 def keyword_intersection_count_html(n_hit: int, keywords: list[str]) -> str:
@@ -50,13 +51,9 @@ def keyword_intersection_count_html(n_hit: int, keywords: list[str]) -> str:
 
 
 def format_prediction_reason_detail_html(pr: PredictionRow) -> str:
-    """``pr.reasons`` 를 HTML로 변환. 교집합 줄의 숫자에는 전체 키워드 툴팁을 붙입니다."""
+    """``pr.reasons`` 를 HTML로 변환(통합 보기용). 교집합 툴팁은 표 ``이유/차이`` 열에만 둡니다."""
     lines: list[str] = []
     for line in pr.reasons:
-        if pr.keyword_hits and _INTERSECTION_REASON_RE.search(line):
-            trigger = keyword_intersection_count_html(pr.keyword_hits, pr.matched_keywords)
-            lines.append(f"당일 뉴스·과거 급등 프로필 키워드 교집합 {trigger}개")
-            continue
         lines.append(html.escape(line))
     return "<br/>".join(lines)
 

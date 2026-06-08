@@ -1,7 +1,7 @@
 """
 랭킹 우선 예측 모드 — 문제 정의·확신 게이트·Hit@K 평가.
 
-기존 ``20~35%`` 순위 매핑 대신 ML 확률(또는 휴리스틱 순위)을 1차 신호로 쓰고,
+기존 ``20~30%`` 순위 매핑 대신 ML 확률(또는 휴리스틱 순위)을 1차 신호로 쓰고,
 ``pred_high`` 는 **표시 %** 가 아니라 **확신 구간(confidence tier)** 으로 정의합니다.
 """
 from __future__ import annotations
@@ -117,11 +117,11 @@ def row_pred_mid_from_dict(row: dict) -> bool:
 
 
 def probability_to_display_pct(prob: float) -> float:
-    """급등 확률(0~1)을 리포트 ``pred_ret`` 열에 쓸 퍼센트 포인트로 변환."""
+    """(레거시) 급등 확률(0~1)을 [20%, PRED_RETURN_MAX] 표시 %%로 변환. 랭킹 모드 기본 경로에서는 쓰지 않음."""
     p = max(0.0, min(1.0, float(prob)))
     lo = float(config.BIG_MOVE_THRESHOLD) * 100.0
     hi = float(config.PRED_RETURN_MAX) * 100.0
-    # base rate ~0.7% 가정 시 prob 0.05 → 약 20%, prob 0.10 → 약 28% (단조, 상한 클램프)
+    # base rate ~0.7% 가정 시 prob 0.05 → 약 20%, prob 0.0875+ → 상한(PRED_RETURN_MAX) (단조, 상한 클램프)
     scaled = lo + (hi - lo) * min(1.0, p / max(0.02, float(config.PRED_ML_HIGH_CONFIDENCE_PROB) * 2.5))
     return float(max(0.0, min(hi, scaled)))
 
@@ -148,7 +148,7 @@ def finalize_ranked_predictions(
     순위·확신 구간·표시 % 를 일괄 확정합니다.
 
     - ``rank_position`` / ``rank_score`` / ``confidence_tier`` 부여
-    - 랭킹 모드: ``pred_ret`` = 확률 기반 표시 % (20~35 일괄 매핑 기본 OFF)
+    - 랭킹 모드: ``pred_ret`` = 종목별 과거 급등 평균·보정값 유지, ML 확률은 순위·확신만
     - 레거시: ``PRED_USE_DISPLAY_RANK_MAPPING=1`` 이면 기존 구간 매핑 유지
     """
     if not rows:
@@ -177,12 +177,16 @@ def finalize_ranked_predictions(
             row, rank_position=pos, pool_size=pool_size, regime_scale=r_scale
         )
         if config.PRED_RANKING_MODE and not config.PRED_USE_DISPLAY_RANK_MAPPING:
-            row.predicted_return_pct = probability_to_display_pct(prob)
-            row.reasons = [
+            # 예측 상승률(%)은 prediction_row_for_code 에서 산출한 종목별 값 유지.
+            # ML 확률은 순위·확신 구간만 반영(급등 가능성 ≠ 상승 폭).
+            rank_note = (
                 f"랭킹 모드: 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정 확률 "
                 f"{prob * 100:.2f}% · 순위 {pos}/{pool_size} · 확신 {row.confidence_tier}"
                 f"{'' if r_scale >= 0.99 else f' · 시장 레짐 보수({r_scale:.0%})'}"
-            ] + [x for x in row.reasons if "표시 예측 상승률" not in x and "20~35" not in x]
+            )
+            row.reasons = [rank_note] + [
+                x for x in row.reasons if not x.startswith("랭킹 모드:")
+            ]
 
     max_high = max(3, int(round(int(config.PRED_OUTPUT_MAX) * r_scale)))
     high_count = 0

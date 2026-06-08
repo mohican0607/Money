@@ -122,9 +122,9 @@ THEME_CARRYOVER_ENABLED = os.getenv("THEME_CARRYOVER_ENABLED", "1").strip().lowe
 THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 # 캘리브레이션 후 최종 예측 수익률(소수) 클램프 범위 (BIG_MOVE 20%와 맞춤)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
-PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.35)
+PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 3
+PREDICTION_FREEZE_SCHEMA_VERSION = 5
 
 # --- 랭킹 우선 예측(구조적 정확도 개선) ---
 # 1: ML 확률·순위 기반, pred_high=확신구간 / 0: 레거시(표시%≥20%)
@@ -134,7 +134,7 @@ PRED_RANKING_MODE = os.getenv("PRED_RANKING_MODE", "1").strip().lower() in (
     "yes",
     "on",
 )
-# 1: 상위 N개를 20~35% 구간에 일괄 매핑(기본 OFF — 랭킹 모드와 분리)
+# 1: 상위 N개를 20~30% 구간에 일괄 매핑(기본 OFF — 랭킹 모드와 분리)
 PRED_USE_DISPLAY_RANK_MAPPING = os.getenv("PRED_USE_DISPLAY_RANK_MAPPING", "0").strip().lower() in (
     "1",
     "true",

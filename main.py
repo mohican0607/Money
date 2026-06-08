@@ -626,14 +626,19 @@ def _open_report_outputs(html_paths: Sequence[Path]) -> None:
 
 
 def _pred_reason_hit_line(pr: predict.PredictionRow | None) -> str:
-    """표 ``이유/차이`` 열: 키워드 교집합 개수만 짧게 (예: ``68개 교집합``). 상세는 툴팁."""
+    """표 ``이유/차이`` 열: ``{n}개 교집합`` — 숫자에 키워드 목록 툴팁(HTML)."""
     if pr is None:
         return "—"
+    n_hit = int(getattr(pr, "keyword_hits", 0) or 0)
+    if n_hit > 0:
+        return predict.keyword_intersection_hit_line_html(n_hit, pr.matched_keywords)
     for line in pr.reasons:
         if "교집합" in line:
             m = re.search(r"교집합\s+(\d+)개", line)
             if m:
-                return f"{m.group(1)}개 교집합"
+                n = int(m.group(1))
+                if n > 0:
+                    return predict.keyword_intersection_hit_line_html(n, pr.matched_keywords)
     return "—"
 
 
@@ -1122,7 +1127,7 @@ def _pred_reason_fields(
     """
     표 ``이유/차이`` 열·툴팁용.
 
-    ``pred_reason_hit_line`` 은 표용 짧은 표기(예: ``36개 일치``). 전체 문장은 툴팁 ``pr.reasons`` 에 있습니다.
+    ``pred_reason_hit_line`` 은 표용 짧은 HTML(예: ``36개 교집합``, 숫자에 키워드 툴팁). 통합 보기에는 툴팁 없음.
     ``reasons_html`` 은 레거시(카드 등)용으로 유지.
     """
     hit_line = _pred_reason_hit_line(pr)
