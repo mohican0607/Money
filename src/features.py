@@ -7,6 +7,7 @@
 """
 from __future__ import annotations
 
+import html
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -19,24 +20,35 @@ from . import config, news
 # 한글 2글자 이상, 영단어 3글자 이상
 _TOKEN = re.compile(r"[가-힣]{2,}|[A-Za-z][A-Za-z0-9]{2,}")
 
+# HTML 엔티티(&quot; 등)가 디코딩·토큰화되며 생기는 잡음
+_HTML_ENTITY_WORD_STOP = frozenset(
+    {
+        "quot",
+        "amp",
+        "nbsp",
+        "lt",
+        "gt",
+        "apos",
+        "hellip",
+        "copy",
+        "reg",
+        "deg",
+        "yen",
+        "euro",
+        "cent",
+        "para",
+        "middot",
+        "bull",
+        "frasl",
+        "ndash",
+        "mdash",
+    }
+)
 
-def tokenize(text: str) -> list[str]:
-    """
-    한글 2글자 이상·영문 3글자 이상 토큰만 정규식으로 추출합니다(소문자화).
+_STRIP_EDGE_PUNCT = re.compile(r'^["\'“”‘’`]+|["\'“”‘’`]+$')
 
-    뉴스 본문에서 키워드 후보를 만드는 1차 단계입니다.
-    """
-    return _TOKEN.findall(text.lower())
-
-
-def top_keywords(text: str, k: int = 80) -> list[str]:
-    """
-    불용어를 제거한 뒤 빈도 상위 ``k`` 개 키워드를 문자열 리스트로 반환합니다.
-
-    리포트 하이라이트·요약용으로 쓰입니다.
-    """
-    toks = tokenize(text)
-    stop = {
+_KEYWORD_STOP = frozenset(
+    {
         "있다",
         "없다",
         "오늘",
@@ -55,7 +67,81 @@ def top_keywords(text: str, k: int = 80) -> list[str]:
         "합니다",
         "있습니다",
     }
-    toks = [t for t in toks if t not in stop and len(t) > 1]
+)
+
+
+def normalize_text_for_keywords(text: str) -> str:
+    """
+    뉴스·키워드 추출 전 HTML 태그·엔티티를 정리합니다.
+
+    RSS/네이버 요약에 ``&quot;`` 등이 남으면 토큰 ``quot`` 가 생기므로 먼저 풀어 씁니다.
+    """
+    if not text:
+        return ""
+    s = html.unescape(str(text))
+    s = re.sub(r"<[^>]+>", " ", s)
+    s = re.sub(r"&(?:#x?[0-9a-fA-F]+|[a-zA-Z]+);", " ", s)
+    s = re.sub(r"&[a-zA-Z0-9#]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def clean_keyword_token(tok: str) -> str:
+    """토큰 양끝 따옴표·백틱 제거."""
+    return _STRIP_EDGE_PUNCT.sub("", str(tok).strip())
+
+
+def is_valid_keyword(k: str) -> bool:
+    """리포트·교집합에 노출할 키워드인지(HTML 잡음·불용어 제외)."""
+    t = clean_keyword_token(k).lower()
+    if len(t) < 2:
+        return False
+    if t in _KEYWORD_STOP or t in _HTML_ENTITY_WORD_STOP:
+        return False
+    return True
+
+
+def filter_keywords(keywords: list[str] | frozenset[str]) -> list[str]:
+    """표시·매칭용 키워드 목록에서 잡음을 제거합니다."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for k in keywords:
+        t = clean_keyword_token(k)
+        if not is_valid_keyword(t):
+            continue
+        key = t.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(t)
+    return out
+
+
+def tokenize(text: str) -> list[str]:
+    """
+    한글 2글자 이상·영문 3글자 이상 토큰만 정규식으로 추출합니다(소문자화).
+
+    뉴스 본문에서 키워드 후보를 만드는 1차 단계입니다.
+    """
+    text = normalize_text_for_keywords(text)
+    out: list[str] = []
+    for raw in _TOKEN.findall(text.lower()):
+        t = clean_keyword_token(raw)
+        if len(t) < 2:
+            continue
+        if t in _KEYWORD_STOP or t in _HTML_ENTITY_WORD_STOP:
+            continue
+        out.append(t)
+    return out
+
+
+def top_keywords(text: str, k: int = 80) -> list[str]:
+    """
+    불용어를 제거한 뒤 빈도 상위 ``k`` 개 키워드를 문자열 리스트로 반환합니다.
+
+    리포트 하이라이트·요약용으로 쓰입니다.
+    """
+    toks = tokenize(text)
+    toks = [t for t in toks if is_valid_keyword(t)]
     ctr = Counter(toks)
     return [w for w, _ in ctr.most_common(k)]
 
@@ -219,9 +305,12 @@ def name_mention_score(text_blob: str, name: str) -> float:
 
     최대 5회 이상이면 1.0. 예측 시 종목명 직접 거론을 가중치로 반영합니다.
     """
-    if not name or name not in text_blob:
+    if not name:
         return 0.0
-    return min(1.0, text_blob.count(name) / 5.0)
+    blob = normalize_text_for_keywords(text_blob)
+    if name not in blob:
+        return 0.0
+    return min(1.0, blob.count(name) / 5.0)
 
 
 def highlight_terms(text: str, terms: list[str]) -> str:

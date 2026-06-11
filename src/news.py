@@ -45,6 +45,13 @@ KST = ZoneInfo("Asia/Seoul")
 _CACHE_NEWS = config.CACHE_DIR / "news"
 
 
+def _sanitize_news_field(raw: str) -> str:
+    """제목·요약에서 HTML 태그·``&quot;`` 등 엔티티를 풀어 키워드 잡음을 줄입니다."""
+    from . import features
+
+    return features.normalize_text_for_keywords(raw)
+
+
 class _NewsHttpCountSink:
     """하루치 뉴스 수집 구간에서 네이버·RSS HTTP 호출 수를 스레드 안전하게 집계."""
 
@@ -526,13 +533,13 @@ def _google_rss_item_fields(item: ET.Element) -> dict[str, str]:
         ln = _local_xml_tag(child.tag)
         t = (child.text or "").strip()
         if ln == "title":
-            title = t
+            title = _sanitize_news_field(t)
         elif ln == "link":
             link = t
         elif ln == "pubDate":
             pub_raw = t
         elif ln == "description":
-            desc = re.sub(r"<[^>]+>", "", t).strip()
+            desc = _sanitize_news_field(re.sub(r"<[^>]+>", "", t).strip())
     return {"title": title, "link": link, "pub": pub_raw, "description": desc}
 
 
@@ -754,8 +761,8 @@ def _naver_rows_for_ticker_on_day(
                 continue
             if pub != target:
                 continue
-            title = re.sub(r"<[^>]+>", "", it.get("title", ""))
-            desc = re.sub(r"<[^>]+>", "", it.get("description", ""))
+            title = _sanitize_news_field(re.sub(r"<[^>]+>", "", it.get("title", "")))
+            desc = _sanitize_news_field(re.sub(r"<[^>]+>", "", it.get("description", "")))
             link = it.get("link", "")
             pub_raw = (it.get("pubDate") or "").strip()
             out.append(
@@ -877,8 +884,8 @@ def _fetch_news_day_naver(
                     continue
                 if pub != target:
                     continue
-                title = re.sub(r"<[^>]+>", "", it.get("title", ""))
-                desc = re.sub(r"<[^>]+>", "", it.get("description", ""))
+                title = _sanitize_news_field(re.sub(r"<[^>]+>", "", it.get("title", "")))
+                desc = _sanitize_news_field(re.sub(r"<[^>]+>", "", it.get("description", "")))
                 link = it.get("link", "")
                 pub_raw = (it.get("pubDate") or "").strip()
                 key = link or (title + desc)
@@ -939,8 +946,8 @@ def _fetch_news_day_google_rss(
                 pub_d = _published_date_kst_from_rfc822(it.get("pub", ""))
                 if pub_d is None or pub_d != target:
                     continue
-                title = it.get("title", "")
-                desc = it.get("description", "")
+                title = _sanitize_news_field(it.get("title", ""))
+                desc = _sanitize_news_field(it.get("description", ""))
                 link = it.get("link", "")
                 pub_raw = (it.get("pub") or "").strip()
                 key = link or (title + desc)

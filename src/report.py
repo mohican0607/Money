@@ -884,7 +884,7 @@ _TEMPLATE = r"""
           <th>누적정확도(10~20)</th>
           <th>누적정확도(전체)</th>
           <th>이유/차이</th>
-          <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간">예측 신호</th>
+          <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간·당일 급등 테마">예측 신호</th>
         </tr>
       </thead>
       <tbody>
@@ -1420,7 +1420,7 @@ _COMPACT_TEMPLATE = r"""
       <th>누적정확도(10~20)</th>
       <th>누적정확도(전체)</th>
       <th>이유/차이</th>
-      <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간">예측 신호</th>
+      <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간·당일 급등 테마">예측 신호</th>
     </tr>
   </thead>
   <tbody>
@@ -1967,7 +1967,7 @@ _DATED_N_TEMPLATE = r"""
       <h2>종목별 상세 <span style="font-size:0.82rem;font-weight:500;color:var(--muted)">(관측일 {{ t_day.isoformat() }})</span></h2>
       {{ market_filter_radios(n_day.strftime("%Y%m%d")) }}
     </div>
-    <p class="sub" style="margin-top:0">한 줄이 한 종목입니다. <strong>통합 보기</strong>·<strong>공시</strong>·<strong>뉴스</strong>에 마우스를 올리면 상세를 볼 수 있습니다. <strong>예측 신호</strong> 열은 교집합·ML·순위 요약입니다.</p>
+    <p class="sub" style="margin-top:0">한 줄이 한 종목입니다. <strong>통합 보기</strong>·<strong>공시</strong>·<strong>뉴스</strong>에 마우스를 올리면 상세를 볼 수 있습니다. <strong>예측 신호</strong> 열은 교집합·ML·순위·당일 급등 테마(실제 10%↑) 요약입니다.</p>
     {% if day.rows_compare|length > 0 %}
     <div class="table-wrap">
     <table class="rows-compare">
@@ -1985,7 +1985,7 @@ _DATED_N_TEMPLATE = r"""
           <th>공시</th>
           <th>이유/차이</th>
           <th>뉴스</th>
-          <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간">예측 신호</th>
+          <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간·당일 급등 테마">예측 신호</th>
         </tr>
       </thead>
       <tbody>

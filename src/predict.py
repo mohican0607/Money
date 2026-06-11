@@ -16,7 +16,7 @@ from collections.abc import Callable
 from typing import Any
 
 from . import config, prediction_accuracy_cache
-from .features import BreakoutEvent, keyword_set, name_mention_score
+from .features import BreakoutEvent, filter_keywords, keyword_set, name_mention_score
 
 
 def keyword_intersection_hit_line_html(n_hit: int, keywords: list[str]) -> str:
@@ -30,7 +30,7 @@ def keyword_intersection_count_html(n_hit: int, keywords: list[str]) -> str:
     """교집합 개수 숫자에 hover 툴팁으로 전체 키워드 목록을 붙입니다."""
     if n_hit <= 0:
         return str(n_hit)
-    kw_list = keywords or []
+    kw_list = filter_keywords(keywords or [])
     pills = "".join(
         f'<span class="pill" style="margin:2px 4px 2px 0">{html.escape(k)}</span>'
         for k in kw_list[:120]
@@ -312,6 +312,7 @@ def prediction_row_for_code(
     name = listing_names.get(code, "")
     hist_kw = profile.get(code, frozenset())
     inter = hist_kw & kw_news
+    inter = frozenset(filter_keywords(inter))
     n_hit = len(inter)
     mention = name_mention_score(news_text_blob, name)
     score = n_hit * 1.0 + mention * 5.0

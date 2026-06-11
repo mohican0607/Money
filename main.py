@@ -137,11 +137,11 @@ def _ignore_freeze_for_trading_day(
     """
     예측 고정 캐시를 쓰지 않고 다시 예측할 관측일 T 인지 판단.
 
-    - ``--use-freeze``: 구간 실행이어도 고정 캐시가 있으면 재사용(리포트만 빠르게 갱신).
-    - ``python main.py From To`` (``cal_scope`` 있음): **From~To 안** 모든 실행에서 freeze 무시.
-      (``--rebuild`` / ``--append`` 직후 일반 실행도 동일 — 고정 캐시에 묶이지 않음)
-    - 월간 리포트 병합 등으로 루프에만 포함된 **구간 밖** T: freeze 재사용
-    - ``--weekly``·단일일 등 ``cal_scope`` 없음: ``rebuild``/``append`` 일 때만 전일 freeze 무시
+    - ``python main.py From To`` (기본): **freeze 가 있으면 재사용**, 없는 T 만 신규 예측·저장.
+      (예: N일 14:30 ``main.py T`` 로 확정한 예측은 이후 구간 실행에서 T 블록에 유지)
+    - ``--rebuild-train-snapshot`` + From~To: 구간 안 모든 T 를 freeze 무시·재계산.
+    - ``--use-freeze``: ``--rebuild`` 구간에서도 freeze 재사용(명시적).
+    - ``--weekly``·단일일 등 ``cal_scope`` 없음: ``rebuild``/``append`` 일 때만 freeze 무시
     """
     if respect_prediction_freeze:
         return False
@@ -149,8 +149,10 @@ def _ignore_freeze_for_trading_day(
         return True
     if cal_scope is None:
         return False
-    s0, s1 = cal_scope
-    return s0 <= T <= s1
+    if train_snapshot_mode == "rebuild":
+        s0, s1 = cal_scope
+        return s0 <= T <= s1
+    return False
 
 
 def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.PredictionRow]:
@@ -507,17 +509,18 @@ def _print_usage() -> None:
       ML 랭커 joblib 은 재학습해 덮어씁니다(스냅샷에 쌓인 miss 진단으로 어려운 급등·오판 샘플 가중).
       다음 구간 재실행 시 갱신된 miss_diagnosis 가 재학습에 반영됩니다.
       From~To 구간 안의 관측일은 예측 고정 캐시를 무시하고 재계산·저장합니다.
-      구간 밖 test_days(월간 리포트 병합일 등)는 freeze 가 있으면 재사용합니다.
   --append-rebuild-learning
       급등-뉴스 train_events 는 스냅샷 재사용(미반영 캘린더만 병합). ML joblib 도 재학습하지 않고
-      기존 모델을 로드합니다. From~To 안은 예측·freeze·rebuild_learning 병합(구간 보강용).
-      플래그 없이 ``python main.py From To`` 만 실행해도 From~To 안은 freeze 를 무시하고 재예측합니다.
+      기존 모델을 로드합니다. From~To 안은 freeze 없는 일만 신규 예측·rebuild_learning 병합.
+  (플래그 없음) From~To
+      각 T 에 prediction_freeze_by_t.json 이 있으면 예측 후보 재사용(실제·테마·누적만 갱신).
+      없는 T 만 신규 예측 후 freeze 저장.
   --no-report-expand
       월간 HTML 병합 없이 이번 From~To 거래일만으로 해당 월 파일을 덮어씁니다.
       (기존 일자 HTML 유지·append 안 함)
   --use-freeze
-      From~To 구간이어도 prediction_freeze_by_t.json 예측 고정 캐시를 재사용합니다.
-      (리포트·표시만 빠르게 갱신할 때. 예측 수치를 다시 맞추려면 플래그 없이 실행)
+      --rebuild-train-snapshot 구간에서도 prediction_freeze_by_t.json 을 재사용합니다.
+      (일반 From~To 는 기본적으로 freeze 재사용)
 
   예: python main.py 20260401 20260414
   예: python main.py --append-rebuild-learning --no-report-expand 20260516 20260601
@@ -1637,12 +1640,7 @@ def _run_pipeline(
                     scope_note = f"구간({s0}~{s1}) "
                 else:
                     scope_note = ""
-                if train_snapshot_mode == "rebuild":
-                    reason = "--rebuild-train-snapshot"
-                elif train_snapshot_mode == "append_learning":
-                    reason = "--append-rebuild-learning"
-                else:
-                    reason = "From~To 구간 실행"
+                reason = "--rebuild-train-snapshot"
                 if _freeze_entry_usable(frozen_items or []):
                     print(
                         f"관측일 T={t_key}: {reason} — "
@@ -1655,6 +1653,11 @@ def _run_pipeline(
                         f"{scope_note}예측 고정 캐시 없음·신규 계산합니다.",
                         flush=True,
                     )
+            elif not _freeze_entry_usable(frozen_items or []):
+                print(
+                    f"관측일 T={t_key}: 예측 고정 캐시 없음·신규 계산합니다.",
+                    flush=True,
+                )
             preds = predict.predict_for_trading_day(
                 T,
                 codes,
@@ -2607,7 +2610,13 @@ def main() -> None:
 
         if use_freeze:
             print(
-                "--use-freeze: From~To 구간도 prediction_freeze_by_t.json 예측 고정 캐시를 재사용합니다.",
+                "--use-freeze: --rebuild-train-snapshot 구간에서도 prediction_freeze_by_t.json 을 재사용합니다.",
+                flush=True,
+            )
+        elif snap_mode != "rebuild":
+            print(
+                "구간 실행: 각 T에 예측 고정 캐시가 있으면 예측 후보를 유지하고, "
+                "없는 일만 신규 계산합니다.",
                 flush=True,
             )
 
