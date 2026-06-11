@@ -26,7 +26,7 @@ from . import (
     trading_calendar,
     market_index,
 )
-from .features import BreakoutEvent, keyword_set, name_mention_score
+from .features import BreakoutEvent, filter_specific_keywords, keyword_set, name_mention_score
 
 try:
     import joblib
@@ -66,11 +66,10 @@ FEATURE_NAMES = (
     "ks11_regime_risk_off",
 )
 
-ML_MODEL_VERSION = 6
+ML_MODEL_VERSION = 7
 MAX_NEG_PER_DAY = 360
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
-ML_CANDIDATE_MIN_CODES = 400
 
 
 def _ml_scoring_candidate_codes(
@@ -81,23 +80,24 @@ def _ml_scoring_candidate_codes(
     min_keyword_hits: int,
 ) -> list[str]:
     """
-    ML ``predict_proba`` 대상 종목을 휴리스틱 신호가 있는 코드로 축소합니다.
+    ML ``predict_proba`` 대상 종목을 종목 관련 신호가 있는 코드로만 축소합니다.
 
-    후보가 너무 적으면 전 종목으로 폴백해 랭킹 누락을 막습니다.
+    후보가 적어도 전 종목 폴백은 하지 않습니다(저유동·범용 키워드 오탐 방지).
     """
     kw_news, profile = ctx
+    spec_news = filter_specific_keywords(kw_news)
+    mention_gate = float(config.PRED_MENTION_GATE_MIN)
+    need_hits = max(1, int(min_keyword_hits))
     out: list[str] = []
     for code in listing_codes:
         name = listing_names.get(code, "") or ""
-        if name_mention_score(news_text_blob, name) >= 0.2:
+        if name_mention_score(news_text_blob, name) >= mention_gate:
             out.append(code)
             continue
         hist = profile.get(code)
-        if hist and len(kw_news & hist) >= max(1, min_keyword_hits):
+        if hist and len(filter_specific_keywords(hist & spec_news)) >= need_hits:
             out.append(code)
             continue
-    if len(out) < ML_CANDIDATE_MIN_CODES:
-        return listing_codes
     return out
 
 
@@ -217,8 +217,8 @@ def _feat_vector(
     hist_kw: set[str] = set()
     for e in sub:
         if e.code == code:
-            hist_kw |= set(e.news_keywords)
-    inter = hist_kw & kw_news
+            hist_kw |= set(filter_specific_keywords(e.news_keywords))
+    inter = filter_specific_keywords(hist_kw & kw_news)
     n_hit = len(inter)
     mention = name_mention_score(news_blob, name)
     score = n_hit * 1.0 + mention * 5.0
@@ -506,7 +506,7 @@ def rank_predictions_ml(
     theme_weights: dict[str, float] | None = None,
     feedback_ctx: dict[str, object] | None = None,
 ) -> list[predict.PredictionRow]:
-    """전 종목에 대해 급등 확률을 매기고 상위 ``top_n`` ``PredictionRow`` 를 만듭니다."""
+    """종목 관련 신호가 있는 후보만 급등 확률을 매기고 상위 ``top_n`` ``PredictionRow`` 를 만듭니다."""
     ctx = predict.build_scoring_context(news_text_blob, train_events)
     if feedback_ctx is None:
         feedback_ctx = prediction_accuracy_cache.build_feedback_context()
@@ -527,7 +527,7 @@ def rank_predictions_ml(
         if ix is not None:
             cand_ix.append(ix)
     if not cand_ix:
-        cand_ix = list(range(len(listing_codes)))
+        return []
     feats: list[list[float]] = []
     for i in cand_ix:
         code = listing_codes[i]

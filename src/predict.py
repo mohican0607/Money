@@ -16,7 +16,13 @@ from collections.abc import Callable
 from typing import Any
 
 from . import config, prediction_accuracy_cache
-from .features import BreakoutEvent, filter_keywords, keyword_set, name_mention_score
+from .features import (
+    BreakoutEvent,
+    filter_keywords,
+    filter_specific_keywords,
+    keyword_set,
+    name_mention_score,
+)
 
 
 def keyword_intersection_hit_line_html(n_hit: int, keywords: list[str]) -> str:
@@ -82,8 +88,32 @@ def _build_code_keyword_profile(train_events: list[BreakoutEvent]) -> dict[str, 
     """
     acc: dict[str, set[str]] = defaultdict(set)
     for e in train_events:
-        acc[e.code].update(e.news_keywords)
+        acc[e.code].update(filter_specific_keywords(e.news_keywords))
     return {c: frozenset(v) for c, v in acc.items()}
+
+
+def _chronic_miss_blocks_prediction(
+    code: str,
+    mention: float,
+    feedback_ctx: dict[str, object] | None,
+) -> bool:
+    """누적 적중률이 매우 낮은 종목은 종목명 직접 언급 없이 후보에서 제외."""
+    if mention >= float(config.PRED_MENTION_GATE_MIN):
+        return False
+    if not config.PRED_CHRONIC_MISS_BLOCK_ENABLED or not feedback_ctx:
+        return False
+    by_mean = feedback_ctx.get("by_code_mean_ratio")
+    by_count = feedback_ctx.get("by_code_count")
+    if not isinstance(by_mean, dict) or not isinstance(by_count, dict):
+        return False
+    code_key = str(code).zfill(6)
+    n = int(by_count.get(code_key, 0) or 0)
+    if n < int(config.PRED_CHRONIC_MISS_MIN_SAMPLES):
+        return False
+    mean = by_mean.get(code_key)
+    if not isinstance(mean, (int, float)):
+        return False
+    return float(mean) < float(config.PRED_CHRONIC_MISS_RATIO_MAX)
 
 
 def _historical_mean_return(train_events: list[BreakoutEvent], code: str) -> float:
@@ -303,7 +333,8 @@ def prediction_row_for_code(
     """
     단일 종목에 대해 키워드 교집합 수 + 종목명 언급 점수로 스코어하고 ``PredictionRow`` 를 만듭니다.
 
-    조건: 교집합 개수가 ``min_keyword_hits`` 미만이면서 종목명 언급 점수가 0.2 미만이면 후보 제외(None).
+    조건: 비범용 키워드 교집합이 ``min_keyword_hits`` 미만이고 종목명 언급도
+    ``PRED_MENTION_GATE_MIN`` 미만이면 후보 제외(None). 반복 오탐 종목은 누적 오차로 추가 제외.
 
     Args:
         ctx: ``build_scoring_context`` 의 반환값을 그대로 넘깁니다.
@@ -311,10 +342,16 @@ def prediction_row_for_code(
     kw_news, profile = ctx
     name = listing_names.get(code, "")
     hist_kw = profile.get(code, frozenset())
-    inter = hist_kw & kw_news
-    inter = frozenset(filter_keywords(inter))
+    inter = filter_specific_keywords(hist_kw & kw_news)
     n_hit = len(inter)
     mention = name_mention_score(news_text_blob, name)
+    if _chronic_miss_blocks_prediction(code, mention, feedback_ctx):
+        return None
+    mention_gate = float(config.PRED_MENTION_GATE_MIN)
+    if n_hit < min_keyword_hits and mention < mention_gate:
+        return None
+    if n_hit < 1 and mention < mention_gate:
+        return None
     score = n_hit * 1.0 + mention * 5.0
     tw = theme_weights or {}
     theme_hit = 0.0
@@ -341,8 +378,6 @@ def prediction_row_for_code(
                     s += float(v)
             if math.isfinite(s) and s != 0.0:
                 score += float(config.KEYWORD_FEEDBACK_SCORE_SCALE) * s
-    if n_hit < min_keyword_hits and mention < 0.2:
-        return None
     matched = sorted(inter, key=len, reverse=True)
     reasons: list[str] = []
     if theme_hit >= 0.06 and config.THEME_CARRYOVER_ENABLED:
@@ -351,7 +386,7 @@ def prediction_row_for_code(
         )
     if n_hit:
         reasons.append(f"당일 뉴스·과거 급등 프로필 키워드 교집합 {n_hit}개")
-    if mention >= 0.2:
+    if mention >= mention_gate:
         reasons.append("뉴스 본문·제목에 종목명 다수 등장")
     reasons.append(
         "표시 예측 상승률(%)은 키워드·종목명·테마·과거 급등 통계 등을 반영한 내부 추정과 "

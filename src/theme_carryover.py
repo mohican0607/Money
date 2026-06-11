@@ -16,7 +16,7 @@ from typing import Any
 import pandas as pd
 
 from . import config, news, predict, trading_calendar
-from .features import BreakoutEvent, keyword_set
+from .features import BreakoutEvent, filter_specific_keywords, keyword_set
 
 _SNAPSHOT_PATH = config.CACHE_DIR / "train" / "daily_theme_snapshots.json"
 _CACHE_MTIME: float | None = None
@@ -168,7 +168,7 @@ def synthesize_weights_for_day(
         for e in train_events:
             if e.code == code and e.trading_day < session_day:
                 hist |= set(e.news_keywords)
-        for k in hist & set(kw_news):
+        for k in filter_specific_keywords(hist & set(kw_news)):
             c[k] += w
     return _normalize_weights(c)
 

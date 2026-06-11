@@ -124,7 +124,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 5
+PREDICTION_FREEZE_SCHEMA_VERSION = 6
 
 # --- 랭킹 우선 예측(구조적 정확도 개선) ---
 # 1: ML 확률·순위 기반, pred_high=확신구간 / 0: 레거시(표시%≥20%)
@@ -142,6 +142,16 @@ PRED_USE_DISPLAY_RANK_MAPPING = os.getenv("PRED_USE_DISPLAY_RANK_MAPPING", "0").
     "on",
 )
 PRED_RANK_POOL_N = _positive_int_env("PRED_RANK_POOL_N", 40)
+# 휴리스틱·ML 후보: 종목 관련(비범용) 키워드 교집합 최소 개수
+PRED_MIN_KEYWORD_HITS = _positive_int_env("PRED_MIN_KEYWORD_HITS", 2)
+# 종목명 직접 언급 없을 때 후보 통과에 필요한 mention 점수(0~1, 5회 이상=1.0)
+PRED_MENTION_GATE_MIN = _float_env("PRED_MENTION_GATE_MIN", 0.35)
+# 누적 오차로 반복 오탐 종목을 후보에서 제외(종목명 직접 언급 없을 때만)
+PRED_CHRONIC_MISS_BLOCK_ENABLED = os.getenv(
+    "PRED_CHRONIC_MISS_BLOCK_ENABLED", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+PRED_CHRONIC_MISS_MIN_SAMPLES = _positive_int_env("PRED_CHRONIC_MISS_MIN_SAMPLES", 10)
+PRED_CHRONIC_MISS_RATIO_MAX = _float_env("PRED_CHRONIC_MISS_RATIO_MAX", 0.18)
 PRED_OUTPUT_MAX = _positive_int_env("PRED_OUTPUT_MAX", 12)
 PRED_ML_HIGH_CONFIDENCE_PROB = _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.035)
 PRED_ML_MID_CONFIDENCE_PROB = _float_env("PRED_ML_MID_CONFIDENCE_PROB", 0.018)

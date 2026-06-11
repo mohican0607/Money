@@ -41,6 +41,8 @@ def fingerprint() -> str:
         "news_early_anchor": "last_krx_session_before_t_close",
         "walk_forward_train_events": True,
         "krx_ad_hoc_closures": sorted(d.isoformat() for d in config.KRX_AD_HOC_SESSION_CLOSURES),
+        # 급등 이벤트 키워드: 종목 직접 언급 뉴스만(시장 전체 blob 공유 폐기)
+        "breakout_keywords": "stock_specific_v1",
     }
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()[:32]

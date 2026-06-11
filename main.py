@@ -1603,7 +1603,7 @@ def _run_pipeline(
                 print(f"ML 랭커 초기화 실패(휴리스틱만 사용): {e}", flush=True)
                 ml_bundle = None
 
-        min_hits = 1 if train_events_t else 0
+        min_hits = config.PRED_MIN_KEYWORD_HITS if train_events_t else 0
         theme_w: dict[str, float] = {}
         if config.THEME_CARRYOVER_ENABLED:
             try:

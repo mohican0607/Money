@@ -1,9 +1,9 @@
 """
 뉴스 텍스트·종목명 기반 특징과 과거 급등–뉴스 이벤트 구축.
 
-훈련 구간에서 「당일 수익률이 임계 이상인 날」마다, 그날(또는 컷오프 반영) 뉴스 blob에서
-키워드 집합을 뽑아 ``BreakoutEvent`` 로 저장합니다. 예측 단계에서는 이 이벤트와
-당일 뉴스 키워드의 겹침으로 스코어를 냅니다.
+훈련 구간에서 「당일 수익률이 임계 이상인 날」마다, **해당 종목이 직접 언급된 뉴스**에서
+키워드 집합을 뽑아 ``BreakoutEvent`` 로 저장합니다. 예측 단계에서는 비범용 키워드 교집합과
+종목명 언급으로 스코어를 냅니다.
 """
 from __future__ import annotations
 
@@ -68,6 +68,106 @@ _KEYWORD_STOP = frozenset(
         "있습니다",
     }
 )
+
+# 시장 전체 뉴스에 매일 등장하는 범용어 — 교집합·프로필 점수에서 제외
+_GENERIC_MARKET_KEYWORDS = frozenset(
+    {
+        "코스피",
+        "코스닥",
+        "증시",
+        "주식",
+        "시장",
+        "상승",
+        "하락",
+        "반등",
+        "조정",
+        "외국인",
+        "기관",
+        "개인",
+        "순매수",
+        "순매도",
+        "금리",
+        "환율",
+        "달러",
+        "원화",
+        "나스닥",
+        "다우",
+        "연준",
+        "지수",
+        "종합",
+        "상장",
+        "거래",
+        "거래량",
+        "시총",
+        "투자",
+        "매수",
+        "매도",
+        "급등",
+        "급락",
+        "상한가",
+        "하한가",
+        "테마",
+        "섹터",
+        "장중",
+        "장마감",
+        "마감",
+        "개장",
+        "etf",
+        "fed",
+        "fomc",
+        "cpi",
+        "gdp",
+        "실적",
+        "전망",
+        "분석",
+        "리포트",
+        "목표가",
+        "추천",
+        "관심",
+        "주목",
+        "강세",
+        "약세",
+        "보합",
+        "출발",
+        "마무리",
+        "고속",
+        "여행",
+        "관광",
+        "휴가",
+        "연휴",
+        "면세",
+        "유가",
+        "국제유가",
+        "버스",
+        "철도",
+        "항공",
+    }
+)
+
+# 종목명만으로 프로필을 만들 때 오탐이 잦은 짧은·모호 토큰
+_AMBIGUOUS_NAME_TOKENS = frozenset({"동양", "대우", "한국", "삼화", "동방", "서부", "남부", "북부"})
+
+# 종목명 단독 프로필 허용 최소 글자 수(한글 기준)
+_MIN_NAME_ONLY_PROFILE_LEN = 4
+
+
+def is_generic_market_keyword(k: str) -> bool:
+    """증시·시장 전체 뉴스에 흔한 범용 키워드인지."""
+    t = clean_keyword_token(k).lower()
+    return t in _GENERIC_MARKET_KEYWORDS
+
+
+def filter_specific_keywords(keywords: list[str] | frozenset[str] | set[str]) -> frozenset[str]:
+    """범용 시장 키워드를 제외한 교집합·프로필용 집합."""
+    out: set[str] = set()
+    for k in keywords:
+        t = clean_keyword_token(k)
+        if not is_valid_keyword(t):
+            continue
+        if is_generic_market_keyword(t):
+            continue
+        out.add(t)
+    return frozenset(out)
 
 
 def normalize_text_for_keywords(text: str) -> str:
@@ -155,7 +255,7 @@ def keyword_set(text: str, k: int = 80) -> frozenset[str]:
 
 @dataclass
 class BreakoutEvent:
-    """과거 거래일 급등 라벨 1건: 해당일 수익률·당일 뉴스에서 뽑은 키워드(종목 프로필 보조용)."""
+    """과거 거래일 급등 라벨 1건: 해당일 수익률·종목 관련 뉴스에서 뽑은 키워드."""
 
     trading_day: date
     code: str
@@ -163,6 +263,82 @@ class BreakoutEvent:
     return_pct: float
     news_keywords: frozenset[str]
     news_snippets: list[str] = field(default_factory=list)
+
+
+def _news_row_text(row: dict[str, str]) -> str:
+    return f"{row.get('title', '')} {row.get('description', '')}".strip()
+
+
+def _collect_early_news_rows(
+    news_by_calendar: dict[date, list[dict[str, str]]],
+    trading_day: date,
+    news_window_fn,
+) -> list[tuple[date, dict[str, str]]]:
+    """거래일 ``trading_day`` 예측 입력(early) 뉴스 row 목록."""
+    if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
+        early_rows, _ = news.classified_rows_for_target(news_by_calendar, trading_day)
+        return list(early_rows)
+    cal_start, cal_end = news_window_fn(trading_day)
+    out: list[tuple[date, dict[str, str]]] = []
+    cd = cal_start
+    while cd <= cal_end:
+        for row in news_by_calendar.get(cd, []):
+            out.append((cd, row))
+        cd += timedelta(days=1)
+    return out
+
+
+def _stock_relevant_news_rows(
+    early_rows: list[tuple[date, dict[str, str]]],
+    code: str,
+    name: str,
+) -> list[tuple[date, dict[str, str]]]:
+    """종목명·코드가 본문에 등장하는 뉴스만 남깁니다."""
+    code_z = str(code).zfill(6)
+    norm_name = normalize_text_for_keywords(name) if name else ""
+    out: list[tuple[date, dict[str, str]]] = []
+    for d, row in early_rows:
+        text = normalize_text_for_keywords(_news_row_text(row))
+        if norm_name and norm_name in text:
+            out.append((d, row))
+            continue
+        compact = text.replace(" ", "")
+        if code_z in compact:
+            out.append((d, row))
+    return out
+
+
+def breakout_keywords_for_stock(
+    code: str,
+    name: str,
+    early_rows: list[tuple[date, dict[str, str]]],
+) -> tuple[frozenset[str], list[str]]:
+    """
+    급등 이벤트용 종목별 키워드 프로필.
+
+    - 우선: 해당 종목이 직접 언급된 뉴스에서만 키워드 추출
+    - 없으면: 4글자 이상 종목명 토큰만(시장 전체 blob 사용 금지)
+    - 범용 시장 키워드는 항상 제거
+    """
+    stock_rows = _stock_relevant_news_rows(early_rows, code, name)
+    if stock_rows:
+        blob = "\n".join(_news_row_text(r) for _, r in stock_rows)
+        kw = filter_specific_keywords(keyword_set(blob, k=60))
+        snippets = [_news_row_text(r)[:120] for _, r in stock_rows[:15]]
+        return kw, snippets
+
+    name_clean = (name or "").strip()
+    if len(name_clean) >= _MIN_NAME_ONLY_PROFILE_LEN:
+        kw = filter_specific_keywords(
+            frozenset(
+                t
+                for t in tokenize(name_clean)
+                if is_valid_keyword(t) and t not in _AMBIGUOUS_NAME_TOKENS
+            )
+        )
+        if kw:
+            return kw, []
+    return frozenset(), []
 
 
 def build_breakout_events(
@@ -174,8 +350,8 @@ def build_breakout_events(
     """
     수익률 표와 일자별 뉴스로부터 급등 이벤트 목록을 만듭니다.
 
-    각 캘린더상의 거래일 ``d`` 에 대해 ``return_pct >= threshold`` 인 모든 종목을 찾고,
-    그날 예측에 쓸 뉴스 텍스트 blob을 만든 뒤 ``keyword_set(blob)`` 을 이벤트에 붙입니다.
+    각 거래일 ``d`` 의 급등 종목마다, **그 종목이 직접 언급된 뉴스**에서만 키워드 프로필을 만듭니다.
+    (시장 전체 뉴스 blob을 모든 급등 종목에 공유하던 이전 방식은 오탐 원인이어서 폐기.)
 
     Args:
         returns_df: ``daily_returns_table`` 결과(``Date``, ``Code``, ``return_pct`` 등).
@@ -197,34 +373,19 @@ def build_breakout_events(
         movers = r[(r["Date"] == pd.Timestamp(d)) & (r["return_pct"] >= threshold)]
         if movers.empty:
             continue
-        if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
-            blob, _ = news.aggregate_early_late_for_target(news_by_calendar, d)
-            snippets = []
-            for line in blob.split("\n")[:15]:
-                snippets.append(line[:120])
-        else:
-            cal_start, cal_end = news_window_fn(d)
-            texts: list[str] = []
-            snippets = []
-            cd = cal_start
-            while cd <= cal_end:
-                rows = news_by_calendar.get(cd, [])
-                for row in rows:
-                    t = f"{row.get('title', '')} {row.get('description', '')}"
-                    texts.append(t)
-                    snippets.append(row.get("title", "")[:120])
-                cd += timedelta(days=1)
-            blob = "\n".join(texts)
-        kw = keyword_set(blob)
+        early_rows = _collect_early_news_rows(news_by_calendar, d, news_window_fn)
         for _, row in movers.iterrows():
+            code = str(row["Code"]).zfill(6)
+            name = str(row["Name"])
+            kw, snippets = breakout_keywords_for_stock(code, name, early_rows)
             events.append(
                 BreakoutEvent(
                     trading_day=d,
-                    code=str(row["Code"]).zfill(6),
-                    name=str(row["Name"]),
+                    code=code,
+                    name=name,
                     return_pct=float(row["return_pct"]),
                     news_keywords=kw,
-                    news_snippets=snippets[:15],
+                    news_snippets=snippets,
                 )
             )
     return events
@@ -248,34 +409,19 @@ def build_breakout_events_for_trading_days(
         movers = r[(r["Date"] == pd.Timestamp(d)) & (r["return_pct"] >= threshold)]
         if movers.empty:
             continue
-        if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
-            blob, _ = news.aggregate_early_late_for_target(news_by_calendar, d)
-            snippets = []
-            for line in blob.split("\n")[:15]:
-                snippets.append(line[:120])
-        else:
-            cal_start, cal_end = news_window_fn(d)
-            texts: list[str] = []
-            snippets = []
-            cd = cal_start
-            while cd <= cal_end:
-                rows = news_by_calendar.get(cd, [])
-                for row in rows:
-                    t = f"{row.get('title', '')} {row.get('description', '')}"
-                    texts.append(t)
-                    snippets.append(row.get("title", "")[:120])
-                cd += timedelta(days=1)
-            blob = "\n".join(texts)
-        kw = keyword_set(blob)
+        early_rows = _collect_early_news_rows(news_by_calendar, d, news_window_fn)
         for _, row in movers.iterrows():
+            code = str(row["Code"]).zfill(6)
+            name = str(row["Name"])
+            kw, snippets = breakout_keywords_for_stock(code, name, early_rows)
             events.append(
                 BreakoutEvent(
                     trading_day=d,
-                    code=str(row["Code"]).zfill(6),
-                    name=str(row["Name"]),
+                    code=code,
+                    name=name,
                     return_pct=float(row["return_pct"]),
                     news_keywords=kw,
-                    news_snippets=snippets[:15],
+                    news_snippets=snippets,
                 )
             )
     return events
@@ -292,9 +438,10 @@ def keyword_overlap_score(kw_news: frozenset[str], events: list[BreakoutEvent], 
     if not rel:
         return 0.0
     score = 0.0
+    spec_news = filter_specific_keywords(kw_news)
     for e in rel:
-        inter = len(kw_news & e.news_keywords)
-        union = len(kw_news | e.news_keywords) or 1
+        inter = len(spec_news & filter_specific_keywords(e.news_keywords))
+        union = len(spec_news | filter_specific_keywords(e.news_keywords)) or 1
         score += inter / union
     return score / len(rel)
 
