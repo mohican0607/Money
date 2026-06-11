@@ -1323,7 +1323,16 @@ def enrich_day_reports_market_theme(
     """
     from . import move_reference
 
-    days = sorted({dr.trading_day for dr in day_reports})
+    forward_placeholder = (
+        '<p class="sub"><strong>장 시작 전·예측 전용.</strong> '
+        "당일 급등·테마 요약은 정규장 마감(15:30 KST) 후 갱신됩니다.</p>"
+    )
+    days = sorted(
+        {dr.trading_day for dr in day_reports if not getattr(dr, "forward_observation", False)}
+    )
+    for dr in day_reports:
+        if getattr(dr, "forward_observation", False):
+            dr.market_theme_html = forward_placeholder
     if not days:
         return []
     theme_rows = build_market_theme_flow(
@@ -1332,6 +1341,8 @@ def enrich_day_reports_market_theme(
     by_day = {str(r.get("trading_day")): r for r in theme_rows if r.get("trading_day")}
     thr_pct = float(config.BIG_MOVE_THRESHOLD) * 100.0
     for dr in day_reports:
+        if getattr(dr, "forward_observation", False):
+            continue
         row = by_day.get(dr.trading_day.isoformat())
         dr.market_theme_html = format_market_theme_flow_html(
             row,

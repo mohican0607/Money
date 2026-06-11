@@ -864,7 +864,11 @@ def _build_rebuild_learning_payload(
     ``rebuild_learning`` 하위 dict(``daily``·``summary`` 등)를 만듭니다.
     """
     thr = float(config.BIG_MOVE_THRESHOLD)
-    in_range = [dr for dr in day_reports if s0 <= dr.trading_day <= s1]
+    in_range = [
+        dr
+        for dr in day_reports
+        if s0 <= dr.trading_day <= s1 and not getattr(dr, "forward_observation", False)
+    ]
     in_range.sort(key=lambda dr: dr.trading_day)
 
     cum_abs_gap = 0.0
@@ -1556,10 +1560,19 @@ def _run_pipeline(
             T,
             today=today_kst,
             pipeline_forward_only=forward_prediction_only,
+            now_kst=now_kst_pipe,
         )
-        if day_forward and not forward_prediction_only and T > today_kst:
+        if day_forward and T > today_kst and not forward_prediction_only:
             print(
                 f"관측일 T={T.isoformat()}: 예측 전용(KST 오늘={today_kst} 이후 거래일)",
+                flush=True,
+            )
+        elif day_forward and T == today_kst and trading_calendar.is_before_krx_regular_open_kst(
+            T, now_kst=now_kst_pipe
+        ):
+            print(
+                f"관측일 T={T.isoformat()}: 장 시작 전 - 예측 전용"
+                f"(실제 상승률·당일 테마·적중 통계 미확정)",
                 flush=True,
             )
         if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
@@ -1686,16 +1699,25 @@ def _run_pipeline(
 
         now_kst_td = datetime.now(trading_calendar.KST)
         is_today_t = T == now_kst_td.date()
+        actual_big_movers: list[dict] = []
+        actual_big_decliners: list[dict] = []
         krx_pct_by_code: dict[str, float] | None = None
         if day_forward:
-            actual_big_movers: list[dict] = []
-            # 당일 실행에서는 장중/장마감 직후 참고 표시를 위해 pykrx 스냅샷을 시도합니다.
-            if is_today_t:
+            # 예측 전용: 장 시작 전에는 실적·급등 목록 없음. 개장 후 당일(T)만 참고용 pykrx.
+            if is_today_t and not trading_calendar.is_before_krx_regular_open_kst(
+                T, now_kst=now_kst_td
+            ):
                 krx_pct_by_code = stocks.try_krx_change_pct_by_code(T, returns_df=returns)
                 if not krx_pct_by_code:
-                    # pykrx 전종목 맵이 비면 종목별 pykrx·네이버 순으로 보강.
                     krx_pct_by_code = stocks.best_effort_intraday_pct_by_code(
                         T, codes, returns_df=returns
+                    )
+                if krx_pct_by_code:
+                    actual_big_movers = stocks.big_movers_from_krx_pct_map(
+                        krx_pct_by_code, config.BIG_MOVE_THRESHOLD, names
+                    )
+                    actual_big_decliners = stocks.big_movers_from_krx_pct_map(
+                        krx_pct_by_code, config.BIG_MOVE_THRESHOLD, names, direction="down"
                     )
         else:
             krx_pct_by_code = stocks.try_krx_change_pct_by_code(T, returns_df=returns)
@@ -2059,7 +2081,7 @@ def _run_pipeline(
 
         _enrich_rows_actual_ret_prev_day(rows_compare, returns, T)
 
-        if config.THEME_CARRYOVER_ENABLED and rows_compare:
+        if config.THEME_CARRYOVER_ENABLED and rows_compare and not day_forward:
             theme_carryover.persist_rich_snapshot(
                 T,
                 actual_big_movers=actual_big_movers,
@@ -2271,16 +2293,28 @@ def _observation_day_forward_mode(
     *,
     today: date,
     pipeline_forward_only: bool,
+    now_kst: datetime | None = None,
 ) -> bool:
     """
-    관측일 ``T`` 가 KST **오늘 이후** 거래일이면 예측 전용.
+    관측일 ``T`` 를 예측 전용(실적·당일 테마 미확정)으로 볼지.
 
-    과거·당일(장 마감 후) 거래일은 실제 수익률을 채웁니다. 일봉 캐시가 짧아도
-    ``T > ohlcv_end`` 로 예측 전용 처리하지 않습니다(구간 배치 회귀 방지).
+    - ``T > today`` (미래 거래일)
+    - ``T == today`` 이고 **정규장 개장(09:00 KST) 전** — 장 시작 전 실행
+    - ``pipeline_forward_only`` (레거시 일괄 플래그; dated/daily 경로는 아래 규칙 우선)
     """
+    if now_kst is None:
+        now_kst = datetime.now(trading_calendar.KST)
+    if t > today:
+        return True
+    if (
+        t == today
+        and trading_calendar.is_trading_day(t)
+        and trading_calendar.is_before_krx_regular_open_kst(t, now_kst=now_kst)
+    ):
+        return True
     if pipeline_forward_only:
         return True
-    return t > today
+    return False
 
 
 def _omit_target_calendar_before_close(
@@ -2674,7 +2708,12 @@ def main() -> None:
         print(f"관측일 {t_day} 이(가) 캘린더 범위에 없습니다. end_date={end_date}")
         return
 
-    forward_prediction_only = t_day >= today
+    forward_prediction_only = _observation_day_forward_mode(
+        t_day,
+        today=today,
+        pipeline_forward_only=False,
+        now_kst=now_kst,
+    )
     before_open_n = (
         n_day == today
         and trading_calendar.is_trading_day(n_day)

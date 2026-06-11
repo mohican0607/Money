@@ -297,6 +297,8 @@ def merge_from_day_reports(day_reports: list) -> None:
     act_pct: dict[str, float] = dict(p.get("t_code_actual_pct") or {})
     changed = False
     for dr in day_reports:
+        if getattr(dr, "forward_observation", False):
+            continue
         t = dr.trading_day
         for r in dr.rows_compare:
             code = str(r.get("code", "")).zfill(6)
@@ -339,6 +341,8 @@ def merge_pred_history_from_day_reports(
     thr_lo = float(min_pred_pct)
     thr_hi = float(max_pred_pct) if max_pred_pct is not None else None
     for dr in day_reports:
+        if getattr(dr, "forward_observation", False):
+            continue
         t = dr.trading_day
         t_iso = t.isoformat()
         for r in dr.rows_compare:
@@ -782,6 +786,8 @@ def merge_feedback_buckets_from_day_reports(day_reports: list) -> None:
     buckets: dict[str, dict[str, float]] = dict(raw) if isinstance(raw, dict) else {}
     changed = False
     for dr in day_reports:
+        if getattr(dr, "forward_observation", False):
+            continue
         for r in dr.rows_compare:
             pred_ret = r.get("pred_ret")
             actual_ret = r.get("actual_ret")
@@ -843,6 +849,8 @@ def merge_hit_at_k_from_day_reports(day_reports: list) -> None:
     by_day: dict = dict(p.get("hit_at_k_by_day") or {})
     changed = False
     for dr in day_reports:
+        if getattr(dr, "forward_observation", False):
+            continue
         m = getattr(dr, "hit_at_k_metrics", None)
         if not isinstance(m, dict) or not m:
             continue
