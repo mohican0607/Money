@@ -116,7 +116,23 @@ _NAME_STEM_SECTORS: tuple[tuple[str, str], ...] = (
     ("네트웍", "통신·플랫폼 관련주"),
     ("네트워크", "통신·플랫폼 관련주"),
     ("부품", "자동차·부품 관련주"),
+    ("화신", "자동차·부품 관련주"),
 )
+
+# 종목명에 포함되면 당일 뉴스 테마 여부와 무관하게 섹터 부여(동일 종목·날짜 간 일관성)
+_NAME_STEM_STRONG: frozenset[str] = frozenset(
+    {
+        "화신",
+        "하이닉",
+        "에코프로",
+        "네트웍",
+        "네트워크",
+        "한미반도체",
+    }
+)
+
+# 비교 표 ``예측 신호`` 테마: 종목명·키워드 직접 적합도 하한(미만이면 미표시)
+_THEME_SIGNAL_MIN_MATCH = 42
 
 _EVENT_KW = (
     "실적",
@@ -315,7 +331,9 @@ def _assign_sector_by_name_stem(
         if len(s) < 2 or s not in name_l:
             continue
         aliases = _sector_aliases_for_label(sector_label)
-        if aliases and _sector_active_in_news(aliases, seeds, top_kw):
+        if not aliases:
+            continue
+        if s in _NAME_STEM_STRONG or _sector_active_in_news(aliases, seeds, top_kw):
             return sector_label
     return ""
 
@@ -354,6 +372,31 @@ def _dominant_sectors_from_assignments(
     return out
 
 
+def _best_sector_label_for_stock(
+    stock: dict[str, Any],
+    *,
+    seeds: list[str],
+    top_kw: list[str],
+    min_match: int = _THEME_SIGNAL_MIN_MATCH,
+) -> str:
+    """종목 고유 신호(이름·뉴스·예측 키워드)로 최적 섹터 1개. 없으면 빈 문자열."""
+    best_label = ""
+    best_score = 0
+    for sector_label, aliases in _THEME_SECTORS:
+        sc = _score_stock_sector_match(stock, aliases)
+        if sc <= 0:
+            continue
+        boost = 10 if _sector_active_in_news(aliases, seeds, top_kw) else 0
+        effective = sc + boost
+        if effective > best_score:
+            best_score = effective
+            best_label = sector_label
+    if best_score + 1e-9 >= float(min_match) and best_label:
+        return best_label
+    stem_label = _assign_sector_by_name_stem(stock, seeds=seeds, top_kw=top_kw)
+    return stem_label or ""
+
+
 def _assign_spillover_sectors(
     stocks: list[dict[str, Any]],
     assignments: dict[str, str],
@@ -363,9 +406,7 @@ def _assign_spillover_sectors(
     min_return_pct: float = 10.0,
 ) -> None:
     """
-    이름·키워드로 못 묶인 10%↑ 급등 종목을 당일 주도 테마(이미 배정된 섹터)에 동반 배정.
-
-    KRX 테마장에서 종목명과 무관하게 같이 오르는 경우를 커버합니다.
+    당일 주도 테마에 **종목별 적합도가 충분한** 급등만 동반 배정(무조건 주도 테마 부여 금지).
     """
     if not assignments:
         return
@@ -397,10 +438,8 @@ def _assign_spillover_sectors(
             if sc > best_score:
                 best_score = sc
                 best_label = label
-        if best_label and best_score > 0:
+        if best_label and best_score + 1e-9 >= _THEME_SIGNAL_MIN_MATCH:
             assignments[code] = best_label
-            continue
-        assignments[code] = primary_label
 
 
 def _assign_stock_sectors(
@@ -409,7 +448,7 @@ def _assign_stock_sectors(
     seeds: list[str],
     top_kw: list[str],
 ) -> dict[str, str]:
-    """급등 종목마다 최적 테마 섹터 하나만 배정(중복·과다 테마 방지)."""
+    """급등 종목마다 최적 테마 섹터 하나만 배정(당일 테마 요약·시장 흐름용)."""
     assignments: dict[str, str] = {}
     for stock in stocks:
         if not isinstance(stock, dict):
@@ -417,28 +456,11 @@ def _assign_stock_sectors(
         code = str(stock.get("code") or "").zfill(6)
         if not code:
             continue
-        best_label = ""
-        best_score = 0
-        for sector_label, aliases in _THEME_SECTORS:
-            sc = _score_stock_sector_match(stock, aliases)
-            if sc <= 0:
-                continue
-            boost = 10 if _sector_active_in_news(aliases, seeds, top_kw) else 0
-            effective = sc + boost
-            if effective > best_score:
-                best_score = effective
-                best_label = sector_label
-        if best_label:
-            assignments[code] = best_label
-    for stock in stocks:
-        if not isinstance(stock, dict):
-            continue
-        code = str(stock.get("code") or "").zfill(6)
-        if not code or code in assignments:
-            continue
-        stem_label = _assign_sector_by_name_stem(stock, seeds=seeds, top_kw=top_kw)
-        if stem_label:
-            assignments[code] = stem_label
+        label = _best_sector_label_for_stock(
+            stock, seeds=seeds, top_kw=top_kw, min_match=_THEME_SIGNAL_MIN_MATCH
+        )
+        if label:
+            assignments[code] = label
     _assign_spillover_sectors(stocks, assignments, seeds=seeds, top_kw=top_kw)
     return assignments
 
@@ -464,37 +486,28 @@ def _stock_dict_for_theme_lookup(
     return out
 
 
-def theme_sectors_for_stock_dict(
-    stock: dict[str, Any],
+def theme_sector_labels_for_compare_row(
     *,
+    code: str,
+    name: str,
+    theme_keywords: list[str] | None,
+    news_overlap: list[str] | None,
     seeds: list[str],
     top_kw: list[str],
-    day_assignments: dict[str, str] | None = None,
 ) -> list[str]:
-    """단일 종목 dict에 대한 당일 테마 섹터(최대 1개)."""
-    code = str(stock.get("code") or "").zfill(6)
-    if not code:
-        return []
-    if isinstance(day_assignments, dict):
-        preset = day_assignments.get(code)
-        if preset:
-            return [_compact_sector_label(str(preset))]
-    pool = [stock]
-    assignments: dict[str, str] = {}
-    for s in pool:
-        c = str(s.get("code") or "").zfill(6)
-        if not c:
-            continue
-        partial = _assign_stock_sectors([s], seeds=seeds, top_kw=top_kw)
-        assignments.update(partial)
-    if isinstance(day_assignments, dict) and day_assignments:
-        spill_base = dict(day_assignments)
-        spill_base.update(assignments)
-        _assign_spillover_sectors(pool, spill_base, seeds=seeds, top_kw=top_kw)
-        label = spill_base.get(code)
-    else:
-        label = assignments.get(code)
-    return [_compact_sector_label(str(label))] if label else []
+    """
+    비교 표 ``예측 신호`` 열용 테마 — **해당 종목** 이름·키워드·뉴스 교집합만 사용.
+
+    당일 주도 테마 맵·동반 급등 spillover 를 쓰지 않습니다(날짜마다 어긋나는 원인 제거).
+    """
+    stock = _stock_dict_for_theme_lookup(
+        code=code,
+        name=name,
+        news_overlap=news_overlap,
+        theme_keywords=theme_keywords,
+    )
+    label = _best_sector_label_for_stock(stock, seeds=seeds, top_kw=top_kw)
+    return [_compact_sector_label(label)] if label else []
 
 
 def _build_seed_theme_details(
@@ -947,17 +960,14 @@ def build_market_theme_flow(
 
 
 def theme_sectors_for_code(row: dict[str, Any] | None, code: str) -> list[str]:
-    """``market_theme_flow`` 일자 행에서 종목의 당일 테마 섹터(최대 1개)."""
+    """``market_theme_flow`` 일자 행에서 종목의 테마(종목 고유 신호, 최대 1개)."""
     if not row:
         return []
     c = str(code).zfill(6)
-    mapping = row.get("theme_stock_sectors")
-    if isinstance(mapping, dict):
-        label = mapping.get(c)
-        if label:
-            return [_compact_sector_label(str(label))]
+    seeds = list(row.get("theme_seed_hits") or [])
+    top_kw = list(row.get("top_keywords_sample") or [])
     stock: dict[str, Any] | None = None
-    for key in ("theme_leaders_ge_20pct", "theme_leaders_10pct_plus"):
+    for key in ("theme_leaders_ge_20pct", "theme_leaders_10pct_plus", "theme_limit_up"):
         for leader in row.get(key) or []:
             if not isinstance(leader, dict):
                 continue
@@ -967,27 +977,9 @@ def theme_sectors_for_code(row: dict[str, Any] | None, code: str) -> list[str]:
         if stock is not None:
             break
     if stock is not None:
-        sectors = theme_sectors_for_stock_dict(
-            stock,
-            seeds=list(row.get("theme_seed_hits") or []),
-            top_kw=list(row.get("top_keywords_sample") or []),
-            day_assignments=(
-                row.get("theme_stock_sectors")
-                if isinstance(row.get("theme_stock_sectors"), dict)
-                else None
-            ),
-        )
-        if sectors:
-            return sectors
-    for cl in row.get("theme_sector_summaries") or []:
-        if not isinstance(cl, dict):
-            continue
-        sector = str(cl.get("sector") or "")
-        for stock in cl.get("top_stocks") or []:
-            if not isinstance(stock, dict):
-                continue
-            if str(stock.get("code", "")).zfill(6) == c and sector:
-                return [_compact_sector_label(sector)]
+        label = _best_sector_label_for_stock(stock, seeds=seeds, top_kw=top_kw)
+        if label:
+            return [_compact_sector_label(label)]
     return []
 
 
@@ -1003,7 +995,7 @@ def format_theme_sectors_signal_html(sectors: list[str]) -> str:
     )
     return (
         '<br/><span style="font-size:0.78rem;line-height:1.6" '
-        'title="당일 급등 테마(종목명·뉴스 휴리스틱, 참고용)">'
+        'title="이 종목의 테마(종목명·뉴스·예측 키워드, 참고용)">'
         f"테마 {pills}</span>"
     )
 
@@ -1352,44 +1344,22 @@ def enrich_day_reports_market_theme(
             code = str(r.get("code", "")).zfill(6)
             seeds = list(row.get("theme_seed_hits") or [])
             top_kw = list(row.get("top_keywords_sample") or [])
-            day_map = row.get("theme_stock_sectors")
-            day_map = day_map if isinstance(day_map, dict) else {}
             ov_pre = theme_overlap_for_code(row, code)
             pred_kw = [str(k) for k in (r.get("keywords") or []) if str(k).strip()]
-            act = r.get("actual_ret")
-            rp: float | None = None
-            if act is not None:
-                try:
-                    rp = float(act) * 100.0
-                except (TypeError, ValueError):
-                    rp = None
-            sectors = theme_sectors_for_code(row, code)
-            if not sectors:
-                adhoc = _stock_dict_for_theme_lookup(
-                    code=code,
-                    name=str(r.get("name") or ""),
-                    news_overlap=ov_pre,
-                    theme_keywords=pred_kw + ov_pre,
-                    return_pct=rp,
-                )
-                sectors = theme_sectors_for_stock_dict(
-                    adhoc,
-                    seeds=seeds,
-                    top_kw=top_kw,
-                    day_assignments=day_map,
-                )
+            sectors = theme_sector_labels_for_compare_row(
+                code=code,
+                name=str(r.get("name") or ""),
+                theme_keywords=pred_kw + ov_pre,
+                news_overlap=ov_pre,
+                seeds=seeds,
+                top_kw=top_kw,
+            )
             r["market_theme_sectors"] = sectors
-            act = r.get("actual_ret")
-            if sectors and act is not None:
-                try:
-                    act_f = float(act)
-                except (TypeError, ValueError):
-                    act_f = None
-                if act_f is not None and act_f + 1e-9 >= 0.10:
-                    base = str(r.get("prediction_signal_html") or "—")
-                    theme_bit = format_theme_sectors_signal_html(sectors)
-                    if theme_bit and theme_bit not in base:
-                        r["prediction_signal_html"] = base + theme_bit
+            if sectors:
+                base = str(r.get("prediction_signal_html") or "—")
+                theme_bit = format_theme_sectors_signal_html(sectors)
+                if theme_bit and theme_bit not in base:
+                    r["prediction_signal_html"] = base + theme_bit
             ov = theme_overlap_for_code(row, code)
             extra = move_reference.theme_early_overlap_html(ov, news_cutoff_label=news_cutoff_label)
             if extra:
