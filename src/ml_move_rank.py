@@ -66,10 +66,98 @@ FEATURE_NAMES = (
     "ks11_regime_risk_off",
 )
 
-ML_MODEL_VERSION = 7
+ML_MODEL_VERSION = 11
 MAX_NEG_PER_DAY = 360
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
+
+
+def _build_prob_calibration_table(
+    raw_probs: np.ndarray, y_true: np.ndarray, *, n_bins: int = 10
+) -> list[dict[str, float]]:
+    """검증 구간 raw 확률 → 실제 급등 비율(보정 테이블)."""
+    if raw_probs.size == 0:
+        return []
+    order = np.argsort(raw_probs)
+    raw_s = raw_probs[order]
+    y_s = y_true[order]
+    n = int(raw_s.size)
+    bins = max(3, min(n_bins, n // 8))
+    out: list[dict[str, float]] = []
+    for b in range(bins):
+        i0 = int(b * n / bins)
+        i1 = int((b + 1) * n / bins)
+        if i1 <= i0:
+            continue
+        sl_raw = raw_s[i0:i1]
+        sl_y = y_s[i0:i1]
+        out.append(
+            {
+                "lo": float(sl_raw[0]),
+                "hi": float(sl_raw[-1]),
+                "rate": float(np.mean(sl_y)),
+            }
+        )
+    return out
+
+
+def calibrate_ml_probability(
+    raw_prob: float,
+    *,
+    cal_table: list[dict[str, float]] | None,
+    base_rate: float,
+) -> float:
+    """raw ``predict_proba`` 를 희귀 급등 사전확률 쪽으로 수축(순위는 유지)."""
+    import math
+
+    br = max(1e-5, min(0.06, float(base_rate)))
+    raw = max(1e-6, min(1.0 - 1e-6, float(raw_prob)))
+    logit_r = math.log(raw / (1.0 - raw))
+    logit_b = math.log(br / (1.0 - br))
+    shrink = 0.40
+    z = shrink * logit_r + (1.0 - shrink) * logit_b
+    p = 1.0 / (1.0 + math.exp(-z))
+    return max(br, min(0.32, p))
+
+
+def _day_candidate_codes(
+    listing_codes: list[str],
+    listing_names: dict[str, str],
+    news_text_blob: str,
+    ctx: tuple[frozenset[str], dict[str, frozenset[str]]],
+    returns_ml: pd.DataFrame,
+    target_day: date,
+) -> list[str]:
+    """뉴스 프로필 ∪ 시세 모멘텀 후보(예측·학습 동일 유니버스)."""
+    from . import pred_hybrid
+
+    news = _ml_scoring_candidate_codes(
+        listing_codes,
+        listing_names,
+        news_text_blob,
+        ctx,
+        int(config.PRED_ML_POOL_MIN_KEYWORD_HITS),
+    )
+    mom = pred_hybrid.momentum_candidate_codes(
+        returns_ml, target_day, listing_codes
+    )
+    return list(dict.fromkeys(news + mom))
+
+
+def _momentum_for_code(
+    ohlcv_idx: pd.DataFrame | None, code: str, trading_day: date
+) -> float:
+    from . import pred_hybrid
+
+    if ohlcv_idx is None:
+        return 0.0
+    try:
+        row = ohlcv_idx.loc[(trading_day, code)]
+    except KeyError:
+        return 0.0
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[-1]
+    return pred_hybrid.momentum_raw_from_row(row)
 
 
 def _ml_scoring_candidate_codes(
@@ -88,6 +176,8 @@ def _ml_scoring_candidate_codes(
     spec_news = filter_specific_keywords(kw_news)
     mention_gate = float(config.PRED_MENTION_GATE_MIN)
     need_hits = max(1, int(min_keyword_hits))
+    pool_hits = max(1, int(config.PRED_ML_POOL_MIN_KEYWORD_HITS))
+    need_hits = min(need_hits, pool_hits)
     out: list[str] = []
     for code in listing_codes:
         name = listing_names.get(code, "") or ""
@@ -286,6 +376,17 @@ def _build_training_arrays(
         if not blob.strip():
             continue
         kw_news = keyword_set(blob, k=100)
+        ctx = predict.build_scoring_context(blob, train_events)
+        cand_set = set(
+            _day_candidate_codes(
+                list(names.keys()),
+                names,
+                blob,
+                ctx,
+                returns_ml,
+                d,
+            )
+        )
         tw = theme_carryover.weights_for_observation_day(
             d,
             train_events=train_events,
@@ -305,6 +406,8 @@ def _build_training_arrays(
         d_iso = d.isoformat()
         for _, r in pos_df.iterrows():
             code = str(r["Code"]).zfill(6)
+            if cand_set and code not in cand_set:
+                continue
             name = str(names.get(code, r.get("Name", "")))
             fv = _feat_vector(
                 train_events,
@@ -323,7 +426,11 @@ def _build_training_arrays(
                     rows_x.append(fv)
                     rows_y.append(1)
 
-        neg_codes = neg_df["Code"].astype(str).str.zfill(6).tolist()
+        neg_codes = [
+            c
+            for c in neg_df["Code"].astype(str).str.zfill(6).tolist()
+            if not cand_set or c in cand_set
+        ]
         n_pos = int(pos_df.shape[0])
         n_neg = min(MAX_NEG_PER_DAY, max(30, 6 * n_pos))
         if len(neg_codes) > n_neg:
@@ -429,6 +536,8 @@ def fit_or_load_classifier(
                 and loaded.get("pipeline") is not None
             ):
                 bundle["pipeline"] = loaded["pipeline"]
+                bundle["cal_base_rate"] = float(loaded.get("cal_base_rate") or 0.01)
+                bundle["cal_table"] = list(loaded.get("cal_table") or [])
                 print(f"ML 랭커: 캐시 로드 {path.name}", flush=True)
                 return bundle
         except Exception:
@@ -461,6 +570,16 @@ def fit_or_load_classifier(
         return bundle
 
     X, y = xy
+    from sklearn.model_selection import train_test_split
+
+    try:
+        X_tr, X_cal, y_tr, y_cal = train_test_split(
+            X, y, test_size=0.18, random_state=42, stratify=y
+        )
+    except ValueError:
+        X_tr, y_tr = X, y
+        X_cal, y_cal = X[:0], y[:0]
+
     clf = HistGradientBoostingClassifier(
         max_depth=6,
         max_iter=180,
@@ -478,11 +597,19 @@ def fit_or_load_classifier(
         ]
     )
     try:
-        pipe.fit(X, y)
+        pipe.fit(X_tr, y_tr)
     except Exception as e:
         print(f"ML 랭커: 학습 실패(휴리스틱만) — {e}", flush=True)
         return bundle
+    cal_table: list[dict[str, float]] = []
+    if X_cal.shape[0] > 0:
+        raw_cal = pipe.predict_proba(X_cal)[:, 1]
+        cal_table = _build_prob_calibration_table(raw_cal, y_cal)
     bundle["pipeline"] = pipe
+    bundle["cal_base_rate"] = (
+        float(y_cal.mean()) if y_cal.size > 0 else float(np.mean(y_tr))
+    )
+    bundle["cal_table"] = cal_table
     path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, path)
     print(
@@ -505,6 +632,7 @@ def rank_predictions_ml(
     min_keyword_hits: int = 0,
     theme_weights: dict[str, float] | None = None,
     feedback_ctx: dict[str, object] | None = None,
+    ml_bundle: dict[str, Any] | None = None,
 ) -> list[predict.PredictionRow]:
     """종목 관련 신호가 있는 후보만 급등 확률을 매기고 상위 ``top_n`` ``PredictionRow`` 를 만듭니다."""
     ctx = predict.build_scoring_context(news_text_blob, train_events)
@@ -513,12 +641,24 @@ def rank_predictions_ml(
     kw_news, _ = ctx
     tw = theme_weights or {}
     ohlcv_idx = _ohlcv_lookup(returns_ml)
-    score_codes = _ml_scoring_candidate_codes(
+    from . import pred_hybrid, prediction_ranking
+
+    score_codes = _day_candidate_codes(
         listing_codes,
         listing_names,
         news_text_blob,
         ctx,
-        min_keyword_hits,
+        returns_ml,
+        target_day,
+    )
+    news_only = set(
+        _ml_scoring_candidate_codes(
+            listing_codes,
+            listing_names,
+            news_text_blob,
+            ctx,
+            int(config.PRED_ML_POOL_MIN_KEYWORD_HITS),
+        )
     )
     code_to_ix = {c: i for i, c in enumerate(listing_codes)}
     cand_ix: list[int] = []
@@ -545,14 +685,18 @@ def rank_predictions_ml(
             )
         )
     X = np.asarray(feats, dtype=np.float64)
-    proba = pipeline.predict_proba(X)[:, 1]
-    order = np.argsort(-proba)
-
-    out: list[predict.PredictionRow] = []
-    for rank_i in order:
-        if len(out) >= top_n:
-            break
-        fi = int(rank_i)
+    proba_raw = pipeline.predict_proba(X)[:, 1]
+    cal_table = list((ml_bundle or {}).get("cal_table") or [])
+    cal_base = float((ml_bundle or {}).get("cal_base_rate") or 0.01)
+    proba = np.asarray(
+        [
+            calibrate_ml_probability(float(p), cal_table=cal_table, base_rate=cal_base)
+            for p in proba_raw
+        ],
+        dtype=np.float64,
+    )
+    buf: list[predict.PredictionRow] = []
+    for fi in range(len(cand_ix)):
         i = cand_ix[fi]
         code = listing_codes[i]
         pr = predict.prediction_row_for_code(
@@ -561,21 +705,24 @@ def rank_predictions_ml(
             train_events,
             news_text_blob,
             ctx,
-            min_keyword_hits,
+            int(config.PRED_ML_POOL_MIN_KEYWORD_HITS),
             feedback_ctx=feedback_ctx,
             theme_weights=tw,
+            allow_momentum_only=code not in news_only,
         )
         if pr is None:
             continue
         p = float(proba[fi])
         pr.ml_prob = p
+        pr.momentum_score = _momentum_for_code(ohlcv_idx, code, target_day)
         pr.reasons = [
-            f"감독학습 랭커(HistGradientBoosting) 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) "
-            f"추정 확률 {p * 100:.1f}% (14:30까지 뉴스·테마·시세·시장흐름 등 피처 {len(FEATURE_NAMES)}개)."
+            f"하이브리드 랭커(ML {p * 100:.1f}%·모멘텀 {pr.momentum_score * 100:.0f}%·키워드 {pr.keyword_hits}) "
+            f"익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정."
         ] + list(pr.reasons)
-        out.append(pr)
+        buf.append(pr)
 
-    from . import prediction_ranking
+    buf.sort(key=lambda r: -pred_hybrid.hybrid_rank_score(r))
+    out = buf[:top_n]
 
     ks11_ret, _ = _ks11_market_feats(target_day)
     out = prediction_ranking.finalize_ranked_predictions(

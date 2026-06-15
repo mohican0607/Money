@@ -75,6 +75,7 @@ class PredictionRow:
     matched_keywords: list[str]
     reasons: list[str]
     ml_prob: float | None = None
+    momentum_score: float = 0.0
     keyword_hits: int = 0
     mention_score: float = 0.0
     rank_score: float | None = None
@@ -329,6 +330,7 @@ def prediction_row_for_code(
     *,
     feedback_ctx: dict[str, object] | None = None,
     theme_weights: dict[str, float] | None = None,
+    allow_momentum_only: bool = False,
 ) -> PredictionRow | None:
     """
     단일 종목에 대해 키워드 교집합 수 + 종목명 언급 점수로 스코어하고 ``PredictionRow`` 를 만듭니다.
@@ -349,9 +351,11 @@ def prediction_row_for_code(
         return None
     mention_gate = float(config.PRED_MENTION_GATE_MIN)
     if n_hit < min_keyword_hits and mention < mention_gate:
-        return None
+        if not allow_momentum_only:
+            return None
     if n_hit < 1 and mention < mention_gate:
-        return None
+        if not allow_momentum_only:
+            return None
     score = n_hit * 1.0 + mention * 5.0
     tw = theme_weights or {}
     theme_hit = 0.0
@@ -474,6 +478,7 @@ def predict_for_trading_day(
             min_keyword_hits=min_keyword_hits,
             theme_weights=theme_weights,
             feedback_ctx=feedback_ctx,
+            ml_bundle=ml_bundle,
         )
     if ml_bundle is not None and ml_bundle.get("pipeline") is not None and returns_ml is None:
         print(

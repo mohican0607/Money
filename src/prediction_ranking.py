@@ -10,18 +10,14 @@ import math
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from . import config
+from . import config, pred_hybrid
 
 if TYPE_CHECKING:
     from .predict import PredictionRow
 
 
 def rank_score_for_row(row: PredictionRow) -> float:
-    """정렬·게이트에 쓰는 단일 순위 점수(ML 확률 우선)."""
-    p = getattr(row, "ml_prob", None)
-    if p is not None and math.isfinite(float(p)):
-        return float(p)
-    return float(getattr(row, "score", 0.0) or 0.0)
+    return pred_hybrid.hybrid_rank_score(row)
 
 
 def _heuristic_pseudo_prob(rank_position: int, pool_size: int) -> float:
@@ -42,11 +38,35 @@ def effective_probability(row: PredictionRow, *, rank_position: int, pool_size: 
 
 def _tier_thresholds(*, regime_scale: float) -> tuple[float, float, float]:
     rs = max(0.25, float(regime_scale))
-    return (
-        float(config.PRED_ML_HIGH_CONFIDENCE_PROB) / rs,
-        float(config.PRED_ML_MID_CONFIDENCE_PROB) / rs,
-        float(config.PRED_ML_MIN_OUTPUT_PROB) / rs,
-    )
+    high_floor = 0.12
+    mid_floor = 0.06
+    high = max(high_floor, float(config.PRED_ML_HIGH_CONFIDENCE_PROB)) / rs
+    mid = max(mid_floor, float(config.PRED_ML_MID_CONFIDENCE_PROB)) / rs
+    min_out = float(config.PRED_ML_MIN_OUTPUT_PROB) / rs
+    return high, mid, min_out
+
+
+def _ml_high_signal_ok(row: PredictionRow, *, rank_position: int) -> bool:
+    """고확신 슬롯: ML 상위권 + 종목 관련 키워드·언급."""
+    if rank_position > 8:
+        return False
+    n_hit = int(getattr(row, "keyword_hits", 0) or 0)
+    mention = float(getattr(row, "mention_score", 0.0) or 0.0)
+    need = int(config.PRED_ML_HIGH_MIN_KEYWORD_HITS)
+    if n_hit >= need:
+        return True
+    if mention + 1e-12 >= float(config.PRED_MENTION_GATE_MIN):
+        return True
+    return False
+
+
+def _pool_top_ml_prob(pool: list[PredictionRow]) -> float:
+    top = 0.0
+    for row in pool:
+        mp = getattr(row, "ml_prob", None)
+        if mp is not None and math.isfinite(float(mp)):
+            top = max(top, float(mp))
+    return top
 
 
 def assign_confidence_tiers_by_rank(
@@ -68,6 +88,8 @@ def assign_confidence_tiers_by_rank(
     for row in pool:
         row.confidence_tier = "none"
 
+    top_prob = _pool_top_ml_prob(pool)
+    rel_hi = float(config.PRED_ML_HIGH_RELATIVE_PROB)
     high_n = 0
     mid_n = 0
     for pos, row in enumerate(pool, start=1):
@@ -80,14 +102,20 @@ def assign_confidence_tiers_by_rank(
             continue
 
         if has_ml:
-            if high_n < max_high and prob + 1e-12 >= high_thr:
+            rel_ok = top_prob <= 0 or prob + 1e-12 >= top_prob * rel_hi
+            if (
+                high_n < max_high
+                and prob + 1e-12 >= high_thr
+                and rel_ok
+                and _ml_high_signal_ok(row, rank_position=pos)
+            ):
                 row.confidence_tier = "high"
                 high_n += 1
                 continue
             if mid_n < max_mid and prob + 1e-12 >= mid_thr:
                 row.confidence_tier = "mid"
                 mid_n += 1
-            continue
+                continue
 
         # ML 없음: 휴리스틱만 — 상위 소수·고점수만 중확신 이하로 제한
         hi_rank = int(config.PRED_HEURISTIC_HIGH_RANK_MAX)
@@ -210,7 +238,8 @@ def finalize_ranked_predictions(
             row.ml_prob = prob if config.PRED_RANKING_MODE else None
 
     if config.PRED_RANKING_MODE:
-        assign_confidence_tiers_by_rank(pool, regime_scale=r_scale)
+        pred_hybrid.assign_hybrid_confidence_tiers(pool, regime_scale=r_scale)
+        pool = sorted(pool, key=rank_score_for_row, reverse=True)
     else:
         for pos, row in enumerate(pool, start=1):
             row.confidence_tier = confidence_tier(
@@ -222,12 +251,9 @@ def finalize_ranked_predictions(
             prob = effective_probability(row, rank_position=pos, pool_size=pool_size)
             tier = str(row.confidence_tier or "none")
             rank_note = (
-                f"랭킹 모드: 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정 확률 "
-                f"{prob * 100:.2f}% · 순위 {pos}/{pool_size} · 확신 {tier}"
-                f" (고확신≤{config.PRED_OUTPUT_MAX}·중확신≤{config.PRED_MID_OUTPUT_MAX}, "
-                f"ML≥{config.PRED_ML_HIGH_CONFIDENCE_PROB * 100:.1f}%/"
-                f"{config.PRED_ML_MID_CONFIDENCE_PROB * 100:.1f}%)"
-                f"{'' if r_scale >= 0.99 else f' · 시장 레짐 보수({r_scale:.0%})'}"
+                f"하이브리드 랭킹: 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정 "
+                f"점수 {row.rank_score * 100:.1f}% · 순위 {pos}/{pool_size} · 확신 {tier}"
+                f" (ML {prob * 100:.1f}%·모멘텀 {float(getattr(row, 'momentum_score', 0) or 0) * 100:.0f}%)"
             )
             row.reasons = [rank_note] + [
                 x for x in row.reasons if not x.startswith("랭킹 모드:")

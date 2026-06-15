@@ -124,7 +124,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 8
+PREDICTION_FREEZE_SCHEMA_VERSION = 11
 
 # --- 랭킹 우선 예측(구조적 정확도 개선) ---
 # 1: ML 확률·순위 기반, pred_high=확신구간 / 0: 레거시(표시%≥20%)
@@ -144,6 +144,8 @@ PRED_USE_DISPLAY_RANK_MAPPING = os.getenv("PRED_USE_DISPLAY_RANK_MAPPING", "0").
 PRED_RANK_POOL_N = _positive_int_env("PRED_RANK_POOL_N", 40)
 # 휴리스틱·ML 후보: 종목 관련(비범용) 키워드 교집합 최소 개수
 PRED_MIN_KEYWORD_HITS = _positive_int_env("PRED_MIN_KEYWORD_HITS", 2)
+# ML ``predict_proba`` 대상 풀만 완화(고확신 게이트는 ``PRED_MIN_KEYWORD_HITS`` 유지)
+PRED_ML_POOL_MIN_KEYWORD_HITS = _positive_int_env("PRED_ML_POOL_MIN_KEYWORD_HITS", 1)
 # 종목명 직접 언급 없을 때 후보 통과에 필요한 mention 점수(0~1, 5회 이상=1.0)
 PRED_MENTION_GATE_MIN = _float_env("PRED_MENTION_GATE_MIN", 0.35)
 # 누적 오차로 반복 오탐 종목을 후보에서 제외(종목명 직접 언급 없을 때만)
@@ -154,10 +156,14 @@ PRED_CHRONIC_MISS_MIN_SAMPLES = _positive_int_env("PRED_CHRONIC_MISS_MIN_SAMPLES
 PRED_CHRONIC_MISS_RATIO_MAX = _float_env("PRED_CHRONIC_MISS_RATIO_MAX", 0.18)
 PRED_OUTPUT_MAX = _positive_int_env("PRED_OUTPUT_MAX", 10)
 PRED_MID_OUTPUT_MAX = _positive_int_env("PRED_MID_OUTPUT_MAX", 10)
-# 고/중 확신: ML 급등 확률 하한(순위 상위 10+10 슬롯에만 적용)
-PRED_ML_HIGH_CONFIDENCE_PROB = _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.050)
-PRED_ML_MID_CONFIDENCE_PROB = _float_env("PRED_ML_MID_CONFIDENCE_PROB", 0.034)
-PRED_ML_MIN_OUTPUT_PROB = _float_env("PRED_ML_MIN_OUTPUT_PROB", 0.020)
+# 고/중 확신: ML 급등 확률 하한(순위 상위 슬롯에만 적용)
+PRED_ML_HIGH_CONFIDENCE_PROB = max(0.08, _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.10))
+PRED_ML_MID_CONFIDENCE_PROB = max(0.04, _float_env("PRED_ML_MID_CONFIDENCE_PROB", 0.07))
+PRED_ML_MIN_OUTPUT_PROB = _float_env("PRED_ML_MIN_OUTPUT_PROB", 0.025)
+# 고확신: 당일 키워드 교집합·종목명 언급 최소(ML 과대확률 오탐 억제)
+PRED_ML_HIGH_MIN_KEYWORD_HITS = _positive_int_env("PRED_ML_HIGH_MIN_KEYWORD_HITS", 2)
+# 고확신: 풀 1위 ML 확률 대비 상대 하한(0.55 = 1위의 55% 미만이면 고확신 제외)
+PRED_ML_HIGH_RELATIVE_PROB = _float_env("PRED_ML_HIGH_RELATIVE_PROB", 0.68)
 PRED_HEURISTIC_HIGH_RANK_MAX = _positive_int_env("PRED_HEURISTIC_HIGH_RANK_MAX", 0)
 PRED_HEURISTIC_MID_RANK_MAX = _positive_int_env("PRED_HEURISTIC_MID_RANK_MAX", 0)
 PRED_HEURISTIC_MIN_SCORE = _float_env("PRED_HEURISTIC_MIN_SCORE", 3.5)
