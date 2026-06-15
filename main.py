@@ -64,6 +64,7 @@ from src import (
     snapshot_rebuild_learning,
     stocks,
     theme_carryover,
+    theme_strong_mover_report,
     train_snapshot,
     trading_calendar,
 )
@@ -2386,7 +2387,36 @@ def _refresh_incomplete_market_theme_on_day_reports(
         )
         if snapshot_rebuild_learning.market_theme_html_is_incomplete(theme_inner):
             continue
-        dr.market_theme_html = theme_inner
+        flow_rows = snapshot_rebuild_learning.build_market_theme_flow(
+            [dr.trading_day],
+            news_by_calendar,
+            returns_df,
+            listing_names,
+        )
+        flow_row = flow_rows[0] if flow_rows else None
+        early_rows = snapshot_rebuild_learning._early_news_rows_for_trading_day(
+            news_by_calendar, dr.trading_day
+        )
+        if flow_row and dr.rows_compare:
+            snapshot_rebuild_learning._patch_flow_row_strong_movers_from_compare(
+                flow_row, dr.rows_compare, listing_names, early_rows
+            )
+        dr.market_theme_html = (
+            snapshot_rebuild_learning.format_market_theme_flow_html(
+                flow_row,
+                news_cutoff_label=news_cutoff_label,
+                threshold_pct=float(config.BIG_MOVE_THRESHOLD) * 100.0,
+            )
+            if flow_row
+            else theme_inner
+        )
+        snapshot_rebuild_learning.enrich_compare_rows_theme_for_day(
+            dr,
+            flow_row,
+            listing_names=listing_names,
+            early_rows=early_rows,
+            news_cutoff_label=news_cutoff_label,
+        )
         refreshed += 1
     if refreshed:
         print(
@@ -2528,6 +2558,60 @@ def _render_monthly_batch(
         )
         written_paths.append(out_month)
         print(f"완료: {out_month}")
+
+        theme_fname = theme_strong_mover_report.theme_report_filename_for_month(y, m)
+        theme_path = config.OUTPUT_DIR / theme_fname
+        cutoff_kst = (
+            f"{config.NEWS_CUTOFF_KST_HOUR:02d}:{config.NEWS_CUTOFF_KST_MINUTE:02d}"
+        )
+        theme_days = sorted(
+            dr.trading_day
+            for dr in batch
+            if not dr.forward_observation
+        )
+        theme_rows: list[dict] = []
+        if theme_days and po.returns_df is not None and po.listing_names:
+            theme_rows = snapshot_rebuild_learning.build_market_theme_flow(
+                theme_days,
+                po.news_by_calendar or {},
+                po.returns_df,
+                po.listing_names,
+            )
+            by_theme_day = {
+                str(r.get("trading_day")): r for r in theme_rows if r.get("trading_day")
+            }
+            for dr in batch:
+                if dr.forward_observation:
+                    continue
+                row = by_theme_day.get(dr.trading_day.isoformat())
+                if row and dr.rows_compare:
+                    early = snapshot_rebuild_learning._early_news_rows_for_trading_day(
+                        po.news_by_calendar or {}, dr.trading_day
+                    )
+                    snapshot_rebuild_learning._patch_flow_row_strong_movers_from_compare(
+                        row, dr.rows_compare, po.listing_names, early
+                    )
+                    snapshot_rebuild_learning.enrich_compare_rows_theme_for_day(
+                        dr,
+                        row,
+                        listing_names=po.listing_names,
+                        early_rows=early,
+                        news_cutoff_label=cutoff_kst,
+                    )
+        theme_out = theme_strong_mover_report.render_strong_mover_theme_report(
+            theme_path,
+            day_reports=batch,
+            theme_flow_rows=theme_rows,
+            news_by_calendar=po.news_by_calendar or {},
+            listing_names=po.listing_names or {},
+            news_cutoff_label=cutoff_kst,
+            title=f"25%↑ 급등 테마·상승 배경 · {theme_fname.replace('.html', '')}",
+            subtitle=test_range_label,
+            meta_note=meta_base.get("news_source", ""),
+        )
+        if theme_out:
+            # written_paths.append(theme_out)  # 자동 열기 제외(report_theme_25pct_*)
+            print(f"완료(테마 25%↑): {theme_out}")
 
     index_html = config.OUTPUT_DIR / "report_index_monthly.html"
     month_links = report.collect_monthly_report_index_links(config.OUTPUT_DIR)
@@ -2800,10 +2884,14 @@ def main() -> None:
 
 if __name__ == "__main__":
     _t0 = time.perf_counter()
+    _started_kst = datetime.now(trading_calendar.KST)
     try:
         main()
     finally:
+        _ended_kst = datetime.now(trading_calendar.KST)
         _sec = time.perf_counter() - _t0
         _total_s = int(round(_sec))
         _min, _srem = divmod(_total_s, 60)
-        print(f"총 소요시간: {_min:02d}분 {_srem:02d}초")
+        _t_start = f"{_started_kst.hour:02d}시 {_started_kst.minute:02d}분"
+        _t_end = f"{_ended_kst.hour:02d}시 {_ended_kst.minute:02d}분"
+        print(f"총 소요시간: {_min:02d}분 {_srem:02d}초 ({_t_start} ~ {_t_end})")

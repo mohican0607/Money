@@ -423,18 +423,35 @@ def daily_returns_table(ohlcv: pd.DataFrame) -> pd.DataFrame:
     종목·일자별 일간 수익률 ``return_pct``(소수, 예: 0.2 = 20%)를 붙인 표를 만듭니다.
 
     기본은 전일 종가 대비 당일 종가입니다.
+    직전 거래일이 거래정지(거래량 0)였다가 재개된 날은 KRX·네이버와 같이 **시가를
+    기준가(전일가)** 로 보고 ``(종가-시가)/시가`` 로 계산합니다.
     단, ``Change`` 컬럼이 있으면 소스와 무관하게 이를 우선 사용합니다.
     (액면분할/기준가 보정 등으로 ``Close/prev_close`` 와 괴리될 때 거래소 등락률을 따르기 위함)
     """
     df = ohlcv.sort_values(["Code", "Date"])
     g = df.groupby("Code", group_keys=False)
     df = df.copy()
-    df["prev_close"] = g["Close"].shift(1)
-    df["return_pct"] = (df["Close"] / df["prev_close"]) - 1.0
+    vol = (
+        pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+        if "Volume" in df.columns
+        else pd.Series(0.0, index=df.index)
+    )
+    opn = pd.to_numeric(df["Open"], errors="coerce") if "Open" in df.columns else pd.Series(np.nan, index=df.index)
+    cls = pd.to_numeric(df["Close"], errors="coerce")
+    prev_close = g["Close"].shift(1)
+    prev_vol = g["Volume"].shift(1) if "Volume" in df.columns else pd.Series(0.0, index=df.index)
+    prev_vol = pd.to_numeric(prev_vol, errors="coerce").fillna(0.0)
+
+    # 거래정지 후 재개일: pykrx 캐시는 정지 중 종가(38900)를 유지해 +41% 오류가 남.
+    # 네이버/KRX 전일가=시가인 경우가 많아 시가 대비 종가로 맞춤.
+    halt_resume = (vol > 0) & (prev_vol <= 0) & opn.notna() & (opn > 0)
+    ref_close = prev_close.where(~halt_resume, opn)
+    df["prev_close"] = ref_close
+    df["return_pct"] = (cls / ref_close) - 1.0
     if "Change" in df.columns:
         ch = pd.to_numeric(df["Change"], errors="coerce")
-        m = ch.notna()
-        df.loc[m, "return_pct"] = ch.loc[m]
+        trust_change = ch.notna() & ~halt_resume
+        df.loc[trust_change, "return_pct"] = ch.loc[trust_change]
     return df
 
 

@@ -2,7 +2,7 @@
 랭킹 우선 예측 모드 — 문제 정의·확신 게이트·Hit@K 평가.
 
 기존 ``20~30%`` 순위 매핑 대신 ML 확률(또는 휴리스틱 순위)을 1차 신호로 쓰고,
-``pred_high`` 는 **표시 %** 가 아니라 **확신 구간(confidence tier)** 으로 정의합니다.
+``pred_high`` / ``pred_mid`` 는 **순위 상위 + 엄격 확률 하한** 으로 각 최대 10건씩만 부여합니다.
 """
 from __future__ import annotations
 
@@ -40,6 +40,62 @@ def effective_probability(row: PredictionRow, *, rank_position: int, pool_size: 
     return _heuristic_pseudo_prob(rank_position, pool_size)
 
 
+def _tier_thresholds(*, regime_scale: float) -> tuple[float, float, float]:
+    rs = max(0.25, float(regime_scale))
+    return (
+        float(config.PRED_ML_HIGH_CONFIDENCE_PROB) / rs,
+        float(config.PRED_ML_MID_CONFIDENCE_PROB) / rs,
+        float(config.PRED_ML_MIN_OUTPUT_PROB) / rs,
+    )
+
+
+def assign_confidence_tiers_by_rank(
+    pool: list[PredictionRow],
+    *,
+    regime_scale: float = 1.0,
+) -> None:
+    """
+    ML 순위대로 고확신·중확신 슬롯을 각 최대 ``PRED_OUTPUT_MAX`` / ``PRED_MID_OUTPUT_MAX`` 까지 채웁니다.
+
+    임계 확률·최소 신호를 통과한 종목만 슬롯에 들어가며, 부족하면 10건 미만으로 둡니다.
+    """
+    pool_size = len(pool)
+    high_thr, mid_thr, min_out = _tier_thresholds(regime_scale=regime_scale)
+    max_high = max(1, int(round(int(config.PRED_OUTPUT_MAX) * regime_scale)))
+    max_mid = max(1, int(round(int(config.PRED_MID_OUTPUT_MAX) * regime_scale)))
+    min_score = float(config.PRED_HEURISTIC_MIN_SCORE)
+
+    for row in pool:
+        row.confidence_tier = "none"
+
+    high_n = 0
+    mid_n = 0
+    for pos, row in enumerate(pool, start=1):
+        prob = effective_probability(row, rank_position=pos, pool_size=pool_size)
+        score = float(getattr(row, "score", 0.0) or 0.0)
+        raw_ml = getattr(row, "ml_prob", None)
+        has_ml = raw_ml is not None and math.isfinite(float(raw_ml))
+
+        if prob + 1e-12 < min_out and score + 1e-12 < min_score:
+            continue
+
+        if has_ml:
+            if high_n < max_high and prob + 1e-12 >= high_thr:
+                row.confidence_tier = "high"
+                high_n += 1
+                continue
+            if mid_n < max_mid and prob + 1e-12 >= mid_thr:
+                row.confidence_tier = "mid"
+                mid_n += 1
+            continue
+
+        # ML 없음: 휴리스틱만 — 상위 소수·고점수만 중확신 이하로 제한
+        hi_rank = int(config.PRED_HEURISTIC_HIGH_RANK_MAX)
+        if hi_rank > 0 and high_n < max_high and pos <= hi_rank and score + 1e-12 >= min_score:
+            row.confidence_tier = "high"
+            high_n += 1
+
+
 def confidence_tier(
     row: PredictionRow,
     *,
@@ -47,33 +103,15 @@ def confidence_tier(
     pool_size: int,
     regime_scale: float = 1.0,
 ) -> str:
-    """
-    ``high`` / ``mid`` / ``low`` / ``none`` 확신 구간.
-
-    ML 경로: ``PRED_ML_*_CONFIDENCE_PROB`` 임계값.
-    휴리스틱: 상위 순위 + 최소 점수.
-    ``regime_scale`` < 1 이면 임계값을 올려 보수적으로 동작.
-    """
+    """레거시 호출용 — ``assign_confidence_tiers_by_rank`` 가 최종 tier 를 덮어씁니다."""
     prob = effective_probability(row, rank_position=rank_position, pool_size=pool_size)
-    high_thr = float(config.PRED_ML_HIGH_CONFIDENCE_PROB) / max(0.25, regime_scale)
-    mid_thr = float(config.PRED_ML_MID_CONFIDENCE_PROB) / max(0.25, regime_scale)
-    min_out = float(config.PRED_ML_MIN_OUTPUT_PROB) / max(0.25, regime_scale)
-
+    high_thr, mid_thr, min_out = _tier_thresholds(regime_scale=regime_scale)
     if prob + 1e-12 < min_out:
-        if rank_position <= int(config.PRED_HEURISTIC_HIGH_RANK_MAX) and float(
-            getattr(row, "score", 0.0) or 0.0
-        ) >= float(config.PRED_HEURISTIC_MIN_SCORE):
-            return "mid"
         return "none"
-
     if prob + 1e-12 >= high_thr:
         return "high"
     if prob + 1e-12 >= mid_thr:
         return "mid"
-    if rank_position <= int(config.PRED_HEURISTIC_MID_RANK_MAX) and float(
-        getattr(row, "score", 0.0) or 0.0
-    ) >= float(config.PRED_HEURISTIC_MIN_SCORE):
-        return "low"
     return "none"
 
 
@@ -121,7 +159,6 @@ def probability_to_display_pct(prob: float) -> float:
     p = max(0.0, min(1.0, float(prob)))
     lo = float(config.BIG_MOVE_THRESHOLD) * 100.0
     hi = float(config.PRED_RETURN_MAX) * 100.0
-    # base rate ~0.7% 가정 시 prob 0.05 → 약 20%, prob 0.0875+ → 상한(PRED_RETURN_MAX) (단조, 상한 클램프)
     scaled = lo + (hi - lo) * min(1.0, p / max(0.02, float(config.PRED_ML_HIGH_CONFIDENCE_PROB) * 2.5))
     return float(max(0.0, min(hi, scaled)))
 
@@ -147,9 +184,7 @@ def finalize_ranked_predictions(
     """
     순위·확신 구간·표시 % 를 일괄 확정합니다.
 
-    - ``rank_position`` / ``rank_score`` / ``confidence_tier`` 부여
-    - 랭킹 모드: ``pred_ret`` = 종목별 과거 급등 평균·보정값 유지, ML 확률은 순위·확신만
-    - 레거시: ``PRED_USE_DISPLAY_RANK_MAPPING=1`` 이면 기존 구간 매핑 유지
+    랭킹 모드: 순위 상위부터 고확신 최대 10·중확신 최대 10(엄격 ML 확률 하한 통과분만).
     """
     if not rows:
         return rows
@@ -173,28 +208,30 @@ def finalize_ranked_predictions(
         prob = effective_probability(row, rank_position=pos, pool_size=pool_size)
         if getattr(row, "ml_prob", None) is None:
             row.ml_prob = prob if config.PRED_RANKING_MODE else None
-        row.confidence_tier = confidence_tier(
-            row, rank_position=pos, pool_size=pool_size, regime_scale=r_scale
-        )
-        if config.PRED_RANKING_MODE and not config.PRED_USE_DISPLAY_RANK_MAPPING:
-            # 예측 상승률(%)은 prediction_row_for_code 에서 산출한 종목별 값 유지.
-            # ML 확률은 순위·확신 구간만 반영(급등 가능성 ≠ 상승 폭).
+
+    if config.PRED_RANKING_MODE:
+        assign_confidence_tiers_by_rank(pool, regime_scale=r_scale)
+    else:
+        for pos, row in enumerate(pool, start=1):
+            row.confidence_tier = confidence_tier(
+                row, rank_position=pos, pool_size=pool_size, regime_scale=r_scale
+            )
+
+    if config.PRED_RANKING_MODE and not config.PRED_USE_DISPLAY_RANK_MAPPING:
+        for pos, row in enumerate(pool, start=1):
+            prob = effective_probability(row, rank_position=pos, pool_size=pool_size)
+            tier = str(row.confidence_tier or "none")
             rank_note = (
                 f"랭킹 모드: 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정 확률 "
-                f"{prob * 100:.2f}% · 순위 {pos}/{pool_size} · 확신 {row.confidence_tier}"
+                f"{prob * 100:.2f}% · 순위 {pos}/{pool_size} · 확신 {tier}"
+                f" (고확신≤{config.PRED_OUTPUT_MAX}·중확신≤{config.PRED_MID_OUTPUT_MAX}, "
+                f"ML≥{config.PRED_ML_HIGH_CONFIDENCE_PROB * 100:.1f}%/"
+                f"{config.PRED_ML_MID_CONFIDENCE_PROB * 100:.1f}%)"
                 f"{'' if r_scale >= 0.99 else f' · 시장 레짐 보수({r_scale:.0%})'}"
             )
             row.reasons = [rank_note] + [
                 x for x in row.reasons if not x.startswith("랭킹 모드:")
             ]
-
-    max_high = max(3, int(round(int(config.PRED_OUTPUT_MAX) * r_scale)))
-    high_count = 0
-    for row in pool:
-        if row.confidence_tier == "high":
-            high_count += 1
-            if high_count > max_high:
-                row.confidence_tier = "mid"
 
     return pool
 

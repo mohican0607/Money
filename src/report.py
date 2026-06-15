@@ -44,6 +44,22 @@ class DayReport:
     hit_at_k_metrics: dict | None = None
 
 
+def format_prediction_signal_cell(row: dict[str, Any]) -> str:
+    """리포트 ``예측 신호`` 셀 — 저장 HTML + ``market_theme_sectors`` pill(있을 때)."""
+    base = str(row.get("prediction_signal_html") or "—")
+    sectors = row.get("market_theme_sectors") or []
+    if not sectors:
+        return base
+    from .snapshot_rebuild_learning import format_theme_sectors_signal_html
+
+    theme_bit = format_theme_sectors_signal_html(
+        [str(s).strip() for s in sectors if str(s).strip()]
+    )
+    if theme_bit and theme_bit not in base:
+        return base + theme_bit
+    return base
+
+
 def build_market_theme_ref_block(theme_inner_html: str) -> str:
     """``당일 테마 요약`` 패널 HTML(``market_theme_panel`` 매크로와 동일 구조)."""
     inner = (theme_inner_html or "").strip()
@@ -359,6 +375,7 @@ def render_report(
         tabbed=tabbed,
         week_note=week_note,
         interaction_snippet=REPORT_TABLE_INTERACTION_SNIPPET,
+        format_prediction_signal_cell=format_prediction_signal_cell,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
@@ -427,13 +444,21 @@ def collect_monthly_report_index_links(output_dir: Path | None = None) -> list[t
         low = path.name.lower()
         if "index" in low or "dated" in low:
             continue
-        if not re.fullmatch(r"report_\d{4}\.\d{2}\.html", path.name):
+        if not (
+            re.fullmatch(r"report_\d{4}\.\d{2}\.html", path.name)
+            or re.fullmatch(r"report_theme_25pct_\d{4}\.\d{2}\.html", path.name)
+            or re.fullmatch(r"report_theme_25pct_\d{8}_\d{8}\.html", path.name)
+        ):
             continue
         days = parse_monthly_report_trading_days(path)
+        prefix = "[테마 25%↑] " if "theme_25pct" in path.name else ""
         if days:
-            label = f"{path.name} · {days[0].isoformat()} ~ {days[-1].isoformat()} ({len(days)}일)"
+            label = (
+                f"{prefix}{path.name} · {days[0].isoformat()} ~ "
+                f"{days[-1].isoformat()} ({len(days)}일)"
+            )
         else:
-            label = path.name
+            label = prefix + path.name
         links.append((path.name, label))
     return links
 
@@ -535,6 +560,7 @@ def render_compact_tabbed_report(
         week_tabs_stack_days=week_tabs_stack_days,
         week_panels=week_panels or [],
         interaction_snippet=REPORT_TABLE_INTERACTION_SNIPPET,
+        format_prediction_signal_cell=format_prediction_signal_cell,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
@@ -805,7 +831,7 @@ _TEMPLATE = r"""
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
-{{ r.prediction_signal_html | default('—') | safe }}
+{{ format_prediction_signal_cell(r) | safe }}
 {%- endmacro %}
 {% macro disclosure_tip(r, trading_day=none) -%}
 <span class="gap-tip combo-tip disclosure-tip{% if trading_day is not none %} gap-tip-end{% endif %}">
@@ -884,7 +910,7 @@ _TEMPLATE = r"""
           <th>누적정확도(10~20)</th>
           <th>누적정확도(전체)</th>
           <th>이유/차이</th>
-          <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간·당일 급등 테마">예측 신호</th>
+          <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간·25%↑ 테마">예측 신호</th>
         </tr>
       </thead>
       <tbody>
@@ -1356,7 +1382,7 @@ _COMPACT_TEMPLATE = r"""
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
-{{ r.prediction_signal_html | default('—') | safe }}
+{{ format_prediction_signal_cell(r) | safe }}
 {%- endmacro %}
 {% macro disclosure_tip(r, trading_day=none) -%}
 <span class="gap-tip combo-tip disclosure-tip{% if trading_day is not none %} gap-tip-end{% endif %}">
@@ -1420,7 +1446,7 @@ _COMPACT_TEMPLATE = r"""
       <th>누적정확도(10~20)</th>
       <th>누적정확도(전체)</th>
       <th>이유/차이</th>
-      <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간·당일 급등 테마">예측 신호</th>
+      <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간·25%↑ 테마">예측 신호</th>
     </tr>
   </thead>
   <tbody>
@@ -1888,7 +1914,7 @@ _DATED_N_TEMPLATE = r"""
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
-{{ r.prediction_signal_html | default('—') | safe }}
+{{ format_prediction_signal_cell(r) | safe }}
 {%- endmacro %}
 {% macro disclosure_tip(r, trading_day=none) -%}
 <span class="gap-tip combo-tip disclosure-tip gap-tip-end">
@@ -1967,7 +1993,7 @@ _DATED_N_TEMPLATE = r"""
       <h2>종목별 상세 <span style="font-size:0.82rem;font-weight:500;color:var(--muted)">(관측일 {{ t_day.isoformat() }})</span></h2>
       {{ market_filter_radios(n_day.strftime("%Y%m%d")) }}
     </div>
-    <p class="sub" style="margin-top:0">한 줄이 한 종목입니다. <strong>통합 보기</strong>·<strong>공시</strong>·<strong>뉴스</strong>에 마우스를 올리면 상세를 볼 수 있습니다. <strong>예측 신호</strong> 열은 교집합·ML·순위·당일 급등 테마(실제 10%↑) 요약입니다.</p>
+    <p class="sub" style="margin-top:0">한 줄이 한 종목입니다. <strong>통합 보기</strong>·<strong>공시</strong>·<strong>뉴스</strong>에 마우스를 올리면 상세를 볼 수 있습니다. <strong>예측 신호</strong> 열은 교집합·ML·순위·<strong>25%↑</strong> 종목 당일 테마 요약입니다.</p>
     {% if day.rows_compare|length > 0 %}
     <div class="table-wrap">
     <table class="rows-compare">
@@ -1985,7 +2011,7 @@ _DATED_N_TEMPLATE = r"""
           <th>공시</th>
           <th>이유/차이</th>
           <th>뉴스</th>
-          <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간·당일 급등 테마">예측 신호</th>
+          <th scope="col" title="키워드 교집합·종목명 언급·ML 확률·예측 순위·확신 구간·25%↑ 테마">예측 신호</th>
         </tr>
       </thead>
       <tbody>
@@ -2350,6 +2376,7 @@ def render_dated_n_report(
         naver_chart_url=naver_chart_url,
         naver_chart_day_img_url=naver_chart_day_img_url,
         naver_disclosure_url=naver_disclosure_url,
+        format_prediction_signal_cell=format_prediction_signal_cell,
     )
     body_inner = _strip_html_body_inner(html)
     merge_dated_n_rollup(rollup_path=out_rollup, n_compact=n_compact, body_inner=body_inner)
