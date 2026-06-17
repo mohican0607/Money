@@ -239,6 +239,29 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 - **뉴스**: `data/cache/news/.../day_YYYYMMDD.json`
 - **리포트**: `output/report_YYYY.MM.html`, `report_index_monthly.html`, `report_dated_by_n.html`
 
+### 7.1 OHLCV란?
+
+**OHLCV**는 주식 **일봉**(하루 단위 시세) 데이터를 부를 때 쓰는 약어입니다.
+
+| 글자 | 영문 | 의미 |
+|------|------|------|
+| **O** | Open | **시가** — 그날 첫 거래 가격 |
+| **H** | High | **고가** — 그날 최고가 |
+| **L** | Low | **저가** — 그날 최저가 |
+| **C** | Close | **종가** — 그날 마지막 거래 가격 |
+| **V** | Volume | **거래량** |
+
+이 프로젝트에서 OHLCV는 **KOSPI·KOSDAQ 상장 종목 전체**의 위 항목을 **거래일×종목** 단위로 모은 것입니다.
+
+| 항목 | 내용 |
+|------|------|
+| **수집** | `FinanceDataReader`(선택: `USE_KRX_OHLCV=1` 시 KRX 일봉 우선) — `src/stocks.py` |
+| **캐시** | `data/cache/ohlcv_long_full.parquet` (또는 표본 시 `ohlcv_long_*Ntickers.parquet`) |
+| **파이프라인** | `main.py` 로그의 「가격 데이터 수집(캐시 있으면 재사용)」 단계 |
+| **용도** | 일간 **수익률**·20% **급등** 판정, ML **시세 피처**, **모멘텀 후보**, 리포트 **실제 상승률** 비교 |
+
+캐시에 요청 구간이 이미 있으면 재다운로드 없이 Parquet만 읽습니다. `OHLCV_MAX_WORKERS`로 전종목 다운로드 병렬 수를 조절합니다.
+
 ---
 
 ## 8. 모듈별 주요 함수
