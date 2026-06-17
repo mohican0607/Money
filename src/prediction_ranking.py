@@ -253,7 +253,8 @@ def finalize_ranked_predictions(
             rank_note = (
                 f"하이브리드 랭킹: 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정 "
                 f"점수 {row.rank_score * 100:.1f}% · 순위 {pos}/{pool_size} · 확신 {tier}"
-                f" (ML {prob * 100:.1f}%·모멘텀 {float(getattr(row, 'momentum_score', 0) or 0) * 100:.0f}%)"
+                f" (뉴스맥락 {float(getattr(row, 'news_context_score', 0) or 0) * 100:.0f}%·"
+                f"ML {prob * 100:.1f}%·모멘텀 {float(getattr(row, 'momentum_score', 0) or 0) * 100:.0f}%)"
             )
             row.reasons = [rank_note] + [
                 x for x in row.reasons if not x.startswith("랭킹 모드:")

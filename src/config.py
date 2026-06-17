@@ -124,7 +124,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 11
+PREDICTION_FREEZE_SCHEMA_VERSION = 13
 
 # --- 랭킹 우선 예측(구조적 정확도 개선) ---
 # 1: ML 확률·순위 기반, pred_high=확신구간 / 0: 레거시(표시%≥20%)
@@ -188,6 +188,12 @@ PRED_EVAL_HIT_AT_K: tuple[int, ...] = tuple(
     )
 ) or (5, 10, 20, 40)
 TRAIN_START_DEFAULT = date(2025, 4, 11)  # 급등–뉴스 이벤트·스냅샷 수집 시작
+# ML 랭커 학습: 관측일 T 직전 최근 N거래일만 사용(0=전구간). 표본·시간 폭증 방지.
+ML_TRAIN_LOOKBACK_DAYS = _positive_int_env("ML_TRAIN_LOOKBACK_DAYS", 90)
+# 일별 음성 샘플 상한·miss 부스트(학습 시간 단축)
+ML_TRAIN_MAX_NEG_PER_DAY = _positive_int_env("ML_TRAIN_MAX_NEG_PER_DAY", 120)
+ML_MISS_BOOST_MAX_KEYS = _positive_int_env("ML_MISS_BOOST_MAX_KEYS", 320)
+ML_MISS_BOOST_DUP = _positive_int_env("ML_MISS_BOOST_DUP", 1)
 # --weekly 등 날짜 인자 없을 때 관측(리포트) 시작일. 학습 라벨 상한은 관측일 T 직전(워크포워드).
 TEST_START = date(2026, 1, 1)
 

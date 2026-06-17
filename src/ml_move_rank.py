@@ -27,6 +27,12 @@ from . import (
     market_index,
 )
 from .features import BreakoutEvent, filter_specific_keywords, keyword_set, name_mention_score
+from .news_context_ml import (
+    affinity_candidate_codes,
+    context_feature_vector,
+    make_news_ctx_bundle,
+    tfidf_vector,
+)
 
 try:
     import joblib
@@ -64,10 +70,15 @@ FEATURE_NAMES = (
     "vol_surge_ratio",
     "ret_vs_ks11_lag1",
     "ks11_regime_risk_off",
+    "news_cos_code",
+    "news_cos_global",
+    "news_dot_code",
+    "news_lift",
+    "news_today_norm",
 )
 
-ML_MODEL_VERSION = 11
-MAX_NEG_PER_DAY = 360
+ML_MODEL_VERSION = 13
+MAX_NEG_PER_DAY = 120
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
 
@@ -127,6 +138,7 @@ def _day_candidate_codes(
     ctx: tuple[frozenset[str], dict[str, frozenset[str]]],
     returns_ml: pd.DataFrame,
     target_day: date,
+    news_ctx_bundle: dict[str, Any] | None = None,
 ) -> list[str]:
     """뉴스 프로필 ∪ 시세 모멘텀 후보(예측·학습 동일 유니버스)."""
     from . import pred_hybrid
@@ -141,7 +153,19 @@ def _day_candidate_codes(
     mom = pred_hybrid.momentum_candidate_codes(
         returns_ml, target_day, listing_codes
     )
-    return list(dict.fromkeys(news + mom))
+    news_ctx_codes: list[str] = []
+    if news_ctx_bundle:
+        today_v = tfidf_vector(
+            news_text_blob,
+            list(news_ctx_bundle.get("vocab") or []),
+            news_ctx_bundle.get("idf"),
+        )
+        news_ctx_codes = affinity_candidate_codes(
+            listing_codes,
+            dict(news_ctx_bundle.get("profiles") or {}),
+            today_v,
+        )
+    return list(dict.fromkeys(news + mom + news_ctx_codes))
 
 
 def _momentum_for_code(
@@ -291,6 +315,24 @@ def _price_feats_row(idx: pd.DataFrame | None, code: str, trading_day: date) -> 
     return out
 
 
+def _blended_hist_return(
+    all_returns: list[float],
+    code_returns: list[float] | None,
+) -> float:
+    """``predict._historical_mean_return`` 과 동일 로직, 누적 통계로 O(1) 계산."""
+    lo = float(config.PRED_RETURN_MIN)
+    hi = float(config.PRED_RETURN_MAX)
+    global_mean = sum(all_returns) / len(all_returns) if all_returns else lo
+    prior = float(min(hi, max(lo, global_mean)))
+    if not code_returns:
+        return prior
+    code_mean = sum(code_returns) / len(code_returns)
+    prior_strength = 5.0
+    n = float(len(code_returns))
+    blended = (n * code_mean + prior_strength * prior) / (n + prior_strength)
+    return float(min(hi, max(lo, blended)))
+
+
 def _feat_vector(
     train_events: list[BreakoutEvent],
     code: str,
@@ -301,19 +343,36 @@ def _feat_vector(
     *,
     ohlcv_idx: pd.DataFrame | None = None,
     theme_weights: dict[str, float] | None = None,
+    news_ctx: dict[str, Any] | None = None,
+    ctx_profiles: dict[str, np.ndarray] | None = None,
+    ctx_global: np.ndarray | None = None,
+    ctx_lift: np.ndarray | None = None,
+    hist_kw: set[str] | frozenset[str] | None = None,
+    base_ret: float | None = None,
+    code_event_count: int | None = None,
+    today_tfidf: np.ndarray | None = None,
 ) -> list[float]:
     """뉴스·이력 피터 + (선택) 시세 피처. ``ohlcv_idx`` 가 있으면 ``before_exclusive`` 거래일 행을 붙입니다."""
-    sub = [e for e in train_events if e.trading_day < before_exclusive]
-    hist_kw: set[str] = set()
-    for e in sub:
-        if e.code == code:
-            hist_kw |= set(filter_specific_keywords(e.news_keywords))
-    inter = filter_specific_keywords(hist_kw & kw_news)
+    if hist_kw is None:
+        sub = [e for e in train_events if e.trading_day < before_exclusive]
+        hist_kw_set: set[str] = set()
+        for e in sub:
+            if e.code == code:
+                hist_kw_set |= set(filter_specific_keywords(e.news_keywords))
+    else:
+        hist_kw_set = set(hist_kw)
+    inter = filter_specific_keywords(hist_kw_set & kw_news)
     n_hit = len(inter)
     mention = name_mention_score(news_blob, name)
     score = n_hit * 1.0 + mention * 5.0
-    base_ret = predict._historical_mean_return(sub, code)
-    ce = sum(1 for e in sub if e.code == code)
+    if base_ret is None:
+        sub = [e for e in train_events if e.trading_day < before_exclusive]
+        base_ret = predict._historical_mean_return(sub, code)
+    if code_event_count is None:
+        sub = [e for e in train_events if e.trading_day < before_exclusive]
+        ce = predict._count_code_events(sub, code)
+    else:
+        ce = int(code_event_count)
     overlap = theme_carryover.theme_kw_overlap_score(kw_news, theme_weights)
     # 시장흐름(지수) 피처: KOSPI(KS11) 전일 수익률 및 최근 변동성
     ks11_ret_lag1, ks11_std5 = _ks11_market_feats(before_exclusive)
@@ -339,7 +398,25 @@ def _feat_vector(
         float(ks11_ret_lag1),
         float(ks11_std5),
     ]
-    return base + price + [float(ret_vs_ks11), float(risk_off)]
+    ctx_part = [0.0] * 5
+    if news_ctx and news_ctx.get("vocab"):
+        vocab = list(news_ctx["vocab"])
+        idf = news_ctx["idf"]
+        lift = ctx_lift if ctx_lift is not None else news_ctx.get("lift")
+        global_c = ctx_global if ctx_global is not None else news_ctx.get("global_c")
+        profiles = ctx_profiles if ctx_profiles is not None else news_ctx.get("profiles")
+        today_v = today_tfidf if today_tfidf is not None else tfidf_vector(news_blob, vocab, idf)
+        prof = None
+        if isinstance(profiles, dict):
+            prof = profiles.get(str(code).zfill(6))
+        if prof is None:
+            prof = np.zeros(len(vocab), dtype=np.float64)
+        if global_c is None:
+            global_c = np.zeros(len(vocab), dtype=np.float64)
+        if lift is None:
+            lift = np.zeros(len(vocab), dtype=np.float64)
+        ctx_part = context_feature_vector(today_v, prof, global_c, lift)
+    return base + price + [float(ret_vs_ks11), float(risk_off)] + ctx_part
 
 
 def _build_training_arrays(
@@ -353,7 +430,7 @@ def _build_training_arrays(
     *,
     pos_boost_keys: set[tuple[str, str]] | None = None,
     neg_boost_keys: set[tuple[str, str]] | None = None,
-) -> tuple[np.ndarray, np.ndarray] | None:
+) -> tuple[np.ndarray, np.ndarray, dict[str, Any]] | None:
     """
     훈련 구간 거래일별 급등(양)·비급등(음) 샘플 행을 만들어 ``(X, y)`` 배열로 반환.
 
@@ -365,13 +442,82 @@ def _build_training_arrays(
     ohlcv_idx = _ohlcv_lookup(returns_ml)
     pos_boost = pos_boost_keys or set()
     neg_boost = neg_boost_keys or set()
+    boost_cap = int(config.ML_MISS_BOOST_MAX_KEYS)
+    if boost_cap > 0:
+        if len(pos_boost) > boost_cap:
+            pick = rng.choice(len(pos_boost), size=boost_cap, replace=False)
+            pos_boost = {list(pos_boost)[i] for i in pick}
+        if len(neg_boost) > boost_cap:
+            pick = rng.choice(len(neg_boost), size=boost_cap, replace=False)
+            neg_boost = {list(neg_boost)[i] for i in pick}
+    boost_dup = max(0, int(config.ML_MISS_BOOST_DUP))
+    neg_cap = min(MAX_NEG_PER_DAY, int(config.ML_TRAIN_MAX_NEG_PER_DAY))
 
     days = sorted(
         d
         for d in returns_ml["Date"].dt.date.unique()
         if train_start <= d < label_before_exclusive
     )
+    lookback = int(config.ML_TRAIN_LOOKBACK_DAYS)
+    if lookback > 0 and len(days) > lookback:
+        days = days[-lookback:]
+    news_ctx = make_news_ctx_bundle(
+        train_events,
+        news_by_calendar,
+        train_start,
+        label_before_exclusive,
+    )
+    vocab = list(news_ctx.get("vocab") or [])
+    idf_arr = news_ctx.get("idf")
+    prof_t = news_ctx.get("profiles") or {}
+    glob_t = news_ctx.get("global_c")
+    lift_t = news_ctx.get("lift")
+    listing_codes = list(names.keys())
+    sorted_ev = sorted(train_events, key=lambda e: e.trading_day)
+    ev_i = 0
+    hist_kw_by_code: dict[str, set[str]] = {}
+    code_returns: dict[str, list[float]] = {}
+    all_returns: list[float] = []
+
+    def _train_feat(
+        code: str,
+        name: str,
+        blob: str,
+        kw_news: frozenset[str],
+        d: date,
+        tw: dict[str, float],
+        today_v: np.ndarray | None,
+    ) -> list[float]:
+        c6 = str(code).zfill(6)
+        return _feat_vector(
+            train_events,
+            c6,
+            name,
+            blob,
+            kw_news,
+            before_exclusive=d,
+            ohlcv_idx=ohlcv_idx,
+            theme_weights=tw,
+            news_ctx=news_ctx,
+            ctx_profiles=prof_t,
+            ctx_global=glob_t,
+            ctx_lift=lift_t,
+            hist_kw=hist_kw_by_code.get(c6, set()),
+            base_ret=_blended_hist_return(all_returns, code_returns.get(c6)),
+            code_event_count=len(code_returns.get(c6, [])),
+            today_tfidf=today_v,
+        )
+
     for d in days:
+        while ev_i < len(sorted_ev) and sorted_ev[ev_i].trading_day < d:
+            ev = sorted_ev[ev_i]
+            c6 = str(ev.code).zfill(6)
+            hist_kw_by_code.setdefault(c6, set()).update(
+                filter_specific_keywords(ev.news_keywords)
+            )
+            code_returns.setdefault(c6, []).append(ev.return_pct)
+            all_returns.append(ev.return_pct)
+            ev_i += 1
         blob = _early_blob_for_trading_day(news_by_calendar, d)
         if not blob.strip():
             continue
@@ -379,12 +525,13 @@ def _build_training_arrays(
         ctx = predict.build_scoring_context(blob, train_events)
         cand_set = set(
             _day_candidate_codes(
-                list(names.keys()),
+                listing_codes,
                 names,
                 blob,
                 ctx,
                 returns_ml,
                 d,
+                news_ctx_bundle=news_ctx,
             )
         )
         tw = theme_carryover.weights_for_observation_day(
@@ -394,6 +541,9 @@ def _build_training_arrays(
             returns_df=returns_ml,
             threshold=threshold,
         )
+        today_v: np.ndarray | None = None
+        if vocab and idf_arr is not None:
+            today_v = tfidf_vector(blob, vocab, idf_arr)
         day_slice = returns_ml[returns_ml["Date"] == pd.Timestamp(d)]
         if day_slice.empty:
             continue
@@ -409,20 +559,11 @@ def _build_training_arrays(
             if cand_set and code not in cand_set:
                 continue
             name = str(names.get(code, r.get("Name", "")))
-            fv = _feat_vector(
-                train_events,
-                code,
-                name,
-                blob,
-                kw_news,
-                before_exclusive=d,
-                ohlcv_idx=ohlcv_idx,
-                theme_weights=tw,
-            )
+            fv = _train_feat(code, name, blob, kw_news, d, tw, today_v)
             rows_x.append(fv)
             rows_y.append(1)
-            if (d_iso, code) in pos_boost:
-                for _ in range(2):
+            if boost_dup > 0 and (d_iso, code) in pos_boost:
+                for _ in range(boost_dup):
                     rows_x.append(fv)
                     rows_y.append(1)
 
@@ -432,27 +573,18 @@ def _build_training_arrays(
             if not cand_set or c in cand_set
         ]
         n_pos = int(pos_df.shape[0])
-        n_neg = min(MAX_NEG_PER_DAY, max(30, 6 * n_pos))
+        n_neg = min(neg_cap, max(30, 6 * n_pos))
         if len(neg_codes) > n_neg:
             neg_codes = list(rng.choice(np.array(neg_codes), size=n_neg, replace=False))
         neg_seen: set[str] = set()
         for code in neg_codes:
             name = str(names.get(code, ""))
-            fv = _feat_vector(
-                train_events,
-                code,
-                name,
-                blob,
-                kw_news,
-                before_exclusive=d,
-                ohlcv_idx=ohlcv_idx,
-                theme_weights=tw,
-            )
+            fv = _train_feat(code, name, blob, kw_news, d, tw, today_v)
             rows_x.append(fv)
             rows_y.append(0)
             neg_seen.add(code)
-            if (d_iso, code) in neg_boost:
-                for _ in range(2):
+            if boost_dup > 0 and (d_iso, code) in neg_boost:
+                for _ in range(boost_dup):
                     rows_x.append(fv)
                     rows_y.append(0)
 
@@ -464,25 +596,18 @@ def _build_training_arrays(
                 continue
             rr = sub.iloc[0]
             name = str(names.get(code6, rr.get("Name", "")))
-            fv = _feat_vector(
-                train_events,
-                code6,
-                name,
-                blob,
-                kw_news,
-                before_exclusive=d,
-                ohlcv_idx=ohlcv_idx,
-                theme_weights=tw,
-            )
+            fv = _train_feat(code6, name, blob, kw_news, d, tw, today_v)
             rows_x.append(fv)
             rows_y.append(0)
-            rows_x.append(fv)
-            rows_y.append(0)
+            if boost_dup > 0:
+                for _ in range(boost_dup):
+                    rows_x.append(fv)
+                    rows_y.append(0)
             neg_seen.add(code6)
 
     if len(rows_y) < MIN_TOTAL_SAMPLES or sum(rows_y) < MIN_POS_SAMPLES:
         return None
-    return np.asarray(rows_x, dtype=np.float64), np.asarray(rows_y, dtype=np.int32)
+    return np.asarray(rows_x, dtype=np.float64), np.asarray(rows_y, dtype=np.int32), news_ctx
 
 
 def _model_path(fp: str, label_before_exclusive: date | None = None) -> Path:
@@ -538,6 +663,14 @@ def fit_or_load_classifier(
                 bundle["pipeline"] = loaded["pipeline"]
                 bundle["cal_base_rate"] = float(loaded.get("cal_base_rate") or 0.01)
                 bundle["cal_table"] = list(loaded.get("cal_table") or [])
+                bundle["news_ctx"] = loaded.get("news_ctx")
+                if bundle["news_ctx"] is None:
+                    bundle["news_ctx"] = make_news_ctx_bundle(
+                        train_events,
+                        news_by_calendar,
+                        config.TRAIN_START_DEFAULT,
+                        label_before_exclusive,
+                    )
                 print(f"ML 랭커: 캐시 로드 {path.name}", flush=True)
                 return bundle
         except Exception:
@@ -569,7 +702,7 @@ def fit_or_load_classifier(
         )
         return bundle
 
-    X, y = xy
+    X, y, news_ctx_tr = xy
     from sklearn.model_selection import train_test_split
 
     try:
@@ -581,14 +714,14 @@ def fit_or_load_classifier(
         X_cal, y_cal = X[:0], y[:0]
 
     clf = HistGradientBoostingClassifier(
-        max_depth=6,
-        max_iter=180,
-        learning_rate=0.07,
+        max_depth=5,
+        max_iter=100,
+        learning_rate=0.08,
         random_state=42,
         class_weight="balanced",
         early_stopping=True,
         validation_fraction=0.12,
-        n_iter_no_change=12,
+        n_iter_no_change=8,
     )
     pipe: Pipeline = Pipeline(
         [
@@ -610,6 +743,7 @@ def fit_or_load_classifier(
         float(y_cal.mean()) if y_cal.size > 0 else float(np.mean(y_tr))
     )
     bundle["cal_table"] = cal_table
+    bundle["news_ctx"] = news_ctx_tr
     path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, path)
     print(
@@ -642,7 +776,9 @@ def rank_predictions_ml(
     tw = theme_weights or {}
     ohlcv_idx = _ohlcv_lookup(returns_ml)
     from . import pred_hybrid, prediction_ranking
+    from .news_context_ml import context_score_from_feats, feats_for_code
 
+    news_ctx = (ml_bundle or {}).get("news_ctx")
     score_codes = _day_candidate_codes(
         listing_codes,
         listing_names,
@@ -650,6 +786,7 @@ def rank_predictions_ml(
         ctx,
         returns_ml,
         target_day,
+        news_ctx_bundle=news_ctx,
     )
     news_only = set(
         _ml_scoring_candidate_codes(
@@ -660,6 +797,10 @@ def rank_predictions_ml(
             int(config.PRED_ML_POOL_MIN_KEYWORD_HITS),
         )
     )
+    mom_only = set(
+        pred_hybrid.momentum_candidate_codes(returns_ml, target_day, listing_codes)
+    )
+    news_ctx_only: set[str] = set(score_codes) - news_only - mom_only
     code_to_ix = {c: i for i, c in enumerate(listing_codes)}
     cand_ix: list[int] = []
     for c in score_codes:
@@ -682,6 +823,7 @@ def rank_predictions_ml(
                 before_exclusive=target_day,
                 ohlcv_idx=ohlcv_idx,
                 theme_weights=tw,
+                news_ctx=news_ctx,
             )
         )
     X = np.asarray(feats, dtype=np.float64)
@@ -708,15 +850,20 @@ def rank_predictions_ml(
             int(config.PRED_ML_POOL_MIN_KEYWORD_HITS),
             feedback_ctx=feedback_ctx,
             theme_weights=tw,
-            allow_momentum_only=code not in news_only,
+            allow_momentum_only=code in mom_only and code not in news_only,
+            allow_news_context_only=code in news_ctx_only,
         )
         if pr is None:
             continue
         p = float(proba[fi])
         pr.ml_prob = p
         pr.momentum_score = _momentum_for_code(ohlcv_idx, code, target_day)
+        if news_ctx:
+            _, nctx = feats_for_code(news_ctx, news_text_blob, code)
+            pr.news_context_score = nctx
         pr.reasons = [
-            f"하이브리드 랭커(ML {p * 100:.1f}%·모멘텀 {pr.momentum_score * 100:.0f}%·키워드 {pr.keyword_hits}) "
+            f"전체뉴스 ML(맥락 {pr.news_context_score * 100:.0f}%·ML {p * 100:.1f}%·"
+            f"모멘텀 {pr.momentum_score * 100:.0f}%·키워드 {pr.keyword_hits}) "
             f"익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정."
         ] + list(pr.reasons)
         buf.append(pr)

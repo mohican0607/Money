@@ -2,7 +2,9 @@
 
 KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까지)** 수집·분류한 **뉴스(시장·테마·종목·국제정세 등)**, **전일 급등·테마 가중치**, **시세·KOSPI 흐름**, (보조) 과거 급등 종목 프로필·오판 피드백을 이용해 **다음 거래일(관측일 T) 수익률** 후보를 HTML 리포트로 출력하는 도구입니다.
 
-예측은 **휴리스틱**과 **ML 랭커(HistGradientBoosting)** 를 함께 쓰며, `PRED_USE_ML_RANKER=0` 이면 휴리스틱만 사용합니다. 기본(**랭킹 모드**)에서는 상위 40개를 **ML 급등 확률 순**으로 정렬하고, **고확신/중확신**만 `pred_high`·`pred_mid`로 표시합니다(`PRED_RANKING_MODE=1`, `PRED_USE_DISPLAY_RANK_MAPPING=0`). **예측 상승률(%)** 은 종목별 과거 급등 평균·키워드 보정값이며, ML 확률은 순위·확신만 반영합니다(확률을 %로 바꿔 붙이지 않음). 레거시 순위→20~30% 일괄 매핑은 `PRED_USE_DISPLAY_RANK_MAPPING=1` 로 되돌릴 수 있습니다.
+예측은 **휴리스틱**과 **ML 랭커(HistGradientBoosting)** 를 함께 쓰며, `PRED_USE_ML_RANKER=0` 이면 휴리스틱만 사용합니다. 기본(**랭킹 모드**)에서는 후보 풀을 **키워드·시세 모멘텀·전체뉴스 TF-IDF 맥락**(`news_context_ml`)의 합집합으로 넓힌 뒤 **하이브리드 점수**(`pred_hybrid`: ML + 모멘텀 + 뉴스맥락)로 정렬하고, **고확신/중확신**만 `pred_high`·`pred_mid`로 표시합니다(`PRED_RANKING_MODE=1`, `PRED_USE_DISPLAY_RANK_MAPPING=0`). **예측 상승률(%)** 은 종목별 과거 급등 평균·키워드 보정값이며, ML 확률은 순위·확신만 반영합니다(확률을 %로 바꿔 붙이지 않음). 레거시 순위→20~30% 일괄 매핑은 `PRED_USE_DISPLAY_RANK_MAPPING=1` 로 되돌릴 수 있습니다.
+
+**현재 ML·freeze 버전:** `ML_MODEL_VERSION=13`, `PREDICTION_FREEZE_SCHEMA_VERSION=13` — 이전 joblib·freeze(JSON 스키마 &lt; 13)는 자동 무시·재계산됩니다.
 
 ---
 
@@ -17,8 +19,10 @@ KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까�
 | `src/trading_calendar.py` | XKRX 거래일 + `KRX_AD_HOC_SESSION_CLOSURES`(선거·제헌절 등 임시 휴장) |
 | `src/features.py` | 토큰·키워드, `BreakoutEvent`(과거 급등–뉴스) 구축 |
 | `src/predict.py` | 종목 스코어·예측 수익률·갭 설명 HTML·키워드 피드백 반영 |
+| `src/pred_hybrid.py` | ML·시세 모멘텀·뉴스맥락 **하이브리드 순위**·고/중 확신 게이트 |
+| `src/news_context_ml.py` | 전체 뉴스 TF-IDF·급등일 프로필 유사도·ML 피처 5종·맥락 후보 확장 |
 | `src/prediction_ranking.py` | 랭킹 확정·확신 게이트·Hit@K·레짐 보수 조정 |
-| `src/ml_move_rank.py` | 감독학습 랭커 학습·추론, KS11 시장 피처, miss 진단 가중 |
+| `src/ml_move_rank.py` | 감독학습 랭커(v13) 학습·추론, KS11 시장 피처, miss 진단 가중 |
 | `src/market_index.py` | KOSPI 등 지수 일봉·당일 수익률 |
 | `src/report.py` | Jinja2 HTML(월간 탭·단일일·dated 누적 리포트) |
 | `src/train_snapshot.py` | `breakout_train_snapshot.json` 로드·저장(`train_events`) |
@@ -44,7 +48,9 @@ KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까�
         ↓
 캘린더 일자별 뉴스(JSON) + OHLCV → BreakoutEvent 풀(과거 급등 라벨·보조 프로필)
         ↓
-관측일 T: N−1~N **14:30까지** early 뉴스·테마·시세·시장 → ML/휴리스틱 → 상위 40후보
+관측일 T: N−1~N **14:30까지** early 뉴스·테마·시세·시장
+        → 후보 = 키워드/종목명 ∪ **모멘텀** ∪ **뉴스맥락(TF-IDF)**  (`ml_move_rank._day_candidate_codes`)
+        → ML/휴리스틱 → **하이브리드 순위** → 상위 40·고/중 확신
         (학습 라벨·이벤트는 **T 직전**만 사용 — 워크포워드)
         ↓
 실제 10%+·20%+: pykrx(우선) 또는 OHLCV → rows_compare
@@ -133,6 +139,8 @@ python main.py --rebuild-train-snapshot 20260401 20260601
 | `scripts/fetch_news_naver_day.py` | 특정일 네이버 뉴스 수집 |
 | `scripts/check_trading_day_for_daily.py` | 일일 스케줄용 거래일 확인(종료 코드) |
 | `scripts/render_report_dummy.py` | 리포트 UI 더미 렌더 |
+| `scripts/bench_ml_train.py` | 관측일 T 1일분 ML 재학습 소요 시간 벤치(v13) |
+| `scripts/diag_pred_accuracy_jun.py` | 6월 HTML 고확신·중확신 20% 적중률·Hit@K 요약 |
 
 ---
 
@@ -144,7 +152,9 @@ python main.py --rebuild-train-snapshot 20260401 20260601
 | `prediction_accuracy_track.json` | `t_code_ratio`, 종목별 예측 이력, `keyword_feedback_weights` | 매 구간 실행 말미 |
 | `prediction_freeze_by_t.json` | 관측일 T별 상위 후보·예측% 고정 | **From~To 구간** 실행마다 해당 T 재계산·저장 |
 | `daily_theme_snapshots.json` | 전일 급등·테마 가중치 | 매 거래일 파이프라인 |
-| `move_ranker_v*.joblib` | ML 랭커 모델 | `--rebuild-train-snapshot` 시 재학습 |
+| `move_ranker_v*.joblib` | ML 랭커 모델 + `news_ctx` bundle | 관측일 T마다 `label_before_exclusive=T` 캐시. **버전·지문 불일치 시 재학습** |
+
+**ML v13 학습 단축(기본값):** 최근 `ML_TRAIN_LOOKBACK_DAYS`(90)거래일만 표본 생성, 일별 음성 상한 `ML_TRAIN_MAX_NEG_PER_DAY`, miss 부스트 키·복제 수 제한, 피처 누적 캐시·일별 TF-IDF 1회 계산. 전구간 학습(v12, ~3만 표본·수 시간) 대비 **일 ~2.4k 표본·~6분/일** 수준.
 
 ### 4.1 `rebuild_learning` (사후 처리·학습 진단)
 
@@ -163,6 +173,7 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 | 구분 | 시점·내용 | 학습/예측 반영 |
 |------|-----------|----------------|
 | **early 뉴스** | 관측일 `T` 직전 거래일 **14:30(KST)** 까지 (`USE_DECISION_NEWS_INTRADAY_CUTOFF`) | `train_events.news_keywords`, 휴리스틱·ML 랭커 피처 |
+| **뉴스맥락(TF-IDF)** | T 직전 구간 전체 early 뉴스 + 급등일 프로필 | `news_context_ml` 5피처·맥락 후보·`news_ctx` joblib |
 | **테마 캐리오버** | `T` 직전일 급등·뉴스 → `daily_theme_snapshots.json` | `theme_carryover` 점수·ML `theme_kw_overlap` |
 | **`market_theme_flow`** | 당일 10%+ 상승 종목 vs early 뉴스 키워드·테마 시드 교집합 | 스냅샷 JSON·**리포트 표** (ML 피처로 직접 넣지 않음) |
 | **`rebuild_learning`** | 예측 괴리·미적중 진단 | ML 샘플 가중(진단 키 복제) |
@@ -200,6 +211,15 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 | `USE_DECISION_NEWS_INTRADAY_CUTOFF` | N−1 14:30 KST early/late(기본 1) |
 | `PRED_USE_ML_RANKER` | ML 랭커 사용(기본 1) |
 | `PREDICTION_FREEZE_ENABLED` | T별 예측 고정 캐시(기본 1) |
+| `PRED_ML_HIGH_CONFIDENCE_PROB` | 고확신 ML 확률 하한(기본 **0.10**, 코드 최소 0.08) |
+| `PRED_ML_MID_CONFIDENCE_PROB` | 중확신 하한(기본 0.07) |
+| `PRED_OUTPUT_MAX` / `PRED_MID_OUTPUT_MAX` | 고/중 확신 최대 출력 수(기본 각 **10**) |
+| `PRED_ML_POOL_MIN_KEYWORD_HITS` | ML 후보 풀 키워드 교집합 완화(기본 1) |
+| `PRED_MENTION_GATE_MIN` | 종목명 언급 게이트(기본 0.35) |
+| `PRED_CHRONIC_MISS_*` | 반복 오탐 종목 후보 제외 |
+| `ML_TRAIN_LOOKBACK_DAYS` | ML 학습 최근 N거래일(0=전구간, 기본 **90**) |
+| `ML_TRAIN_MAX_NEG_PER_DAY` | 일별 음성 샘플 상한(기본 **120**) |
+| `ML_MISS_BOOST_MAX_KEYS` / `ML_MISS_BOOST_DUP` | miss 진단 부스트 키 수·복제(기본 320·**1**) |
 | `THEME_CARRYOVER_ENABLED` | 전일 테마 가중치(기본 1) |
 | `KEYWORD_FEEDBACK_*` | 오판 키워드 온라인 가중치 |
 | `PRED_RETURN_MIN` / `MAX` | 표시 예측% 하한·상한(기본 0.20~0.30) |
@@ -246,10 +266,29 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 
 | 함수 | 역할 |
 |------|------|
-| `fit_or_load_classifier` | 학습 또는 joblib 로드 |
-| `rank_predictions_ml` | 급등 확률 순 상위 후보 |
+| `fit_or_load_classifier` | 학습 또는 joblib 로드(v13·`news_ctx` 포함) |
+| `rank_predictions_ml` | 급등 확률·하이브리드 순 상위 후보 |
+| `_day_candidate_codes` | 키워드 ∪ 모멘텀 ∪ 뉴스맥락 후보 풀 |
+| `_build_training_arrays` | 워크포워드 학습 행(lookback·음성 상한 적용) |
 | `_ks11_market_feats` | KOSPI 전일 수익·변동성 피처 |
-| `_feat_vector` | 종목별 ML 입력 벡터 |
+| `_feat_vector` | 종목별 ML 입력 벡터(뉴스맥락 5피처 포함) |
+
+### `src/news_context_ml.py`
+
+| 함수 | 역할 |
+|------|------|
+| `make_news_ctx_bundle` | 어휘·IDF·lift·종목 프로필·global 벡터 |
+| `affinity_candidate_codes` | TF-IDF 유사도 기반 후보 확장 |
+| `context_feature_vector` / `feats_for_code` | ML 피처·맥락 점수 |
+| `tfidf_vector` | early 뉴스 blob → 정규화 TF-IDF |
+
+### `src/pred_hybrid.py`
+
+| 함수 | 역할 |
+|------|------|
+| `momentum_candidate_codes` | 시세 모멘텀 상위 종목(뉴스 없이 후보) |
+| `hybrid_rank_score` | ML + 모멘텀 + 뉴스맥락 가중 합 |
+| `assign_hybrid_confidence_tiers` | pred_high / pred_mid 확신 부여 |
 
 ### `src/prediction_accuracy_cache.py`
 
@@ -300,10 +339,16 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 |------|------|
 | OHLCV·뉴스 (캐시 히트) | 수 분 |
 | `train_events` 전체 (`--rebuild`) | 수십 분 |
-| **거래일 1일 예측** (`--rebuild`/`--append`) | **~35~40분** (전종목 재점수) |
+| **ML 재학습 1일** (v13, 캐시 미스) | **~5~8분** (표본 ~2.4k, lookback 90일) |
+| **거래일 1일 예측** (v13 캐시 히트) | **~40~70초** |
+| **거래일 1일 예측** (v12 전구간 재학습) | **수 시간** (표본 3만+, 레거시) |
 | 사후 처리 (JSON 병합·HTML) | 수 분~30분 |
 
-**한 달(~22거래일) `--append`**: 예측만 **~12~15시간**. `--no-report-expand`로 불필요한 일수 제외 권장.
+**한 달(~10거래일) 구간, v13·캐시 미스:** ML 재학습 포함 **~1~1.5시간** 예상. 캐시 히트 시 훨씬 짧음.
+
+**속도 조절:** `.env` 에 `ML_TRAIN_LOOKBACK_DAYS=60`, `ML_TRAIN_MAX_NEG_PER_DAY=80` 등으로 더 단축 가능(정확도 trade-off). 벤치: `python scripts/bench_ml_train.py`.
+
+**주의:** `--no-report-expand` 구간만 HTML에 반영됩니다. 월 전체 리포트는 `20260601 20260615` 처럼 **전체 거래일**을 한 번에 돌리거나, merge 모드(플래그 없음)로 나눠 실행하세요. **스키마·ML 버전이 바뀌면 freeze·v12 joblib 은 무시**되므로 구간 전체를 v13으로 다시 돌리는 것이 일관됩니다.
 
 ---
 
@@ -312,7 +357,7 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 1. `main.py` — `_parse_cli` → `main` → `_run_pipeline`
 2. `src/config.py`
 3. `src/stocks.py` → `src/news.py`
-4. `src/features.py` → `src/predict.py` → `src/ml_move_rank.py`
+4. `src/features.py` → `src/news_context_ml.py` → `src/predict.py` → `src/pred_hybrid.py` → `src/ml_move_rank.py`
 5. `src/prediction_accuracy_cache.py` → `src/snapshot_rebuild_learning.py`
 6. `src/report.py`
 
@@ -324,17 +369,29 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 
 ---
 
-## 12. 랭킹 모드(구조적 정확도 개선)
+## 12. 랭킹·하이브리드·뉴스맥락 (v11→v13)
 
 | 항목 | 내용 |
 |------|------|
-| **문제 정의** | 절대 20% 회귀 대신 **상위 K 랭킹 + ML 확률(P)** · 확신 구간(`high`/`mid`) |
-| **평가** | 일별 **Hit@5/10/20/40**·lift·recall → `prediction_accuracy_track.json` `hit_at_k_by_day`·리포트 패널 |
-| **피처** | ML v6: `ret_roll_mean5`, `vol_surge_ratio`, `ret_vs_ks11_lag1`, `ks11_regime_risk_off` |
+| **문제 정의** | 키워드 교집합만으로는 실제 20% 급등의 ~85%가 ML 풀 밖 → **전체 뉴스 맥락**·**시세 모멘텀** 후보 확장 |
+| **후보 풀** | `_ml_scoring_candidate_codes` ∪ `momentum_candidate_codes` ∪ `affinity_candidate_codes` |
+| **순위** | `pred_hybrid.hybrid_rank_score` = ML(40%) + 모멘텀(30%) + 뉴스(30%) (ML 없으면 모멘텀·뉴스 위주) |
+| **확신** | `assign_hybrid_confidence_tiers`: 하이브리드 하한 + **이중 신호**(맥락·모멘텀·키워드·종목명) |
+| **ML 피처** | v6 시세·KS11 + **v12~13 뉴스맥락 5종** (`news_cos_code` … `news_today_norm`) |
+| **ML 학습 v13** | lookback 90일·음성 상한·miss 부스트 제한·HistGradientBoosting `max_iter=100`·피처 누적 캐시 |
+| **확률 보정** | raw `predict_proba` → `calibrate_ml_probability`(희귀 급등 base rate 수축) |
+| **평가** | Hit@5/10/20/40·고확신 20% 적중 → `scripts/diag_pred_accuracy_jun.py` |
 | **레짐 게이트** | KOSPI 전일 수익률 &lt; `PRED_REGIME_KS11_SOFT_MIN` 이면 고확신 출력 수 축소 |
-| **ML 재학습** | 피처 변경 후 `python main.py --rebuild-train-snapshot From To` 권장 |
+| **재학습** | `ML_MODEL_VERSION`·피처·lookback 변경 후 구간 `main.py From To` (v13 joblib·freeze schema 13 자동 갱신) |
 
-주요 환경 변수: `PRED_ML_HIGH_CONFIDENCE_PROB`, `PRED_OUTPUT_MAX`, `PRED_RANK_POOL_N`, `PRED_EVAL_HIT_AT_K`.
+주요 환경 변수: `PRED_ML_HIGH_CONFIDENCE_PROB`, `PRED_OUTPUT_MAX`, `PRED_RANK_POOL_N`, `ML_TRAIN_LOOKBACK_DAYS`, `PRED_EVAL_HIT_AT_K`.
+
+### 12.1 버전·캐시 갱신 체크리스트
+
+1. `src/ml_move_rank.py` 의 `ML_MODEL_VERSION` 과 `config.PREDICTION_FREEZE_SCHEMA_VERSION` 확인(현재 **13**).
+2. `data/cache/train/move_ranker_v13_*` 가 없는 관측일 T 는 첫 실행 시 재학습.
+3. `prediction_freeze_by_t.json` 의 `_schema_version` 이 코드와 다르면 **전체 freeze 무시** → 구간 재예측.
+4. 6월 등 월간 리포트: `python main.py --no-report-expand YYYYMMDD YYYYMMDD` (해당 월 거래일 전부).
 
 ---
 

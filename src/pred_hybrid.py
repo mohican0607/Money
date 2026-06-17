@@ -1,4 +1,12 @@
-"""뉴스·ML·시세 모멘텀 하이브리드 랭킹·확신 구간(예측 파이프라인 단일 진실 소스)."""
+"""뉴스·ML·시세 모멘텀 하이브리드 랭킹·확신 구간(예측 파이프라인 단일 진실 소스).
+
+구성:
+  - ``momentum_candidate_codes``: 거래량·전일 수익 등 시세만으로 후보 확장(뉴스 없는 급등 대비)
+  - ``hybrid_rank_score``: ML 확률 + 모멘텀 + 전체뉴스 맥락(news_context_score) 가중 합
+  - ``assign_hybrid_confidence_tiers``: 하이브리드 순위·이중 신호 게이트로 pred_high / pred_mid 부여
+
+``prediction_ranking``·``ml_move_rank.rank_predictions_ml`` 에서 import 해 사용합니다.
+"""
 from __future__ import annotations
 
 import math
@@ -62,25 +70,29 @@ def momentum_candidate_codes(
 
 
 def hybrid_rank_score(row: PredictionRow) -> float:
-    """ML·모멘텀·뉴스를 합친 최종 순위 점수."""
+    """ML·모멘텀·전체뉴스 맥락 하이브리드 점수."""
     ml = getattr(row, "ml_prob", None)
     ml_v = float(ml) if ml is not None and math.isfinite(float(ml)) else 0.0
     mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
+    nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
     nh = int(getattr(row, "keyword_hits", 0) or 0)
     mention = float(getattr(row, "mention_score", 0.0) or 0.0)
-    news = min(1.0, nh / 5.0) * 0.65 + min(mention, 1.0) * 0.35
+    news = 0.55 * nctx + 0.25 * min(1.0, nh / 5.0) + 0.20 * min(mention, 1.0)
     if ml_v > 0:
-        return 0.48 * ml_v + 0.38 * mom + 0.14 * news
-    return 0.55 * mom + 0.30 * float(getattr(row, "score", 0.0) or 0.0) / 12.0 + 0.15 * news
+        return 0.40 * ml_v + 0.30 * mom + 0.30 * news
+    return 0.48 * mom + 0.52 * news
 
 
 def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> bool:
     nh = int(getattr(row, "keyword_hits", 0) or 0)
     mention = float(getattr(row, "mention_score", 0.0) or 0.0)
     mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
+    nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
     rel = hybrid + 1e-12 >= top_hybrid * float(config.PRED_ML_HIGH_RELATIVE_PROB)
     if not rel:
         return False
+    if nctx + 1e-12 >= 0.40 and (mom + 1e-12 >= 0.15 or nh >= 1):
+        return True
     if nh >= int(config.PRED_ML_HIGH_MIN_KEYWORD_HITS) and mom + 1e-12 >= 0.18:
         return True
     if mention + 1e-12 >= float(config.PRED_MENTION_GATE_MIN):

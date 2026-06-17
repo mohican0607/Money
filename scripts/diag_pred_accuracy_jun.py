@@ -1,4 +1,10 @@
-"""6월 리포트·파이프라인 예측 적중률 요약."""
+"""6월 리포트·파이프라인 예측 적중률 요약.
+
+``output/report_2026.06.html`` 의 고확신·중확신 행을 파싱해 20% 급등 적중률·Hit@K 를 출력합니다.
+v12/v13 변경 후 리포트 재생성 뒤 정확도 회귀 여부를 빠르게 확인할 때 사용합니다.
+
+실행: ``python scripts/diag_pred_accuracy_jun.py`` (프로젝트 루트, PYTHONPATH 불필요)
+"""
 from __future__ import annotations
 
 import json

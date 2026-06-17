@@ -76,6 +76,7 @@ class PredictionRow:
     reasons: list[str]
     ml_prob: float | None = None
     momentum_score: float = 0.0
+    news_context_score: float = 0.0
     keyword_hits: int = 0
     mention_score: float = 0.0
     rank_score: float | None = None
@@ -331,6 +332,7 @@ def prediction_row_for_code(
     feedback_ctx: dict[str, object] | None = None,
     theme_weights: dict[str, float] | None = None,
     allow_momentum_only: bool = False,
+    allow_news_context_only: bool = False,
 ) -> PredictionRow | None:
     """
     단일 종목에 대해 키워드 교집합 수 + 종목명 언급 점수로 스코어하고 ``PredictionRow`` 를 만듭니다.
@@ -351,10 +353,10 @@ def prediction_row_for_code(
         return None
     mention_gate = float(config.PRED_MENTION_GATE_MIN)
     if n_hit < min_keyword_hits and mention < mention_gate:
-        if not allow_momentum_only:
+        if not (allow_momentum_only or allow_news_context_only):
             return None
     if n_hit < 1 and mention < mention_gate:
-        if not allow_momentum_only:
+        if not (allow_momentum_only or allow_news_context_only):
             return None
     score = n_hit * 1.0 + mention * 5.0
     tw = theme_weights or {}
