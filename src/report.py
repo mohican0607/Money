@@ -53,7 +53,8 @@ def format_prediction_signal_cell(row: dict[str, Any]) -> str:
     from .snapshot_rebuild_learning import format_theme_sectors_signal_html
 
     theme_bit = format_theme_sectors_signal_html(
-        [str(s).strip() for s in sectors if str(s).strip()]
+        [str(s).strip() for s in sectors if str(s).strip()],
+        source=str(row.get("market_theme_source") or "theme"),
     )
     if theme_bit and theme_bit not in base:
         return base + theme_bit

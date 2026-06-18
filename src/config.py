@@ -56,16 +56,70 @@ def _float_env(key: str, default: float) -> float:
 ROOT = Path(__file__).resolve().parents[1]
 # CWD와 무관하게 프로젝트 루트의 .env 를 읽음 (IDE/다른 폴더에서 실행 시 키 누락 방지)
 load_dotenv(ROOT / ".env")
+
+
+def _configure_process_temp_dir() -> Path:
+    """
+  OS·Python tempfile·joblib 등이 쓰는 임시 디렉터리.
+
+  ``MONEY_TEMP_DIR``(권장: ``F:\\temp\\Money\\tmp``) 로 C: 사용자 Temp 사용을 피합니다.
+  """
+    import tempfile
+
+    raw = _env_str("MONEY_TEMP_DIR")
+    if raw:
+        temp_dir = Path(raw)
+    elif Path("F:/").exists():
+        temp_dir = Path("F:/temp/Money/tmp")
+    else:
+        temp_dir = ROOT / "data" / "cache" / "_tmp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    resolved = str(temp_dir.resolve())
+    os.environ["TEMP"] = resolved
+    os.environ["TMP"] = resolved
+    os.environ["TMPDIR"] = resolved
+    os.environ["JOBLIB_TEMP_FOLDER"] = resolved
+    tempfile.tempdir = resolved
+    return temp_dir
+
+
+def _resolve_train_cache_dir() -> Path:
+    """ML joblib·학습 스냅샷·예측 freeze 등 무거운 학습 캐시(``MONEY_CACHE_DIR/train``)."""
+    explicit = _env_str("MONEY_TRAIN_CACHE_DIR")
+    if explicit:
+        return Path(explicit)
+    runtime = _env_str("MONEY_CACHE_DIR")
+    if runtime:
+        return Path(runtime) / "train"
+    return ROOT / "data" / "cache" / "train"
+
+
+def _resolve_listing_cache_dir() -> Path:
+    """네이버 업종 코드·업종명 API 캐시(``MONEY_CACHE_DIR/listing``)."""
+    explicit = _env_str("MONEY_LISTING_CACHE_DIR")
+    if explicit:
+        return Path(explicit)
+    runtime = _env_str("MONEY_CACHE_DIR")
+    if runtime:
+        return Path(runtime) / "listing"
+    return ROOT / "data" / "cache" / "listing"
+
+
+TEMP_DIR = _configure_process_temp_dir()
 DATA_DIR = ROOT / "data"
 CACHE_DIR = DATA_DIR / "cache"
+TRAIN_CACHE_DIR = _resolve_train_cache_dir()
+LISTING_META_CACHE_DIR = _resolve_listing_cache_dir()
+TRAIN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+LISTING_META_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR = ROOT / "output"
 # ``python main.py YYYYMMDD`` / 일일 N 실행 시 기준일별 블록을 한 파일에 누적·같은 N 재실행 시 해당 블록만 갱신.
 REPORT_DATED_ROLLUP_HTML = OUTPUT_DIR / "report_dated_by_n.html"
 # 과거 급등–뉴스 ``BreakoutEvent`` 학습 스냅샷(JSON). ``main.py`` 기본이 로드·증분 병합, ``--no-train-snapshot`` 로 끔.
-TRAIN_SNAPSHOT_PATH = CACHE_DIR / "train" / "breakout_train_snapshot.json"
+TRAIN_SNAPSHOT_PATH = TRAIN_CACHE_DIR / "breakout_train_snapshot.json"
 # 관측일(T)별 예측 후보 고정 캐시: 같은 T 재실행 시 예측 종목/예측수익률을 동일하게 유지.
 # 갱신은 해당 T에 대한 최초 예측 저장, 또는 main.py --rebuild-train-snapshot 실행 시에만.
-PREDICTION_FREEZE_PATH = CACHE_DIR / "train" / "prediction_freeze_by_t.json"
+PREDICTION_FREEZE_PATH = TRAIN_CACHE_DIR / "prediction_freeze_by_t.json"
 
 NAVER_CLIENT_ID = _env_str("NAVER_CLIENT_ID")
 NAVER_CLIENT_SECRET = _env_str("NAVER_CLIENT_SECRET")
@@ -124,7 +178,24 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 13
+PREDICTION_FREEZE_SCHEMA_VERSION = 15
+
+# --- 고확신 정밀 게이트(다중 신호 합의) ---
+PRED_PRECISION_GATE_ENABLED = os.getenv("PRED_PRECISION_GATE_ENABLED", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+PRED_PRECISION_MAX_HIGH = _positive_int_env("PRED_PRECISION_MAX_HIGH", 10)
+PRED_PRECISION_MIN_CONVICTION = _float_env("PRED_PRECISION_MIN_CONVICTION", 0.48)
+PRED_PRECISION_MIN_PILLARS = _positive_int_env("PRED_PRECISION_MIN_PILLARS", 2)
+PRED_PRECISION_MAX_RANK = _positive_int_env("PRED_PRECISION_MAX_RANK", 12)
+PRED_PRECISION_ML_FLOOR = _float_env("PRED_PRECISION_ML_FLOOR", 0.06)
+PRED_PRECISION_BUCKET_MIN_SAMPLES = _positive_int_env("PRED_PRECISION_BUCKET_MIN_SAMPLES", 8)
+PRED_PRECISION_BUCKET_MIN_RATIO = _float_env("PRED_PRECISION_BUCKET_MIN_RATIO", 0.28)
+PRED_PRECISION_CODE_MIN_TRIES = _positive_int_env("PRED_PRECISION_CODE_MIN_TRIES", 5)
+PRED_PRECISION_CODE_MIN_HIT_RATE = _float_env("PRED_PRECISION_CODE_MIN_HIT_RATE", 0.12)
 
 # --- 랭킹 우선 예측(구조적 정확도 개선) ---
 # 1: ML 확률·순위 기반, pred_high=확신구간 / 0: 레거시(표시%≥20%)
@@ -156,14 +227,16 @@ PRED_CHRONIC_MISS_MIN_SAMPLES = _positive_int_env("PRED_CHRONIC_MISS_MIN_SAMPLES
 PRED_CHRONIC_MISS_RATIO_MAX = _float_env("PRED_CHRONIC_MISS_RATIO_MAX", 0.18)
 PRED_OUTPUT_MAX = _positive_int_env("PRED_OUTPUT_MAX", 10)
 PRED_MID_OUTPUT_MAX = _positive_int_env("PRED_MID_OUTPUT_MAX", 10)
+# 예측 전용일(미래 거래일): 비교표에 최소 이만큼 상위 후보를 노출
+PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 15)
 # 고/중 확신: ML 급등 확률 하한(순위 상위 슬롯에만 적용)
-PRED_ML_HIGH_CONFIDENCE_PROB = max(0.08, _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.10))
+PRED_ML_HIGH_CONFIDENCE_PROB = max(0.08, _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.12))
 PRED_ML_MID_CONFIDENCE_PROB = max(0.04, _float_env("PRED_ML_MID_CONFIDENCE_PROB", 0.07))
 PRED_ML_MIN_OUTPUT_PROB = _float_env("PRED_ML_MIN_OUTPUT_PROB", 0.025)
 # 고확신: 당일 키워드 교집합·종목명 언급 최소(ML 과대확률 오탐 억제)
 PRED_ML_HIGH_MIN_KEYWORD_HITS = _positive_int_env("PRED_ML_HIGH_MIN_KEYWORD_HITS", 2)
 # 고확신: 풀 1위 ML 확률 대비 상대 하한(0.55 = 1위의 55% 미만이면 고확신 제외)
-PRED_ML_HIGH_RELATIVE_PROB = _float_env("PRED_ML_HIGH_RELATIVE_PROB", 0.68)
+PRED_ML_HIGH_RELATIVE_PROB = _float_env("PRED_ML_HIGH_RELATIVE_PROB", 0.72)
 PRED_HEURISTIC_HIGH_RANK_MAX = _positive_int_env("PRED_HEURISTIC_HIGH_RANK_MAX", 0)
 PRED_HEURISTIC_MID_RANK_MAX = _positive_int_env("PRED_HEURISTIC_MID_RANK_MAX", 0)
 PRED_HEURISTIC_MIN_SCORE = _float_env("PRED_HEURISTIC_MIN_SCORE", 3.5)
@@ -297,6 +370,18 @@ REPORT_SKIP_DISCLOSURE_FETCH = os.getenv("REPORT_SKIP_DISCLOSURE_FETCH", "0").st
     "yes",
     "on",
 )
+
+# 리포트 「당일 테마 요약」 길이(0이면 해당 블록 생략)
+REPORT_THEME_SUMMARY_MAX_SECTORS = _positive_int_env("REPORT_THEME_SUMMARY_MAX_SECTORS", 4)
+REPORT_THEME_SUMMARY_MAX_STOCKS_PER_SECTOR = _positive_int_env(
+    "REPORT_THEME_SUMMARY_MAX_STOCKS_PER_SECTOR", 3
+)
+REPORT_THEME_SUMMARY_MAX_NARRATIVES = _positive_int_env("REPORT_THEME_SUMMARY_MAX_NARRATIVES", 0)
+REPORT_THEME_SUMMARY_MAX_SEED_DETAILS = _positive_int_env("REPORT_THEME_SUMMARY_MAX_SEED_DETAILS", 0)
+REPORT_THEME_SUMMARY_MAX_LEADERS_25 = _positive_int_env("REPORT_THEME_SUMMARY_MAX_LEADERS_25", 0)
+REPORT_THEME_SUMMARY_SHOW_EXTRA_KW = os.getenv(
+    "REPORT_THEME_SUMMARY_SHOW_EXTRA_KW", "0"
+).strip().lower() in ("1", "true", "yes", "on")
 
 # 캘린더 **일자별** 뉴스 캐시를 채울 때 동시에 처리할 일 수(기본 4). 1이면 기존처럼 순차.
 # 네이버 API 한도(429)가 나오면 1~2로 낮추세요.

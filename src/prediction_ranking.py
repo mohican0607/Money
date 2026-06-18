@@ -10,7 +10,7 @@ import math
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from . import config, pred_hybrid
+from . import config, pred_hybrid, prediction_accuracy_cache
 
 if TYPE_CHECKING:
     from .predict import PredictionRow
@@ -239,6 +239,13 @@ def finalize_ranked_predictions(
 
     if config.PRED_RANKING_MODE:
         pred_hybrid.assign_hybrid_confidence_tiers(pool, regime_scale=r_scale)
+        from . import pred_precision_gate
+
+        pred_precision_gate.refine_confidence_tiers(
+            pool,
+            feedback_ctx=prediction_accuracy_cache.build_feedback_context(),
+            regime_scale=r_scale,
+        )
         pool = sorted(pool, key=rank_score_for_row, reverse=True)
     else:
         for pos, row in enumerate(pool, start=1):

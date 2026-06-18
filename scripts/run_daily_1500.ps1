@@ -26,6 +26,12 @@ Set-Location -LiteralPath $RepoRoot
 
 $env:MOCK_NEWS = "0"
 $env:PYTHONUTF8 = "1"
+if (-not $env:MONEY_TEMP_DIR) { $env:MONEY_TEMP_DIR = "F:\temp\Money\tmp" }
+if (-not $env:MONEY_CACHE_DIR) { $env:MONEY_CACHE_DIR = "F:\temp\Money\cache" }
+$env:TEMP = $env:MONEY_TEMP_DIR
+$env:TMP = $env:MONEY_TEMP_DIR
+$env:JOBLIB_TEMP_FOLDER = $env:MONEY_TEMP_DIR
+New-Item -ItemType Directory -Force -Path $env:MONEY_TEMP_DIR, $env:MONEY_CACHE_DIR | Out-Null
 
 $CheckPy = Join-Path $PSScriptRoot "check_trading_day_for_daily.py"
 & $PythonExe $CheckPy

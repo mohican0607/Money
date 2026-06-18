@@ -56,7 +56,7 @@ _THEME_SECTORS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("신재생·에너지 관련주", ("태양광", "풍력", "신재생", "ESS", "에너지저장")),
     ("통신·플랫폼 관련주", ("통신", "5G", "6G", "플랫폼", "클라우드", "SaaS", "IT", "네트워크", "네트웍")),
     ("섬유·패션 관련주", ("섬유", "직물", "원단", "패션", "의류", "방직", "섬유소재")),
-    ("자동차·부품 관련주", ("자동차부품", "자동차", "부품", "전장", "완성차", "모빌리티", "충전")),
+    ("자동차·부품 관련주", ("자동차부품", "자동차", "부품", "전장", "완성차", "모빌리티", "충전", "운송장비", "샤시", "정밀가공")),
     ("미국·글로벌 증시 연관주", ("미국증시", "나스닥", "다우", "뉴욕증시", "S&P", "연준", "FOMC")),
     ("환율·금리 민감주", ("환율", "원달러", "금리", "한국은행", "기준금리", "채권")),
     ("수출·무역 관련주", ("수출", "무역", "관세", "수입", "환헤지")),
@@ -348,12 +348,16 @@ def _early_news_rows_for_trading_day(
 def _enrich_stock_news_profile(
     stock: dict[str, Any],
     early_rows: list[tuple[date, dict[str, str]]],
+    *,
+    seeds: list[str] | None = None,
+    top_kw: list[str] | None = None,
 ) -> None:
     """
     상한가·급등 종목 dict에 종목 직접 언급 뉴스 키워드를 병합합니다.
 
     ``_stock_dict`` 의 시장 blob 교집합만으로는 테마 신호가 비는 경우가 많아,
     ``breakout_keywords_for_stock`` 프로필을 ``theme_keywords`` 로 덧붙입니다.
+    시장 전체 키워드는 종목에 주입하지 않습니다(오분류 방지).
     """
     code = str(stock.get("code") or "").zfill(6)
     name = str(stock.get("name") or "").strip()
@@ -520,7 +524,7 @@ def _best_effort_theme_label(
         return _compact_sector_label(stem_relaxed)
 
     kw_label = _sector_label_from_keywords(
-        _stock_theme_keywords(stock),
+        _stock_specific_theme_keywords(stock),
         seeds=seed_l,
         top_kw=top_l,
         min_match=_THEME_WEAK_FALLBACK_MIN,
@@ -564,7 +568,7 @@ def _resolve_limit_up_theme_sector(
         return label
 
     kw_label = _sector_label_from_keywords(
-        _stock_theme_keywords(stock),
+        _stock_specific_theme_keywords(stock),
         seeds=seeds,
         top_kw=top_kw,
     )
@@ -590,6 +594,10 @@ def _resolve_limit_up_theme_sector(
     alias_label = _sector_label_from_name_aliases(stock, min_alias_len=2)
     if alias_label:
         return _compact_sector_label(alias_label)
+
+    listing = _resolve_listing_industry_sector(stock)
+    if listing:
+        return listing
 
     return ""
 
@@ -618,6 +626,12 @@ def _ensure_limit_up_theme_sectors(
             continue
         code = str(stock.get("code") or "").zfill(6)
         if not code:
+            continue
+        strong = _strong_name_stem_sector(stock)
+        if strong:
+            compact = _compact_sector_label(strong)
+            stock["theme_sector"] = compact
+            stock_sector_map[code] = _full_sector_label(compact)
             continue
         existing = str(stock.get("theme_sector") or "").strip()
         if not existing and code in stock_sector_map:
@@ -687,8 +701,8 @@ def _ensure_limit_up_theme_sectors(
         return
 
     top_label, top_cnt = themed_counts.most_common(1)[0]
-    # 당일 상한가 다수가 같은 테마여도, 종목 적합도가 있을 때만 동일 테마 부여
-    if top_cnt >= 2:
+    min_peer_cnt = 2
+    if top_cnt >= min_peer_cnt:
         compact = _compact_sector_label(top_label)
         full_top = _full_sector_label(top_label)
         aliases = _sector_aliases_for_label(full_top)
@@ -696,18 +710,17 @@ def _ensure_limit_up_theme_sectors(
             code = str(stock.get("code") or "").zfill(6)
             if not code:
                 continue
-            if aliases:
-                sc = _score_stock_sector_match(stock, aliases)
-                if sc + 1e-9 < _LIMIT_UP_PEER_SCORE_MIN:
-                    stem = _assign_sector_by_name_stem(
-                        stock, seeds=seeds, top_kw=top_kw, relax_news=True
-                    )
-                    if stem:
-                        stock["theme_sector"] = _compact_sector_label(stem)
-                        stock_sector_map[code] = _full_sector_label(stem)
-                    continue
-            stock["theme_sector"] = compact
-            stock_sector_map[code] = full_top
+            stem = _strong_name_stem_sector(stock)
+            if stem:
+                stock["theme_sector"] = _compact_sector_label(stem)
+                stock_sector_map[code] = _full_sector_label(stem)
+                continue
+            if not aliases:
+                continue
+            sc = _score_stock_sector_match(stock, aliases)
+            if sc + 1e-9 >= _LIMIT_UP_PEER_SCORE_MIN:
+                stock["theme_sector"] = compact
+                stock_sector_map[code] = full_top
 
 
 _THEME_FLOW_STOCK_KEYS = (
@@ -740,6 +753,36 @@ def _stock_dict(
     }
 
 
+def _listing_industry_sector_label(code: str, name: str = "") -> str:
+    """네이버 KRX 업종(기사 없을 때 업종 pill)."""
+    try:
+        from . import stock_listing_sector as sls
+
+        lab = sls.compact_label_for_code(code, name=name)
+        return _compact_sector_label(lab) if lab else ""
+    except Exception:
+        return ""
+
+
+def _stock_has_theme_news_evidence(stock: dict[str, Any]) -> bool:
+    """종목 직접 뉴스·강한 이름 stem이 있으면 True(업종 폴백 아님)."""
+    if _strong_name_stem_sector(stock):
+        return True
+    name = str(stock.get("name") or "").strip()
+    for kw in _stock_specific_theme_keywords(stock):
+        if not name or name not in str(kw):
+            return True
+    return False
+
+
+def _resolve_listing_industry_sector(stock: dict[str, Any]) -> str:
+    """종목 뉴스·테마 근거가 없을 때 업종 라벨."""
+    code = str(stock.get("code") or "").zfill(6)
+    if not code:
+        return ""
+    return _listing_industry_sector_label(code, str(stock.get("name") or ""))
+
+
 def _strong_name_stem_sector(stock: dict[str, Any]) -> str:
     """종목명 고유 stem(티웨이·하이닉 등) — 당일 뉴스·키워드보다 우선."""
     name_l = str(stock.get("name") or "").lower()
@@ -764,12 +807,11 @@ def _resolve_stock_theme_sector(
 ) -> str:
     """종목 dict에 붙일 테마 라벨(25%↑·상한은 하한 완화·다단계 폴백)."""
     code = str(stock.get("code") or "").zfill(6)
-    if stock_sector_map and code in stock_sector_map:
-        return _compact_sector_label(stock_sector_map[code])
-
     strong_stem = _strong_name_stem_sector(stock)
     if strong_stem:
         return _compact_sector_label(strong_stem)
+    if stock_sector_map and code in stock_sector_map:
+        return _compact_sector_label(stock_sector_map[code])
 
     relax = near_limit_up or strong_mover or _theme_relax_for_stock(stock)
     if near_limit_up or strong_mover:
@@ -957,6 +999,32 @@ def _stock_theme_keywords(stock: dict[str, Any]) -> list[str]:
     return list(features.filter_specific_keywords(parts))
 
 
+def _stock_specific_theme_keywords(stock: dict[str, Any]) -> list[str]:
+    """종목명·종목 직접 뉴스 근거 키워드만(시장 전체·범용 키워드 제외)."""
+    parts: list[str] = []
+    name = str(stock.get("name") or "").strip()
+    name_l = name.lower()
+    name_tokens = _stock_name_tokens(stock)
+    overlap = stock.get("name_keyword_overlap_with_news")
+    if isinstance(overlap, list):
+        for x in overlap:
+            s = str(x).strip()
+            if s and s.lower() not in _GENERIC_THEME_KW:
+                parts.append(s)
+    raw_theme = stock.get("theme_keywords")
+    if isinstance(raw_theme, list):
+        for kw in raw_theme:
+            kl = str(kw).strip().lower()
+            if not kl or kl in _GENERIC_THEME_KW:
+                continue
+            if kl in name_l or any(kl in t or t in kl for t in name_tokens if len(t) >= 2):
+                parts.append(str(kw).strip())
+                continue
+            if name and name in str(kw):
+                parts.append(str(kw).strip())
+    return list(features.filter_specific_keywords(parts))
+
+
 def _score_keywords_against_sector(
     keywords: list[str],
     aliases: tuple[str, ...],
@@ -995,7 +1063,7 @@ def _score_stock_sector_match(stock: dict[str, Any], aliases: tuple[str, ...]) -
     """종목–섹터 적합도(클수록 강함). 0이면 미매칭."""
     name = str(stock.get("name") or "").lower()
     name_tokens = _stock_name_tokens(stock)
-    theme_kw = _stock_theme_keywords(stock)
+    theme_kw = _stock_specific_theme_keywords(stock)
     best = _score_keywords_against_sector(theme_kw, aliases)
     overlap_blob = " ".join(str(x).lower() for x in theme_kw)
     for alias in aliases:
@@ -1108,6 +1176,9 @@ def _best_sector_label_for_stock(
     relax_news: bool = False,
 ) -> str:
     """종목 고유 신호(이름·뉴스·예측 키워드)로 최적 섹터 1개. 없으면 빈 문자열."""
+    strong_stem = _strong_name_stem_sector(stock)
+    if strong_stem:
+        return strong_stem
     best_label = ""
     best_score = 0
     for sector_label, aliases in _THEME_SECTORS:
@@ -1862,15 +1933,28 @@ def build_market_theme_flow(
                 )
         strong_codes = {str(s.get("code") or "").zfill(6) for s in leaders_25}
         for s in leaders_25:
-            _enrich_stock_news_profile(s, early_rows)
+            _enrich_stock_news_profile(
+                s, early_rows, seeds=seed_hits, top_kw=top_kw
+            )
         for s in assign_pool:
             c = str(s.get("code") or "").zfill(6)
             if c and c not in strong_codes:
-                _enrich_stock_news_profile(s, early_rows)
+                _enrich_stock_news_profile(
+                    s, early_rows, seeds=seed_hits, top_kw=top_kw
+                )
 
         stock_sector_map = _assign_stock_sectors(
             assign_pool, seeds=seed_hits, top_kw=top_kw
         )
+        try:
+            from . import stock_listing_sector as sls
+
+            prefetch = list(
+                {str(s.get("code") or "").zfill(6) for s in leaders_25 + assign_pool[:60]}
+            )
+            sls.prefetch_industry_codes(prefetch[:100])
+        except Exception:
+            pass
         _attach_theme_sectors_to_stocks(
             leaders_25, stock_sector_map, seeds=seed_hits, top_kw=top_kw
         )
@@ -1950,8 +2034,8 @@ def theme_sectors_for_code(row: dict[str, Any] | None, code: str) -> list[str]:
     return []
 
 
-def format_theme_sectors_signal_html(sectors: list[str]) -> str:
-    """비교 표 ``예측 신호`` 열에 붙일 당일 테마 pill HTML."""
+def format_theme_sectors_signal_html(sectors: list[str], *, source: str = "theme") -> str:
+    """비교 표 ``예측 신호`` 열에 붙일 업종·테마 pill HTML."""
     labels = [_compact_sector_label(s) for s in sectors if str(s).strip()]
     if not labels:
         return ""
@@ -1960,10 +2044,11 @@ def format_theme_sectors_signal_html(sectors: list[str]) -> str:
         f'background:#1a2e42;color:var(--ok)">{html.escape(l, quote=True)}</span> '
         for l in labels[:2]
     )
+    tip = "업종" if source == "listing" else "당일 테마"
     return (
         '<br/><span style="font-size:0.78rem;line-height:1.6" '
-        'title="25%↑ 이상 급등·예측 종목의 당일 테마(참고용)">'
-        f"테마 {pills}</span>"
+        f'title="{tip}(참고용)">'
+        f"{pills}</span>"
     )
 
 
@@ -2036,6 +2121,12 @@ def format_market_theme_flow_html(
     narratives = list(row.get("theme_narratives") or []) or _build_theme_narratives(
         row, sector_summaries=sector_summaries
     )
+    max_narr = int(config.REPORT_THEME_SUMMARY_MAX_NARRATIVES)
+    max_sectors = int(config.REPORT_THEME_SUMMARY_MAX_SECTORS)
+    max_stocks_sector = int(config.REPORT_THEME_SUMMARY_MAX_STOCKS_PER_SECTOR)
+    max_seed = int(config.REPORT_THEME_SUMMARY_MAX_SEED_DETAILS)
+    max_leaders = int(config.REPORT_THEME_SUMMARY_MAX_LEADERS_25)
+    show_extra_kw = bool(config.REPORT_THEME_SUMMARY_SHOW_EXTRA_KW)
 
     stat_pills = []
     if n25:
@@ -2072,43 +2163,60 @@ def format_market_theme_flow_html(
             + "</p>"
         )
 
-    if narratives:
+    if narratives and max_narr > 0:
         parts.append('<h4 class="combo-tip-h" style="margin:0 0 6px">시장·테마 요약</h4>')
         parts.append("<ul class=\"nl theme-sector-block\" style=\"margin:0 0 12px\">")
-        for sent in narratives:
+        for sent in narratives[:max_narr]:
             parts.append(f"<li style=\"margin-bottom:8px;line-height:1.5\">{_esc(sent)}</li>")
+        if len(narratives) > max_narr:
+            parts.append(
+                f'<li style="margin-bottom:4px;color:var(--muted);font-size:0.8rem">'
+                f"… 외 {len(narratives) - max_narr}줄 (상세는 테마 25%↑ 리포트)</li>"
+            )
         parts.append("</ul>")
 
     if sector_summaries:
+        shown_sectors = [
+            cl
+            for cl in sector_summaries
+            if isinstance(cl, dict) and str(cl.get("sector") or "") and (cl.get("top_stocks") or [])
+        ]
+        if max_sectors > 0:
+            shown_sectors = shown_sectors[:max_sectors]
         parts.append('<h4 class="combo-tip-h" style="margin:0 0 6px">테마별 급등(종목명·등락)</h4>')
         parts.append('<ul class="nl theme-sector-block" style="margin:0 0 12px">')
-        for cl in sector_summaries:
-            if not isinstance(cl, dict):
-                continue
+        for cl in shown_sectors:
             sector = str(cl.get("sector") or "")
             cnt = int(cl.get("count") or 0)
             lim_n = int(cl.get("limit_up_count") or 0)
             tops = cl.get("top_stocks") or []
-            if not sector or not tops:
-                continue
             title = f"{_esc(sector)} · {cnt}종"
             if lim_n:
                 title += f" (상한 {lim_n})"
+            cap = max(1, max_stocks_sector)
             stock_bits = [
                 _esc(_format_stock_brief(s, with_news=True, with_theme=True))
-                for s in tops[:8]
+                for s in tops[:cap]
                 if isinstance(s, dict)
             ]
+            more = max(0, cnt - cap)
+            tail = f' <span style="color:var(--muted);font-size:0.78rem">외 {more}종</span>' if more else ""
             parts.append(
                 f'<li style="margin-bottom:8px;line-height:1.55">'
                 f"<strong>{title}</strong><br/>"
-                f'<span style="font-size:0.82rem;color:#d0dce8">{", ".join(stock_bits)}</span>'
+                f'<span style="font-size:0.82rem;color:#d0dce8">{", ".join(stock_bits)}{tail}</span>'
                 f"</li>"
+            )
+        hidden_sectors = max(0, len(sector_summaries) - len(shown_sectors))
+        if hidden_sectors:
+            parts.append(
+                f'<li style="color:var(--muted);font-size:0.8rem">'
+                f"… 테마 {hidden_sectors}개 더 (report_theme_25pct_*.html 참고)</li>"
             )
         parts.append("</ul>")
 
     seed_details = row.get("theme_seed_details") or []
-    if not seed_details and seeds and sector_summaries:
+    if not seed_details and seeds and sector_summaries and max_seed > 0:
         seed_details = _build_seed_theme_details(
             list(seeds),
             [x for x in leaders_20 if isinstance(x, dict)],
@@ -2118,7 +2226,7 @@ def format_market_theme_flow_html(
     seed_details = [
         sd for sd in seed_details if isinstance(sd, dict) and (sd.get("top_stocks") or [])
     ]
-    if seed_details:
+    if seed_details and max_seed > 0:
         parts.append(
             '<h4 class="combo-tip-h" style="margin:0 0 6px">'
             "테마 시드 (early 뉴스 적중 → 당일 급등 연결)</h4>"
@@ -2126,7 +2234,7 @@ def format_market_theme_flow_html(
         parts.append(
             '<ul class="nl theme-seed-block" style="margin:0 0 12px">'
         )
-        for sd in seed_details:
+        for sd in seed_details[:max_seed]:
             if not isinstance(sd, dict):
                 continue
             seed = str(sd.get("seed") or "")
@@ -2166,6 +2274,11 @@ def format_market_theme_flow_html(
                 + "</li>"
             )
         parts.append("</ul>")
+        if len(seed_details) > max_seed:
+            parts.append(
+                f'<p style="margin:0 0 8px;font-size:0.78rem;color:var(--muted)">'
+                f"… 테마 시드 {len(seed_details) - max_seed}개 더</p>"
+            )
         generic_seeds = [
             s
             for s in seeds
@@ -2181,28 +2294,29 @@ def format_market_theme_flow_html(
                 '<p style="margin:0 0 10px;font-size:0.78rem;color:var(--muted)">'
                 f"<strong>시장·거시 시드</strong> {g_pills}</p>"
             )
-    elif seeds:
+    elif seeds and max_seed > 0:
         seed_pills = "".join(
             f'<span class="pill" style="margin:2px 4px 2px 0">{_esc(str(s))}</span>'
-            for s in seeds[:18]
+            for s in seeds[: min(8, max_seed)]
         )
         parts.append('<h4 class="combo-tip-h" style="margin:0 0 6px">테마 시드 (early 뉴스 적중)</h4>')
         parts.append(
             f'<p class="theme-seed-pills" style="margin:0 0 10px;line-height:1.9">{seed_pills}</p>'
         )
 
-    extra_kw = [k for k in top_kw if str(k).lower() not in {str(s).lower() for s in seeds}]
-    if extra_kw:
-        kw_pills = "".join(
-            f'<span class="pill" style="margin:2px 4px 2px 0;font-size:0.72rem">{_esc(str(k))}</span>'
-            for k in extra_kw[:14]
-        )
-        parts.append(
-            '<p style="margin:0 0 10px;font-size:0.78rem;color:var(--muted)">'
-            f"<strong>기타 early 키워드</strong> {kw_pills}</p>"
-        )
+    if show_extra_kw:
+        extra_kw = [k for k in top_kw if str(k).lower() not in {str(s).lower() for s in seeds}]
+        if extra_kw:
+            kw_pills = "".join(
+                f'<span class="pill" style="margin:2px 4px 2px 0;font-size:0.72rem">{_esc(str(k))}</span>'
+                for k in extra_kw[:8]
+            )
+            parts.append(
+                '<p style="margin:0 0 10px;font-size:0.78rem;color:var(--muted)">'
+                f"<strong>기타 early 키워드</strong> {kw_pills}</p>"
+            )
 
-    if leaders_25:
+    if leaders_25 and max_leaders > 0:
         lim_note = (
             f" (그중 상한 {_esc(str(n_lim))}종)"
             if n_lim and n_lim < len(leaders_25)
@@ -2213,6 +2327,7 @@ def format_market_theme_flow_html(
             f"{_STRONG_MOVER_PCT:.0f}%↑ — 종목·테마{lim_note}</h4>"
         )
         parts.append('<ul class="nl theme-strong-mover-block" style="margin:0 0 12px">')
+        shown_leaders: list[dict[str, Any]] = []
         for s in leaders_25:
             if not isinstance(s, dict):
                 continue
@@ -2226,16 +2341,27 @@ def format_market_theme_flow_html(
                 )
             if not theme:
                 continue
+            shown_leaders.append({**s, "_theme_disp": theme})
+        shown_leaders.sort(
+            key=lambda x: float(x.get("return_pct") or 0.0),
+            reverse=True,
+        )
+        for s in shown_leaders[:max_leaders]:
             brief = _format_stock_brief(s, with_news=True, with_theme=False)
             parts.append(
                 f'<li style="margin-bottom:6px;line-height:1.55">'
-                f"<strong>{_esc(theme)}</strong> · {_esc(brief)}</li>"
+                f"<strong>{_esc(str(s.get('_theme_disp') or ''))}</strong> · {_esc(brief)}</li>"
+            )
+        if len(shown_leaders) > max_leaders:
+            parts.append(
+                f'<li style="color:var(--muted);font-size:0.8rem">'
+                f"… 25%↑ {len(shown_leaders) - max_leaders}종 더</li>"
             )
         parts.append("</ul>")
-    elif leaders_20:
+    elif leaders_20 and max_leaders > 0:
         top20_lines = [
             _esc(_format_stock_brief(s, with_news=True))
-            for s in leaders_20[:12]
+            for s in leaders_20[:max_leaders]
             if isinstance(s, dict)
         ]
         parts.append(
@@ -2250,8 +2376,8 @@ def format_market_theme_flow_html(
         )
 
     parts.append(
-        "<p class=\"combo-tip-empty\" style=\"margin:10px 0 0;font-size:0.78em\">"
-        "자동 생성·참고용입니다. 종목명·뉴스 키워드·당일 등락을 휴리스틱으로 묶었으며 인과 단정이 아닙니다.</p>"
+        "<p class=\"combo-tip-empty\" style=\"margin:8px 0 0;font-size:0.72em;color:var(--muted)\">"
+        "자동·참고용. 상세 목록은 report_theme_25pct_*.html</p>"
     )
     return "".join(parts)
 
@@ -2369,10 +2495,18 @@ def _patch_flow_row_strong_movers_from_compare(
         if code in known:
             for s in leaders_25:
                 if str(s.get("code") or "").zfill(6) == code:
-                    _enrich_stock_news_profile(s, early_rows)
+                    _enrich_stock_news_profile(
+                        s, early_rows,
+                        seeds=list(flow_row.get("theme_seed_hits") or []),
+                        top_kw=list(flow_row.get("top_keywords_sample") or []),
+                    )
             continue
         sd = _stock_dict_from_compare_row(r, listing_names, ret_pts, early_rows=early_rows)
-        _enrich_stock_news_profile(sd, early_rows)
+        _enrich_stock_news_profile(
+            sd, early_rows,
+            seeds=list(flow_row.get("theme_seed_hits") or []),
+            top_kw=list(flow_row.get("top_keywords_sample") or []),
+        )
         leaders_25.append(sd)
         known.add(code)
 
@@ -2434,21 +2568,71 @@ def _dominant_sector_fallback_for_stock(
 def _guaranteed_theme_label_for_compare_row(
     stock: dict[str, Any],
     flow_row: dict[str, Any],
+    *,
+    seeds: list[str] | None = None,
+    top_kw: list[str] | None = None,
 ) -> str:
-    """25%↑ 비교 표 행 — ``_best_effort_theme_label`` (기타 없음)."""
-    return _best_effort_theme_label(stock, flow_row)
+    """25%↑ 비교 표 행 — 종목·당일 뉴스·동료 급등에서 테마를 최대한 채움(빈 칸 최소화)."""
+    seed_l = list(seeds if seeds is not None else flow_row.get("theme_seed_hits") or [])
+    top_l = list(top_kw if top_kw is not None else flow_row.get("top_keywords_sample") or [])
+    label = _best_effort_theme_label(stock, flow_row, seeds=seed_l, top_kw=top_l)
+    if label:
+        return label
+
+    kw_label = _sector_label_from_keywords(
+        _stock_specific_theme_keywords(stock),
+        seeds=seed_l,
+        top_kw=top_l,
+        min_match=_LIMIT_UP_WEAK_SCORE_MIN,
+    )
+    if kw_label:
+        return _compact_sector_label(kw_label)
+
+    summaries = flow_row.get("theme_sector_summaries") or []
+    rp = _stock_return_pct_display(stock)
+    if summaries and _is_strong_mover_return_pct(rp):
+        best = max(
+            (s for s in summaries if isinstance(s, dict) and str(s.get("sector") or "").strip()),
+            key=lambda s: (int(s.get("limit_up_count") or 0), int(s.get("count") or 0)),
+            default=None,
+        )
+        if best:
+            sector = str(best.get("sector") or "").strip()
+            aliases = _sector_aliases_for_label(sector)
+            sc = _score_stock_sector_match(stock, aliases) if aliases else 0
+            if sc + 1e-9 >= _LIMIT_UP_PEER_SCORE_MIN:
+                return _compact_sector_label(sector)
+
+    for seed in seed_l[:16]:
+        sl = str(seed).strip()
+        if len(sl) < 2:
+            continue
+        for sector_label, aliases in _THEME_SECTORS:
+            if not _sector_active_in_news(aliases, seed_l, top_l):
+                continue
+            alias_low = {str(a).lower() for a in aliases}
+            if sl.lower() not in alias_low and sl.lower() not in sector_label.lower():
+                continue
+            sc = _score_stock_sector_match(stock, aliases)
+            if sc > 0:
+                return _compact_sector_label(sector_label)
+
+    return ""
 
 
 def _apply_theme_to_compare_row(
     compare_row: dict[str, Any],
     sectors: list[str],
+    *,
+    source: str = "theme",
 ) -> None:
-    """``market_theme_sectors``·``prediction_signal_html`` 에 테마 pill을 반영."""
+    """``market_theme_sectors``·``prediction_signal_html`` 에 업종·테마 pill을 반영."""
     compare_row["market_theme_sectors"] = sectors
+    compare_row["market_theme_source"] = source if sectors else ""
     if not sectors:
         return
     base = str(compare_row.get("prediction_signal_html") or "—")
-    theme_bit = format_theme_sectors_signal_html(sectors)
+    theme_bit = format_theme_sectors_signal_html(sectors, source=source)
     if theme_bit and theme_bit not in base:
         compare_row["prediction_signal_html"] = base + theme_bit
 
@@ -2461,14 +2645,15 @@ def _theme_labels_for_compare_row(
     early_rows: list[tuple[date, dict[str, str]]],
     seeds: list[str],
     top_kw: list[str],
-) -> list[str]:
-    """비교 표 25%↑ 행용 테마(종목 뉴스·동료 spillover·당일 주도 테마 폴백)."""
+) -> tuple[list[str], str]:
+    """비교 표 25%↑ 행용 테마·업종(종목 뉴스·업종 폴백)."""
     ret_pts = _actual_return_pct_points(compare_row)
     if ret_pts is None or ret_pts + 1e-9 < _STRONG_MOVER_PCT:
-        return []
+        return [], ""
     if ret_pts < 0:
-        return []
+        return [], ""
 
+    source = "theme"
     code = str(compare_row.get("code", "")).zfill(6)
     stock_map_raw = flow_row.get("theme_stock_sectors")
     stock_map: dict[str, str] = (
@@ -2483,16 +2668,20 @@ def _theme_labels_for_compare_row(
                 continue
             ts = str(leader.get("theme_sector") or "").strip()
             if ts:
-                return [_compact_sector_label(ts)]
+                name = str(compare_row.get("name") or listing_names.get(code, "")).strip()
+                stem = _strong_name_stem_sector({"name": name})
+                if stem:
+                    return [_compact_sector_label(stem)], "theme"
+                return [_compact_sector_label(ts)], "theme"
             break
 
     if code in stock_map:
-        return [_compact_sector_label(str(stock_map[code]))]
+        return [_compact_sector_label(str(stock_map[code]))], "theme"
 
     stock = _stock_dict_from_compare_row(
         compare_row, listing_names, ret_pts, early_rows=early_rows
     )
-    _enrich_stock_news_profile(stock, early_rows)
+    _enrich_stock_news_profile(stock, early_rows, seeds=seeds, top_kw=top_kw)
     ov = theme_overlap_for_code(flow_row, code)
     pred_kw = _pred_keywords_for_theme(
         code,
@@ -2533,22 +2722,31 @@ def _theme_labels_for_compare_row(
 
     if not label:
         kw_label = _sector_label_from_keywords(
-            _stock_theme_keywords(stock), seeds=seeds, top_kw=top_kw
+            _stock_specific_theme_keywords(stock), seeds=seeds, top_kw=top_kw
         )
         if kw_label:
             label = _compact_sector_label(kw_label)
 
     if not label:
-        label = _guaranteed_theme_label_for_compare_row(stock, flow_row)
+        label = _guaranteed_theme_label_for_compare_row(
+            stock, flow_row, seeds=seeds, top_kw=top_kw
+        )
+
+    if not label:
+        label = _resolve_listing_industry_sector(stock)
+        if label:
+            source = "listing"
 
     if label:
+        if source == "theme" and not _stock_has_theme_news_evidence(stock):
+            source = "listing"
         stock_map[code] = _full_sector_label(label)
         flow_row["theme_stock_sectors"] = stock_map
         for s in flow_row.get("theme_leaders_ge_25pct") or []:
             if isinstance(s, dict) and str(s.get("code") or "").zfill(6) == code:
                 s["theme_sector"] = label
 
-    return [label] if label else []
+    return ([label] if label else []), source
 
 
 def enrich_compare_rows_theme_for_day(
@@ -2586,7 +2784,7 @@ def enrich_compare_rows_theme_for_day(
         if ret_pts < 0:
             r["market_theme_sectors"] = []
             continue
-        sectors = _theme_labels_for_compare_row(
+        sectors, theme_src = _theme_labels_for_compare_row(
             flow_row,
             r,
             listing_names=listing_names,
@@ -2594,7 +2792,7 @@ def enrich_compare_rows_theme_for_day(
             seeds=seeds,
             top_kw=top_kw,
         )
-        _apply_theme_to_compare_row(r, sectors)
+        _apply_theme_to_compare_row(r, sectors, source=theme_src)
         code = str(r.get("code", "")).zfill(6)
         ov = theme_overlap_for_code(flow_row, code)
         extra = move_reference.theme_early_overlap_html(

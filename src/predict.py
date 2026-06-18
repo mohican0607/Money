@@ -79,6 +79,9 @@ class PredictionRow:
     news_context_score: float = 0.0
     keyword_hits: int = 0
     mention_score: float = 0.0
+    industry_momentum: float = 0.0
+    industry_theme_overlap: float = 0.0
+    industry_limit_up_heat: float = 0.0
     rank_score: float | None = None
     rank_position: int | None = None
     confidence_tier: str = "none"
@@ -367,8 +370,16 @@ def prediction_row_for_code(
             if v is not None and math.isfinite(float(v)):
                 theme_hit += float(v)
         theme_hit = max(-12.0, min(theme_hit, 12.0))
-        if config.THEME_CARRYOVER_ENABLED:
-            score += float(config.THEME_CARRYOVER_SCORE_SCALE) * theme_hit
+    if config.THEME_CARRYOVER_ENABLED:
+        score += float(config.THEME_CARRYOVER_SCORE_SCALE) * theme_hit
+    try:
+        from .stock_listing_sector import industry_theme_overlap
+
+        ind_ov = industry_theme_overlap(code, kw_news)
+        if ind_ov + 1e-12 >= 0.55:
+            score += 1.8 * ind_ov
+    except Exception:
+        ind_ov = 0.0
 
     # 최근 오판 기반 키워드 가중치 피드백(온라인 학습). 교집합 키워드에 대해 가중합을 점수에 더합니다.
     if config.KEYWORD_FEEDBACK_ENABLED and inter:

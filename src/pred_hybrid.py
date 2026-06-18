@@ -70,17 +70,21 @@ def momentum_candidate_codes(
 
 
 def hybrid_rank_score(row: PredictionRow) -> float:
-    """ML·모멘텀·전체뉴스 맥락 하이브리드 점수."""
+    """ML·모멘텀·전체뉴스 맥락·업종 하이브리드 점수."""
     ml = getattr(row, "ml_prob", None)
     ml_v = float(ml) if ml is not None and math.isfinite(float(ml)) else 0.0
     mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
     nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
     nh = int(getattr(row, "keyword_hits", 0) or 0)
     mention = float(getattr(row, "mention_score", 0.0) or 0.0)
-    news = 0.55 * nctx + 0.25 * min(1.0, nh / 5.0) + 0.20 * min(mention, 1.0)
+    ind_m = float(getattr(row, "industry_momentum", 0.0) or 0.0)
+    ind_ov = float(getattr(row, "industry_theme_overlap", 0.0) or 0.0)
+    news = 0.50 * nctx + 0.22 * min(1.0, nh / 5.0) + 0.18 * min(mention, 1.0) + 0.10 * ind_ov
+    ind_lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    sector = 0.50 * ind_m + 0.30 * ind_ov + 0.20 * ind_lim
     if ml_v > 0:
-        return 0.40 * ml_v + 0.30 * mom + 0.30 * news
-    return 0.48 * mom + 0.52 * news
+        return 0.34 * ml_v + 0.26 * mom + 0.26 * news + 0.14 * sector
+    return 0.42 * mom + 0.38 * news + 0.20 * sector
 
 
 def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> bool:
@@ -88,18 +92,29 @@ def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> 
     mention = float(getattr(row, "mention_score", 0.0) or 0.0)
     mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
     nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
-    rel = hybrid + 1e-12 >= top_hybrid * float(config.PRED_ML_HIGH_RELATIVE_PROB)
+    ind_ov = float(getattr(row, "industry_theme_overlap", 0.0) or 0.0)
+    ml = float(row.ml_prob or 0.0)
+    rel_hi = float(config.PRED_ML_HIGH_RELATIVE_PROB)
+    rel = hybrid + 1e-12 >= top_hybrid * rel_hi
     if not rel:
         return False
-    if nctx + 1e-12 >= 0.40 and (mom + 1e-12 >= 0.15 or nh >= 1):
+    ml_floor = max(0.04, float(config.PRED_ML_MIN_OUTPUT_PROB))
+    strong_news = nctx + 1e-12 >= 0.50 and nh >= 1
+    if not strong_news and ml + 1e-12 < ml_floor:
+        return False
+    if ind_ov + 1e-12 >= 0.45 and (nh >= 1 or mom + 1e-12 >= 0.10):
         return True
-    if nh >= int(config.PRED_ML_HIGH_MIN_KEYWORD_HITS) and mom + 1e-12 >= 0.18:
+    if nctx + 1e-12 >= 0.32 and (mom + 1e-12 >= 0.14 or nh >= 1):
         return True
-    if mention + 1e-12 >= float(config.PRED_MENTION_GATE_MIN):
+    if nh >= max(1, int(config.PRED_ML_HIGH_MIN_KEYWORD_HITS) - 1) and mom + 1e-12 >= 0.14:
         return True
-    if mom + 1e-12 >= 0.58 and nh >= 1:
+    if mention + 1e-12 >= float(config.PRED_MENTION_GATE_MIN) * 0.85 and nh >= 1:
         return True
-    if mom + 1e-12 >= 0.72:
+    if mom + 1e-12 >= 0.48 and nh >= 1:
+        return True
+    if nh >= 1 and nctx + 1e-12 >= 0.18:
+        return True
+    if strong_news and nh >= 2:
         return True
     return False
 
@@ -135,11 +150,21 @@ def assign_hybrid_confidence_tiers(
             row.confidence_tier = "high"
             high_n += 1
             continue
+        mid_ok = h + 1e-12 >= mid_floor
+        nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
+        nh = int(getattr(row, "keyword_hits", 0) or 0)
+        if not mid_ok and nctx + 1e-12 >= 0.45 and nh >= 1:
+            mid_ok = True
         if (
             mid_n < max_mid
-            and h + 1e-12 >= mid_floor
-            and (ml + 1e-12 >= mid_floor * 0.85 or float(row.momentum_score or 0) >= 0.35)
+            and mid_ok
+            and (ml + 1e-12 >= mid_floor * 0.70 or float(row.momentum_score or 0) >= 0.28 or nctx + 1e-12 >= 0.40)
         ):
+            row.confidence_tier = "mid"
+            mid_n += 1
+
+    if high_n == 0 and mid_n == 0 and ranked:
+        for row in ranked[:max_mid]:
             row.confidence_tier = "mid"
             mid_n += 1
 

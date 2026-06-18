@@ -75,9 +75,12 @@ FEATURE_NAMES = (
     "news_dot_code",
     "news_lift",
     "news_today_norm",
+    "industry_momentum",
+    "industry_theme_overlap",
+    "industry_limit_up_heat",
 )
 
-ML_MODEL_VERSION = 13
+ML_MODEL_VERSION = 15
 MAX_NEG_PER_DAY = 120
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
@@ -118,17 +121,25 @@ def calibrate_ml_probability(
     cal_table: list[dict[str, float]] | None,
     base_rate: float,
 ) -> float:
-    """raw ``predict_proba`` 를 희귀 급등 사전확률 쪽으로 수축(순위는 유지)."""
-    import math
-
-    br = max(1e-5, min(0.06, float(base_rate)))
+    """raw ``predict_proba`` → 검증 구간 보정(있으면) + 희귀 사전확률 수축."""
     raw = max(1e-6, min(1.0 - 1e-6, float(raw_prob)))
+    if cal_table:
+        for row in cal_table:
+            lo = float(row.get("lo", 0.0))
+            hi = float(row.get("hi", 1.0))
+            if lo - 1e-12 <= raw <= hi + 1e-12:
+                rate = float(row.get("rate", base_rate))
+                return max(1e-5, min(0.42, rate))
+        if raw + 1e-12 < float(cal_table[0].get("lo", 0.0)):
+            return max(1e-5, min(0.42, float(cal_table[0].get("rate", base_rate))))
+        return max(1e-5, min(0.42, float(cal_table[-1].get("rate", base_rate))))
+    br = max(1e-5, min(0.06, float(base_rate)))
     logit_r = math.log(raw / (1.0 - raw))
     logit_b = math.log(br / (1.0 - br))
-    shrink = 0.40
+    shrink = 0.35
     z = shrink * logit_r + (1.0 - shrink) * logit_b
     p = 1.0 / (1.0 + math.exp(-z))
-    return max(br, min(0.32, p))
+    return max(br, min(0.35, p))
 
 
 def _day_candidate_codes(
@@ -333,6 +344,49 @@ def _blended_hist_return(
     return float(min(hi, max(lo, blended)))
 
 
+def _industry_feats(
+    code: str,
+    day: date,
+    ohlcv_idx: pd.DataFrame | None,
+    kw_news: frozenset[str],
+) -> tuple[float, float, float]:
+    """동종 업종 모멘텀·당일 뉴스-업종 겹침·전일 동종 상한가 열기."""
+    from .stock_listing_sector import (
+        industry_code_for_stock,
+        industry_theme_overlap,
+        peers_for_industry,
+    )
+
+    ind_ov = float(industry_theme_overlap(code, kw_news))
+    ind_lim = 0.0
+    if ohlcv_idx is None:
+        return 0.0, ind_ov, ind_lim
+    ic = industry_code_for_stock(code)
+    if not ic:
+        return 0.0, ind_ov, ind_lim
+    peer_set = peers_for_industry(ic)
+    rets: list[float] = []
+    lim_n = 0
+    peer_n = 0
+    for p in peer_set:
+        try:
+            row = ohlcv_idx.loc[(day, str(p).zfill(6))]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[0]
+            peer_n += 1
+            v = float(row.get("ret_lag1") or 0.0)
+            if math.isfinite(v):
+                rets.append(v)
+            if v + 1e-12 >= 0.20:
+                lim_n += 1
+        except (KeyError, TypeError, ValueError):
+            continue
+    mom = max(0.0, min(1.0, (sum(rets) / len(rets)) / 0.12)) if rets else 0.0
+    if peer_n > 0:
+        ind_lim = min(1.0, lim_n / max(1, min(peer_n, 8)))
+    return mom, ind_ov, ind_lim
+
+
 def _feat_vector(
     train_events: list[BreakoutEvent],
     code: str,
@@ -416,7 +470,12 @@ def _feat_vector(
         if lift is None:
             lift = np.zeros(len(vocab), dtype=np.float64)
         ctx_part = context_feature_vector(today_v, prof, global_c, lift)
-    return base + price + [float(ret_vs_ks11), float(risk_off)] + ctx_part
+    ind_mom, ind_ov, ind_lim = _industry_feats(code, before_exclusive, ohlcv_idx, kw_news)
+    return base + price + [float(ret_vs_ks11), float(risk_off)] + ctx_part + [
+        float(ind_mom),
+        float(ind_ov),
+        float(ind_lim),
+    ]
 
 
 def _build_training_arrays(
@@ -615,7 +674,7 @@ def _model_path(fp: str, label_before_exclusive: date | None = None) -> Path:
     suffix = (
         f"_{label_before_exclusive.isoformat()}" if label_before_exclusive is not None else ""
     )
-    return config.CACHE_DIR / "train" / f"move_ranker_v{ML_MODEL_VERSION}_{fp}{suffix}.joblib"
+    return config.TRAIN_CACHE_DIR / f"move_ranker_v{ML_MODEL_VERSION}_{fp}{suffix}.joblib"
 
 
 def fit_or_load_classifier(
@@ -714,14 +773,14 @@ def fit_or_load_classifier(
         X_cal, y_cal = X[:0], y[:0]
 
     clf = HistGradientBoostingClassifier(
-        max_depth=5,
-        max_iter=100,
-        learning_rate=0.08,
+        max_depth=6,
+        max_iter=130,
+        learning_rate=0.07,
         random_state=42,
         class_weight="balanced",
         early_stopping=True,
         validation_fraction=0.12,
-        n_iter_no_change=8,
+        n_iter_no_change=10,
     )
     pipe: Pipeline = Pipeline(
         [
@@ -858,6 +917,10 @@ def rank_predictions_ml(
         p = float(proba[fi])
         pr.ml_prob = p
         pr.momentum_score = _momentum_for_code(ohlcv_idx, code, target_day)
+        ind_mom, ind_ov, ind_lim = _industry_feats(code, target_day, ohlcv_idx, kw_news)
+        pr.industry_momentum = ind_mom
+        pr.industry_theme_overlap = ind_ov
+        pr.industry_limit_up_heat = ind_lim
         if news_ctx:
             _, nctx = feats_for_code(news_ctx, news_text_blob, code)
             pr.news_context_score = nctx

@@ -481,7 +481,34 @@ def build_strong_mover_report_days(
     return out
 
 
-_THEME_REPORT_TEMPLATE = r"""
+_THEME_DAY_SECTION_TEMPLATE = r"""
+  <section class="day" id="day-{{ day.trading_day.isoformat() }}">
+    <h2>{{ day.trading_day.isoformat() }}</h2>
+    <p class="day-meta">early {{ day.news_prev_day }} {{ day.news_cutoff_label }}</p>
+    {% if day.overview_html %}{{ day.overview_html | safe }}{% endif %}
+
+    {% for sec in day.sectors %}
+    <h3>{{ sec.theme }} ({{ sec.count }})</h3>
+    {{ sec.rationale_html | safe }}
+    <table class="stocks">
+      <thead><tr><th>종목</th><th>테마</th><th>시장</th><th>등락</th><th>근거 요약</th></tr></thead>
+      <tbody>
+      {% for st in sec.stocks %}
+        <tr>
+          <td><strong>{{ st.name }}</strong> <code>{{ st.code }}</code></td>
+          <td class="theme">{{ st.theme }}</td>
+          <td class="market">{{ st.market }}</td>
+          <td class="ok">{{ "%+.1f"|format(st.return_pct) }}%{% if st.is_limit_up %} <span class="warn">상한</span>{% endif %}</td>
+          <td class="reason muted">{{ st.reason | safe }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endfor %}
+  </section>
+"""
+
+_THEME_REPORT_SHELL_TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -527,37 +554,30 @@ _THEME_REPORT_TEMPLATE = r"""
   <p class="sub">{{ subtitle }}</p>
   <p class="sub">종가 {{ strong_pct }}%↑ · early {{ cutoff }}(KST) · 상세 뉴스·공시는 메인 리포트 참고</p>
 
-  {% for day in days %}
-  <section class="day" id="day-{{ day.trading_day.isoformat() }}">
-    <h2>{{ day.trading_day.isoformat() }}</h2>
-    <p class="day-meta">early {{ day.news_prev_day }} {{ day.news_cutoff_label }}</p>
-    {% if day.overview_html %}{{ day.overview_html | safe }}{% endif %}
-
-    {% for sec in day.sectors %}
-    <h3>{{ sec.theme }} ({{ sec.count }})</h3>
-    {{ sec.rationale_html | safe }}
-    <table class="stocks">
-      <thead><tr><th>종목</th><th>테마</th><th>시장</th><th>등락</th><th>근거 요약</th></tr></thead>
-      <tbody>
-      {% for st in sec.stocks %}
-        <tr>
-          <td><strong>{{ st.name }}</strong> <code>{{ st.code }}</code></td>
-          <td class="theme">{{ st.theme }}</td>
-          <td class="market">{{ st.market }}</td>
-          <td class="ok">{{ "%+.1f"|format(st.return_pct) }}%{% if st.is_limit_up %} <span class="warn">상한</span>{% endif %}</td>
-          <td class="reason muted">{{ st.reason | safe }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
-    </table>
-    {% endfor %}
-  </section>
+  {% for block in day_section_blocks %}
+  {{ block | safe }}
   {% endfor %}
 
   <p class="disclaimer">자동 추정·참고용. 인과 단정이 아닙니다.</p>
 </body>
 </html>
 """
+
+
+def extract_theme_report_day_sections(source: Path | str) -> dict[date, str]:
+    """기존 ``report_theme_25pct_*.html`` 에서 ``id=\"day-YYYY-MM-DD\"`` 일자 블록을 추출합니다."""
+    from . import report
+
+    return report.extract_monthly_report_day_sections(source)
+
+
+def render_theme_day_section_html(day: dict[str, Any]) -> str:
+    """단일 거래일 테마 25%↑ 섹션 HTML."""
+    from jinja2 import Environment, select_autoescape
+
+    env = Environment(autoescape=select_autoescape(["html", "xml"]))
+    tpl = env.from_string(_THEME_DAY_SECTION_TEMPLATE)
+    return tpl.render(day=day).strip()
 
 
 def format_strong_mover_theme_report_html(
@@ -567,18 +587,28 @@ def format_strong_mover_theme_report_html(
     subtitle: str,
     meta_note: str,
     news_cutoff_label: str,
+    preserved_day_html: dict[date, str] | None = None,
 ) -> str:
     from jinja2 import Environment, select_autoescape
 
+    preserved = preserved_day_html or {}
+    new_by_day = {d["trading_day"]: d for d in days}
+    all_days = sorted(set(new_by_day.keys()) | set(preserved.keys()))
+    blocks: list[str] = []
+    for d in all_days:
+        if d in new_by_day:
+            blocks.append(render_theme_day_section_html(new_by_day[d]))
+        else:
+            blocks.append(preserved[d].strip())
     env = Environment(autoescape=select_autoescape(["html", "xml"]))
-    tpl = env.from_string(_THEME_REPORT_TEMPLATE)
+    tpl = env.from_string(_THEME_REPORT_SHELL_TEMPLATE)
     return tpl.render(
         title=title,
         subtitle=subtitle,
         meta_note=meta_note,
         strong_pct=int(srl._STRONG_MOVER_PCT),
         cutoff=news_cutoff_label,
-        days=days,
+        day_section_blocks=blocks,
     )
 
 
@@ -593,6 +623,7 @@ def render_strong_mover_theme_report(
     title: str,
     subtitle: str,
     meta_note: str = "",
+    preserved_day_html: dict[date, str] | None = None,
 ) -> Path | None:
     days = build_strong_mover_report_days(
         day_reports,
@@ -601,7 +632,8 @@ def render_strong_mover_theme_report(
         listing_names=listing_names,
         news_cutoff_label=news_cutoff_label,
     )
-    if not days:
+    preserved = preserved_day_html or {}
+    if not days and not preserved:
         return None
     html_out = format_strong_mover_theme_report_html(
         days,
@@ -609,6 +641,7 @@ def render_strong_mover_theme_report(
         subtitle=subtitle,
         meta_note=meta_note,
         news_cutoff_label=news_cutoff_label,
+        preserved_day_html=preserved,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html_out, encoding="utf-8")

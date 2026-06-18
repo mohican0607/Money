@@ -18,7 +18,7 @@ import pandas as pd
 from . import config, news, predict, trading_calendar
 from .features import BreakoutEvent, filter_specific_keywords, keyword_set
 
-_SNAPSHOT_PATH = config.CACHE_DIR / "train" / "daily_theme_snapshots.json"
+_SNAPSHOT_PATH = config.TRAIN_CACHE_DIR / "daily_theme_snapshots.json"
 _CACHE_MTIME: float | None = None
 _CACHE_PAYLOAD: dict[str, Any] | None = None
 

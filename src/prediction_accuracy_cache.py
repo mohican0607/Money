@@ -15,7 +15,7 @@ from pathlib import Path
 from . import config, trading_calendar
 from . import stocks
 
-TRACK_PATH = config.CACHE_DIR / "train" / "prediction_accuracy_track.json"
+TRACK_PATH = config.TRAIN_CACHE_DIR / "prediction_accuracy_track.json"
 
 
 def track_path_display() -> str:
