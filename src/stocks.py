@@ -423,10 +423,10 @@ def daily_returns_table(ohlcv: pd.DataFrame) -> pd.DataFrame:
     종목·일자별 일간 수익률 ``return_pct``(소수, 예: 0.2 = 20%)를 붙인 표를 만듭니다.
 
     기본은 전일 종가 대비 당일 종가입니다.
-    직전 거래일이 거래정지(거래량 0)였다가 재개된 날은 KRX·네이버와 같이 **시가를
-    기준가(전일가)** 로 보고 ``(종가-시가)/시가`` 로 계산합니다.
-    단, ``Change`` 컬럼이 있으면 소스와 무관하게 이를 우선 사용합니다.
-    (액면분할/기준가 보정 등으로 ``Close/prev_close`` 와 괴리될 때 거래소 등락률을 따르기 위함)
+    직전 거래일이 거래정지(거래량 0)였다가 재개된 날은 시가·종가로 1차 계산한 뒤,
+    거래소 ``Change``(전일 종가 대비 등락률)가 있으면 **그 값을 우선**합니다.
+    (재개일 상한가는 시가대비가 아니라 전일가대비 29%대인 경우가 많음 — 서산 등)
+    단, ``Change`` 가 없을 때만 시가 기준 폴백을 씁니다.
     """
     df = ohlcv.sort_values(["Code", "Date"])
     g = df.groupby("Code", group_keys=False)
@@ -450,9 +450,40 @@ def daily_returns_table(ohlcv: pd.DataFrame) -> pd.DataFrame:
     df["return_pct"] = (cls / ref_close) - 1.0
     if "Change" in df.columns:
         ch = pd.to_numeric(df["Change"], errors="coerce")
-        trust_change = ch.notna() & ~halt_resume
+        trust_change = ch.notna() & (vol > 0)
         df.loc[trust_change, "return_pct"] = ch.loc[trust_change]
     return df
+
+
+def merge_returns_pct_into_krx_map(
+    krx_map: dict[str, float],
+    returns_df: pd.DataFrame,
+    d: date,
+    *,
+    min_gap_pp: float = 5.0,
+) -> dict[str, float]:
+    """
+    pykrx 전종목 등락률이 거래정지 재개일 등에서 시가대비로만 나올 때 보정합니다.
+
+    ``daily_returns_table`` 의 ``Change``(전일가대비)가 pykrx 값보다 ``min_gap_pp`` 이상
+  크면 후자로 덮어씁니다(상한가·20%↑ 누락 방지).
+    """
+    if not krx_map or returns_df is None or returns_df.empty:
+        return krx_map
+    from_returns = change_pct_by_code_from_returns(returns_df, d)
+    if not from_returns:
+        return krx_map
+    out = dict(krx_map)
+    for code, rp_ret in from_returns.items():
+        krx_v = out.get(code)
+        if krx_v is None:
+            if abs(float(rp_ret)) >= 10.0:
+                out[code] = float(rp_ret)
+            continue
+        gap = float(rp_ret) - float(krx_v)
+        if gap > float(min_gap_pp):
+            out[code] = float(rp_ret)
+    return out
 
 
 def enrich_daily_returns_for_ml(returns_df: pd.DataFrame) -> pd.DataFrame:
@@ -619,6 +650,8 @@ def try_krx_change_pct_by_code(
             by_code[str(code_raw).zfill(6)] = float(pct)
 
     if by_code:
+        if returns_df is not None:
+            by_code = merge_returns_pct_into_krx_map(by_code, returns_df, d)
         return by_code
 
     # 2) 장중 등락률이 비어 있을 수 있어, 전일종가 대비 현재(당일 종가 컬럼)로 직접 계산.
@@ -662,6 +695,8 @@ def try_krx_change_pct_by_code(
             by_code[str(code_raw).zfill(6)] = float(v)
 
     if by_code:
+        if returns_df is not None:
+            by_code = merge_returns_pct_into_krx_map(by_code, returns_df, d)
         return by_code
     if returns_df is not None and not returns_df.empty:
         fb = change_pct_by_code_from_returns(returns_df, d)

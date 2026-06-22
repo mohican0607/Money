@@ -265,7 +265,7 @@ def _is_limit_down_intraday_row(stock_row: pd.Series) -> bool:
 def _is_halt_resume_spike_row(
     day_row: pd.Series, prev_row: pd.Series | None
 ) -> bool:
-    """거래정지(거래량 0) 직후 재개일의 전일비 급등은 25%↑ 급등으로 보지 않음."""
+    """거래정지(거래량 0) 직후 재개일의 비상한 시가대비 급등만 25%↑ 테마에서 제외."""
     if prev_row is None:
         return False
     dvol = _series_float(day_row, "Volume") or 0.0
@@ -274,13 +274,18 @@ def _is_halt_resume_spike_row(
         return True
     if pvol > 0:
         return False
+    rp = _series_float(day_row, "return_pct")
+    if rp is None:
+        return False
+    # 전일가대비 상한가(재개일 포함)는 급등·테마에 남김
+    if rp + 1e-9 >= _LIMIT_UP_RET_DECIMAL:
+        return False
     po = _series_float(prev_row, "Open") or 0.0
     ph = _series_float(prev_row, "High") or 0.0
     pl = _series_float(prev_row, "Low") or 0.0
     if po > 0 or ph > 0 or pl > 0:
         return False
-    rp = _series_float(day_row, "return_pct")
-    return rp is not None and rp > 0.05
+    return rp > 0.05
 
 
 def _strong_mover_price_row_valid(
