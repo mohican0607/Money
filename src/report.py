@@ -41,6 +41,7 @@ class DayReport:
     actual_big_movers: list[dict]
     forward_observation: bool = False
     market_theme_html: str = ""
+    mover_rationale_html: str = ""
     hit_at_k_metrics: dict | None = None
 
 
@@ -59,6 +60,20 @@ def format_prediction_signal_cell(row: dict[str, Any]) -> str:
     if theme_bit and theme_bit not in base:
         return base + theme_bit
     return base
+
+
+def build_mover_rationale_ref_block(rationale_inner_html: str) -> str:
+    """「왜 올랐나」 패널 HTML."""
+    inner = (rationale_inner_html or "").strip()
+    if not inner:
+        return ""
+    return (
+        '<div class="mover-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;'
+        'background:#1a2838;border:1px solid #3a5a4a;border-radius:8px">'
+        '<h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">'
+        "왜 올랐나 (상한가·급등)</h3>"
+        f"{inner}</div>"
+    )
 
 
 def build_market_theme_ref_block(theme_inner_html: str) -> str:
@@ -865,6 +880,14 @@ _TEMPLATE = r"""
 </div>
 {% endif %}
 {%- endmacro %}
+{% macro mover_rationale_panel(d) -%}
+{% if d.mover_rationale_html %}
+<div class="mover-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;background:#1a2838;border:1px solid #3a5a4a;border-radius:8px">
+  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">왜 올랐나 (상한가·급등)</h3>
+  {{ d.mover_rationale_html | safe }}
+</div>
+{% endif %}
+{%- endmacro %}
 {% macro hit_at_k_panel(d, meta) -%}
 {% if d.hit_at_k_metrics %}
 <div class="hit-at-k-panel" style="margin:8px 0 14px;padding:10px 12px;background:#1a2433;border:1px solid #334;border-radius:8px;font-size:0.88rem">
@@ -889,6 +912,7 @@ _TEMPLATE = r"""
       {{ market_filter_radios(d.trading_day.isoformat(), d.forward_observation | default(false)) }}
     </div>
     {{ market_theme_panel(d) }}
+    {{ mover_rationale_panel(d) }}
     {{ hit_at_k_panel(d, meta) }}
     <p class="sub">{% if meta.use_decision_cutoff %}N-1 거래일 {{ meta.cutoff_kst }}(KST)까지 반영한 {% endif %}예측 입력 뉴스 하이라이트 키워드 예시:
       {% for t in d.news_highlight_terms[:20] %}
@@ -1416,6 +1440,14 @@ _COMPACT_TEMPLATE = r"""
 </div>
 {% endif %}
 {%- endmacro %}
+{% macro mover_rationale_panel(d) -%}
+{% if d.mover_rationale_html %}
+<div class="mover-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;background:#1a2838;border:1px solid #3a5a4a;border-radius:8px">
+  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">왜 올랐나 (상한가·급등)</h3>
+  {{ d.mover_rationale_html | safe }}
+</div>
+{% endif %}
+{%- endmacro %}
 {% macro hit_at_k_panel(d, meta) -%}
 {% if d.hit_at_k_metrics %}
 <div class="hit-at-k-panel" style="margin:8px 0 14px;padding:10px 12px;background:#1a2433;border:1px solid #334;border-radius:8px;font-size:0.88rem">
@@ -1590,6 +1622,7 @@ _COMPACT_TEMPLATE = r"""
       {{ market_filter_radios(d.trading_day.isoformat()) }}
     </div>
     {{ market_theme_panel(d) }}
+    {{ mover_rationale_panel(d) }}
     {{ hit_at_k_panel(d, meta) }}
     {{ compact_day_table(d, meta) }}
   </section>
@@ -1643,6 +1676,7 @@ _COMPACT_TEMPLATE = r"""
       {{ market_filter_radios(d.trading_day.isoformat() ~ "-single") }}
     </div>
     {{ market_theme_panel(d) }}
+    {{ mover_rationale_panel(d) }}
     {{ hit_at_k_panel(d, meta) }}
     {{ compact_day_table(d, meta, '장 전 실행 시 데이터 없음') }}
   </section>

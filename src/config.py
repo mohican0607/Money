@@ -383,7 +383,14 @@ REPORT_THEME_SUMMARY_SHOW_EXTRA_KW = os.getenv(
     "REPORT_THEME_SUMMARY_SHOW_EXTRA_KW", "0"
 ).strip().lower() in ("1", "true", "yes", "on")
 
-# 캘린더 **일자별** 뉴스 캐시를 채울 때 동시에 처리할 일 수(기본 4). 1이면 기존처럼 순차.
+# 장 마감 확정일 「왜 올랐나」 상한가·20%↑ 한 줄 요약
+REPORT_MOVER_RATIONALE_ENABLED = os.getenv(
+    "REPORT_MOVER_RATIONALE_ENABLED", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+REPORT_MOVER_RATIONALE_MAX_LIMIT_UP = _positive_int_env(
+    "REPORT_MOVER_RATIONALE_MAX_LIMIT_UP", 25
+)
+REPORT_MOVER_RATIONALE_MAX_BIG = _positive_int_env("REPORT_MOVER_RATIONALE_MAX_BIG", 15)
 # 네이버 API 한도(429)가 나오면 1~2로 낮추세요.
 NEWS_FETCH_MAX_WORKERS = _positive_int_env("NEWS_FETCH_MAX_WORKERS", 4)
 

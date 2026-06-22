@@ -2821,6 +2821,8 @@ def enrich_day_reports_market_theme(
     ``DayReport`` 목록에 ``market_theme_html`` 을 채우고, 비교 행 ``rise_reason_html`` 에
     early 뉴스·종목명 겹침 한 줄을 덧붙입니다. 스냅샷 병합용 ``market_theme_flow`` 행 목록을 반환합니다.
     """
+    from . import day_mover_rationale
+
     forward_placeholder = (
         '<p class="sub"><strong>장 시작 전·예측 전용.</strong> '
         "당일 급등·테마 요약은 정규장 마감(15:30 KST) 후 갱신됩니다.</p>"
@@ -2831,6 +2833,7 @@ def enrich_day_reports_market_theme(
     for dr in day_reports:
         if getattr(dr, "forward_observation", False):
             dr.market_theme_html = forward_placeholder
+            dr.mover_rationale_html = ""
     if not days:
         return []
     theme_rows = build_market_theme_flow(
@@ -2860,6 +2863,13 @@ def enrich_day_reports_market_theme(
             listing_names=listing_names,
             early_rows=early_rows,
             news_cutoff_label=news_cutoff_label,
+        )
+        day_mover_rationale.enrich_day_report_mover_rationale(
+            dr,
+            row,
+            listing_names=listing_names,
+            early_rows=early_rows,
+            news_by_calendar=news_by_calendar,
         )
     return theme_rows
 
