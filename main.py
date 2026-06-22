@@ -142,11 +142,12 @@ def _ignore_freeze_for_trading_day(
       (예: N일 14:30 ``main.py T`` 로 확정한 예측은 이후 구간 실행에서 T 블록에 유지)
     - ``--rebuild-train-snapshot`` + From~To: 구간 안 모든 T 를 freeze 무시·재계산.
     - ``--use-freeze``: ``--rebuild`` 구간에서도 freeze 재사용(명시적).
-    - ``--weekly``·단일일 등 ``cal_scope`` 없음: ``rebuild``/``append`` 일 때만 freeze 무시
+    - ``--weekly``·단일일 등 ``cal_scope`` 없음: ``rebuild`` 일 때만 freeze 무시.
+      ``append_learning`` 단일일(장 마감 후 actual·테마만 갱신)은 freeze 유지.
     """
     if respect_prediction_freeze:
         return False
-    if train_snapshot_mode in ("rebuild", "append_learning") and cal_scope is None:
+    if train_snapshot_mode == "rebuild" and cal_scope is None:
         return True
     if cal_scope is None:
         return False
@@ -513,6 +514,7 @@ def _print_usage() -> None:
   --append-rebuild-learning
       급등-뉴스 train_events 는 스냅샷 재사용(미반영 캘린더만 병합). ML joblib 도 재학습하지 않고
       기존 모델을 로드합니다. From~To 안은 freeze 없는 일만 신규 예측·rebuild_learning 병합.
+      단일일 ``YYYYMMDD`` 는 freeze 가 있으면 14:30 예측 후보를 유지한 채 actual·테마만 갱신.
   (플래그 없음) From~To
       각 T 에 prediction_freeze_by_t.json 이 있으면 예측 후보 재사용(실제·테마·누적만 갱신).
       없는 T 만 신규 예측 후 freeze 저장.
@@ -2920,7 +2922,15 @@ def main() -> None:
         skip_ohlcv_gap_download=skip_ohlcv_gap,
         omit_target_calendar_days=omit_t_calendar,
         skip_news_fetch_after=skip_news_fetch_after,
+        respect_prediction_freeze=use_freeze,
     )
+    if snap_mode == "append_learning":
+        print(
+            f"--append-rebuild-learning: T={t_day.isoformat()} — "
+            "예측 고정 캐시가 있으면 14:30 예측 후보를 유지하고, "
+            "실제 상승률·테마·rebuild_learning 만 갱신합니다.",
+            flush=True,
+        )
     if po.day_reports and po.day_reports[0].trading_day != t_day:
         actual_t = po.day_reports[0].trading_day
         print(
