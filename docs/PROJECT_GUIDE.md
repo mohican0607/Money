@@ -106,7 +106,7 @@ python main.py --weekly
 | *(기본)* | `breakout_train_snapshot.json` 재사용, 미반영 캘린더만 병합 |
 | `--no-train-snapshot` | 스냅샷 없이 매번 `train_events` 전체 재계산 |
 | `--rebuild-train-snapshot` | `train_events` **전체 재계산** + ML **재학습** + **From~To 안** 예측·freeze·`rebuild_learning` 갱신 |
-| `--append-rebuild-learning` | `train_events`·ML **재사용**, **From~To 안**만 예측·freeze·`rebuild_learning` (빠른 갭 채우기) |
+| `--append-rebuild-learning` | ML joblib **재사용**, **마지막 `train_events` 이후~`end_date` 급등 이벤트 증분 병합**, From~To 예측·freeze·`rebuild_learning` |
 | `--no-report-expand` | 구간 실행 시 기존 월간 HTML 날짜 **자동 추가 안 함** (인자 일수만) |
 
 **예측 고정 캐시 (`prediction_freeze_by_t.json`) — `python main.py From To` 구간 실행 시**

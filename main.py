@@ -1485,6 +1485,15 @@ def _run_pipeline(
             scope_cal = set(cal_day_set)
         missing_scope = scope_cal - (snap.calendar_days_covered if snap else set())
 
+        gap_trading_days: set[date] = set()
+        max_event_day: date | None = None
+        if fp_ok and snap and snap.events:
+            max_event_day = max(e.trading_day for e in snap.events)
+            if train_snapshot_mode == "append_learning":
+                gap_trading_days = {
+                    d for d in train_td_set if max_event_day < d <= end_date
+                }
+
         if not fp_ok:
             if snap is not None and snap.fingerprint != fp_snap:
                 print("학습 스냅샷: 설정 지문 불일치 → 전체 재계산 후 저장.")
@@ -1494,26 +1503,26 @@ def _run_pipeline(
             all_train_events = _events_for_snapshot(_all_breakout_events_raw())
             train_snapshot.save_snapshot(all_train_events, set(cal_day_set), fp=fp_snap)
             print(f"학습 스냅샷 저장: {config.TRAIN_SNAPSHOT_PATH}")
-        elif not missing_scope:
-            all_train_events = _events_for_snapshot(snap.events)
-            print(
-                f"과거 급등-뉴스: 학습 스냅샷 재사용 "
-                f"({config.TRAIN_SNAPSHOT_PATH.name}, 급등 이벤트 {len(all_train_events)}건, "
-                f"예측 시 관측일 T 직전만 워크포워드)"
-            )
-            new_cov = snap.calendar_days_covered | cal_day_set
-            if new_cov != snap.calendar_days_covered:
-                train_snapshot.save_snapshot(all_train_events, new_cov, fp=fp_snap)
-        else:
-            print(
-                f"과거 급등-뉴스: 스냅샷 병합 — 미반영 캘린더 일 {len(missing_scope)}일 "
-                f"(인자 구간 기준 {len(scope_cal)}일 중)"
-            )
-            recompute_td = {
-                d
-                for d in train_td_set
-                if news.calendar_days_for_breakout_training(d) & missing_scope
-            }
+        elif missing_scope or gap_trading_days:
+            if gap_trading_days:
+                print(
+                    f"과거 급등-뉴스: --append-rebuild-learning — "
+                    f"이벤트 마지막 {max_event_day} 이후 "
+                    f"{len(gap_trading_days)}거래일(≤{end_date}) train_events 증분 병합",
+                    flush=True,
+                )
+            if missing_scope:
+                print(
+                    f"과거 급등-뉴스: 스냅샷 병합 — 미반영 캘린더 일 {len(missing_scope)}일 "
+                    f"(인자 구간 기준 {len(scope_cal)}일 중)"
+                )
+            recompute_td = set(gap_trading_days)
+            if missing_scope:
+                recompute_td |= {
+                    d
+                    for d in train_td_set
+                    if news.calendar_days_for_breakout_training(d) & missing_scope
+                }
             old = [e for e in snap.events if e.trading_day not in recompute_td]
             new = features.build_breakout_events_for_trading_days(
                 returns,
@@ -1526,9 +1535,20 @@ def _run_pipeline(
             new_cov = snap.calendar_days_covered | cal_day_set
             train_snapshot.save_snapshot(all_train_events, new_cov, fp=fp_snap)
             print(
-                f"학습 스냅샷 갱신 저장: 관련 거래일 {len(recompute_td)}일 재계산 → "
-                f"{config.TRAIN_SNAPSHOT_PATH.name}"
+                f"학습 스냅샷 갱신 저장: 거래일 {len(recompute_td)}일 재계산 → "
+                f"{len(all_train_events)}건 ({config.TRAIN_SNAPSHOT_PATH.name})",
+                flush=True,
             )
+        elif not missing_scope:
+            all_train_events = _events_for_snapshot(snap.events)
+            print(
+                f"과거 급등-뉴스: 학습 스냅샷 재사용 "
+                f"({config.TRAIN_SNAPSHOT_PATH.name}, 급등 이벤트 {len(all_train_events)}건, "
+                f"예측 시 관측일 T 직전만 워크포워드)"
+            )
+            new_cov = snap.calendar_days_covered | cal_day_set
+            if new_cov != snap.calendar_days_covered:
+                train_snapshot.save_snapshot(all_train_events, new_cov, fp=fp_snap)
 
     kw_cooccur = Counter()
     kw_pool = (
@@ -2833,8 +2853,9 @@ def main() -> None:
 
         if snap_mode == "append_learning":
             print(
-                "--append-rebuild-learning: 급등-뉴스 스냅샷·ML joblib 은 재사용하고, "
-                f"거래일 {len(test_days)}일 예측·freeze·rebuild_learning 병합만 수행합니다.",
+                "--append-rebuild-learning: ML joblib 재사용, "
+                "마지막 train_events 이후 급등 이벤트 증분 병합 + "
+                f"거래일 {len(test_days)}일 예측·freeze·rebuild_learning 병합.",
                 flush=True,
             )
 
