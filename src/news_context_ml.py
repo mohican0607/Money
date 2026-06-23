@@ -32,6 +32,7 @@ _CONTEXT_FEAT_NAMES = (
 
 
 def _early_blob(news_by: dict[date, list[dict[str, str]]], d: date) -> str:
+    """거래일 ``d`` 의 early 뉴스 텍스트 blob(14:30 컷오프 또는 전체 윈도우)."""
     if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
         blob, _ = news.aggregate_early_late_for_target(news_by, d)
         return blob
@@ -102,6 +103,7 @@ def enrich_vocab_with_breakouts(
 def tfidf_vector(
     blob: str, vocab: list[str], idf: np.ndarray
 ) -> np.ndarray:
+    """뉴스 blob → L2 정규화 TF-IDF 벡터(어휘 크기 ``len(vocab)``)."""
     idx = {w: i for i, w in enumerate(vocab)}
     tf = Counter(filter_specific_keywords(keyword_set(blob, k=280)))
     v = np.zeros(len(vocab), dtype=np.float64)
@@ -123,6 +125,7 @@ def _profiles(
     idf: np.ndarray,
     before_exclusive: date,
 ) -> tuple[dict[str, np.ndarray], np.ndarray]:
+    """급등일 뉴스 TF-IDF 평균 → 종목별 프로필·전체 급등일 global centroid."""
     by_code: dict[str, list[np.ndarray]] = defaultdict(list)
     all_vecs: list[np.ndarray] = []
     for e in train_events:
@@ -151,6 +154,12 @@ def context_feature_vector(
     global_c: np.ndarray,
     lift: np.ndarray,
 ) -> list[float]:
+    """
+    ML 랭커용 뉴스 맥락 피처 5종.
+
+    Returns:
+        ``[news_cos_code, news_cos_global, news_dot_code, news_lift, news_today_norm]``
+    """
     cos_code = float(np.dot(today_vec, code_prof))
     cos_glob = float(np.dot(today_vec, global_c))
     dot_code = float(np.sum(today_vec * code_prof))
@@ -229,6 +238,7 @@ def feats_for_code(
     blob: str,
     code: str,
 ) -> tuple[list[float], float]:
+    """bundle·당일 뉴스 blob·종목코드 → (ML 피처 5종, 0~1 맥락 점수)."""
     vocab = bundle["vocab"]
     idf = bundle["idf"]
     lift = bundle["lift"]

@@ -31,11 +31,20 @@ KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까�
 | `src/prediction_accuracy_cache.py` | 관측일별 예측–실적 비율·이력·키워드 피드백 JSON |
 | `src/theme_carryover.py` | 전일 급등·뉴스 테마 가중치 JSON(`daily_theme_snapshots.json`) |
 | `src/disclosure.py` | 네이버 종목 공시 hit(리포트 툴팁) |
+| `src/pred_factors.py` | 다요인(ML·모멘텀·수급·섹터·뉴스) 기둥 점수·랭킹·확신 합성 |
+| `src/pred_precision_gate.py` | 고확신(pred_high) 정밀 재필터 — 기둥 합의·ML·피드백 버킷·종목 이력 |
+| `src/investor_flow.py` | 네이버 투자자별 순매수 수집·캐시·ML/하이브리드 수급 피처 |
+| `src/stock_listing_sector.py` | 네이버 업종(industryCode)·동종 모멘텀·리포트 업종 pill |
+| `src/day_mover_rationale.py` | 상한·20%↑ 종목 「왜 올랐나」 한 줄 HTML(`mover_rationale_html`) |
+| `src/move_reference.py` | 관측일 종목 상·하락 참고 패널(뉴스·시세·공시 분류) |
+| `src/theme_strong_mover_report.py` | 25%↑ 테마 전용 리포트 `report_theme_25pct_*.html` |
 | `scripts/` | OHLCV·뉴스 백필·일일 스케줄·더미 리포트 등 보조 |
 | `data/cache/` | OHLCV, 뉴스, 학습·예측 캐시 |
 | `output/` | `report_*.html` |
 
-각 Python 모듈의 **함수 docstring**은 소스 파일에 한국어로 정리되어 있습니다.
+각 Python 모듈(`src/*.py`, `main.py`)의 **공개·내부 함수 docstring**은 소스에 한국어로 정리되어 있습니다. 복잡한 로직(파이프라인·게이트·이유 추출)에는 단계별 인라인 주석이 붙어 있습니다.
+
+**문서 위치:** 모듈 상단 docstring → 함수 docstring → 본 가이드 §8 함수 표.
 
 ---
 
@@ -353,6 +362,56 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 | `build_market_theme_flow` | 일별 시장·테마 요약 |
 | `merge_rebuild_learning_dict` | `daily` 병합·누적 재계산 |
 | `merge_extended_rebuild_into_snapshot` | JSON 파일 저장 |
+| `_theme_labels_for_compare_row` | 비교 행·뉴스·시드로 테마 라벨 추정 |
+| `format_market_theme_flow_html` | 일자 시장·테마 HTML 블록 |
+
+### `src/pred_factors.py` / `src/pred_precision_gate.py`
+
+| 함수 | 역할 |
+|------|------|
+| `compute_pillar_scores` | ML·모멘텀·수급·섹터·뉴스·시장 0~1 기둥 |
+| `multi_factor_rank_score` | 가중 합산 하이브리드 랭킹 점수 |
+| `passes_precision_gate` | 고확신 정밀 게이트(순위·기둥·ML·피드백) |
+| `refine_confidence_tiers` | `high` 슬롯 재필터·미통과 `mid` 강등 |
+
+### `src/prediction_ranking.py`
+
+| 함수 | 역할 |
+|------|------|
+| `finalize_ranked_predictions` | 순위·확신·표시 % 일괄 확정 |
+| `rank_score_for_row` | 하이브리드 랭킹 점수 위임 |
+| `compute_hit_at_k_metrics` | Hit@K·Precision·Lift 평가 |
+
+### `src/investor_flow.py`
+
+| 함수 | 역할 |
+|------|------|
+| `warm_cache_for_codes` | 누락 종목 네이버 수급 캐시 프리페치 |
+| `flow_features_for_day` | lag1·3일 누적 수급 피처 |
+| `investor_flow_candidate_codes` | 수급 강한 종목 후보 확장 |
+
+### `src/day_mover_rationale.py` / `src/move_reference.py`
+
+| 함수 | 역할 |
+|------|------|
+| `format_day_mover_rationale_html` | 상한·20%↑ 종목별 급등 이유 bullet HTML |
+| `enrich_day_report_mover_rationale` | ``DayReport`` 에 ``mover_rationale_html`` 주입 |
+| `_reason_for_stock` | 뉴스→공시→테마 다단계 이유 탐색 |
+| `build_move_reference_html` | 상·하락 참고 패널(뉴스 카테고리·시세) |
+
+### `src/theme_strong_mover_report.py`
+
+| 함수 | 역할 |
+|------|------|
+| `render_strong_mover_theme_report` | 25%↑ 테마 HTML 저장 |
+| `build_day_strong_mover_sections` | 거래일별 테마·종목 근거 섹션 |
+
+### `src/stock_listing_sector.py`
+
+| 함수 | 역할 |
+|------|------|
+| `industry_code_for_stock` | 네이버 업종코드(캐시) |
+| `industry_momentum_for_code` | 동종 업종 전일 평균 수익 → 0~1 |
 
 ---
 
@@ -379,10 +438,12 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 
 1. `main.py` — `_parse_cli` → `main` → `_run_pipeline`
 2. `src/config.py`
-3. `src/stocks.py` → `src/news.py`
-4. `src/features.py` → `src/news_context_ml.py` → `src/predict.py` → `src/pred_hybrid.py` → `src/ml_move_rank.py`
-5. `src/prediction_accuracy_cache.py` → `src/snapshot_rebuild_learning.py`
-6. `src/report.py`
+3. `src/stocks.py` → `src/news.py` → `src/investor_flow.py`
+4. `src/features.py` → `src/news_context_ml.py` → `src/predict.py`
+5. `src/pred_factors.py` → `src/pred_hybrid.py` → `src/prediction_ranking.py` → `src/pred_precision_gate.py` → `src/ml_move_rank.py`
+6. `src/prediction_accuracy_cache.py` → `src/snapshot_rebuild_learning.py`
+7. `src/day_mover_rationale.py` → `src/move_reference.py` → `src/theme_strong_mover_report.py`
+8. `src/report.py`
 
 ---
 

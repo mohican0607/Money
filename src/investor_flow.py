@@ -36,10 +36,12 @@ _FLOW_COLS = (
 
 
 def _code_path(code: str) -> Path:
+    """종목별 수급 캐시 JSON 경로."""
     return _CACHE_ROOT / f"{str(code).zfill(6)}.json"
 
 
 def _parse_int(s: str) -> int:
+    """네이버 표 셀 문자열 → 정수(쉼표·기호 제거)."""
     t = re.sub(r"[^\d\-+]", "", str(s or ""))
     if not t or t in ("+", "-"):
         return 0
@@ -50,6 +52,7 @@ def _parse_int(s: str) -> int:
 
 
 def _parse_pct(s: str) -> float:
+    """``12.34%`` 형태 → float."""
     t = str(s or "").replace("%", "").strip()
     try:
         return float(t)
@@ -58,6 +61,7 @@ def _parse_pct(s: str) -> float:
 
 
 def _parse_date_dot(s: str) -> date | None:
+    """``YYYY.MM.DD`` → ``date``."""
     m = re.search(r"(\d{4})\.(\d{2})\.(\d{2})", str(s or ""))
     if not m:
         return None
@@ -65,6 +69,7 @@ def _parse_date_dot(s: str) -> date | None:
 
 
 def naver_investor_url(code: str) -> str:
+    """네이버 증권 투자자별 매매동향 페이지 URL."""
     return f"https://finance.naver.com/item/frgn.naver?code={str(code).zfill(6)}"
 
 
@@ -132,6 +137,7 @@ def fetch_investor_history(code: str, *, session: requests.Session | None = None
 
 
 def load_cached_history(code: str) -> list[dict[str, Any]]:
+    """``data/cache/investor_flow/naver/{code}.json`` 의 ``rows`` 목록."""
     path = _code_path(code)
     if not path.is_file():
         return []
@@ -144,6 +150,7 @@ def load_cached_history(code: str) -> list[dict[str, Any]]:
 
 
 def save_cached_history(code: str, rows: list[dict[str, Any]]) -> None:
+    """수급 이력을 날짜 키로 병합·정렬해 캐시에 저장."""
     path = _code_path(code)
     path.parent.mkdir(parents=True, exist_ok=True)
     by_date: dict[str, dict[str, Any]] = {}
@@ -180,6 +187,7 @@ def warm_cache_for_codes(
     fetched = 0
 
     def _one(c: str) -> bool:
+        """단일 종목 fetch → 캐시 저장 성공 여부."""
         sess = requests.Session()
         rows = fetch_investor_history(c, session=sess)
         if rows:
@@ -213,6 +221,7 @@ def priority_codes_for_prefetch(
     out: list[str] = []
 
     def _add(c: str) -> None:
+        """우선순위 목록에 중복 없이 추가."""
         z = str(c).zfill(6)
         if z and z not in seen:
             seen.add(z)
@@ -232,6 +241,7 @@ def priority_codes_for_prefetch(
 
 
 def _history_by_code(code: str) -> dict[date, dict[str, Any]]:
+    """캐시 rows → ``date`` 키 dict."""
     rows = load_cached_history(code)
     out: dict[date, dict[str, Any]] = {}
     for row in rows:
@@ -257,6 +267,7 @@ def _flow_score(
 ) -> float:
     """0~1 수급 점수(외국인 비중·순매수 강조)."""
     def _sig(x: float) -> float:
+        """로지스틱 squashing (±6 클램프)."""
         return 1.0 / (1.0 + math.exp(-max(-6.0, min(6.0, x))))
 
     f_buy = _sig(float(foreign_ratio) * 6.0)

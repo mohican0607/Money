@@ -58,10 +58,12 @@ _INDUSTRY_LABEL: tuple[tuple[str, str], ...] = (
 
 
 def _ensure_dir() -> None:
+    """업종 메타 캐시 디렉터리 생성."""
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _read_json(path: Path, default: dict) -> dict:
+    """JSON 파일 읽기(실패 시 ``default`` 복사본)."""
     if not path.is_file():
         return dict(default)
     try:
@@ -72,11 +74,13 @@ def _read_json(path: Path, default: dict) -> dict:
 
 
 def _write_json(path: Path, data: dict) -> None:
+    """업종 메타 JSON 저장."""
     _ensure_dir()
     path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
 
 
 def _fetch_industry_code(code: str) -> str:
+    """네이버 integration API → ``industryCode``."""
     c = str(code).zfill(6)
     url = f"https://m.stock.naver.com/api/stock/{c}/integration"
     r = requests.get(url, headers=_HEADERS, timeout=14)
@@ -86,6 +90,7 @@ def _fetch_industry_code(code: str) -> str:
 
 
 def _fetch_industry_name(industry_code: str) -> str:
+    """업종 상세 페이지 제목에서 업종명 파싱."""
     ic = str(industry_code).strip()
     if not ic:
         return ""
@@ -161,6 +166,7 @@ def prefetch_industry_codes(codes: list[str]) -> None:
 
 @lru_cache(maxsize=1)
 def _code_to_industry_map() -> dict[str, str]:
+    """종목→업종코드 캐시 전체(프로세스 내 1회 로드)."""
     return _read_json(_CODE_TO_INDUSTRY, {})
 
 

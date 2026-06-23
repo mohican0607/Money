@@ -557,6 +557,7 @@ def _panel_days_from_reports_and_preserved(
 
 
 def _week_panels_from_panel_days(panel_days: list[dict]) -> list[dict]:
+    """일자 패널 목록 → ISO 주(월요일) 단위 그룹 패널."""
     by_week: dict[date, list[dict]] = {}
     for pd in panel_days:
         d = pd["trading_day"]

@@ -192,6 +192,7 @@ def _day_candidate_codes(
 def _momentum_for_code(
     ohlcv_idx: pd.DataFrame | None, code: str, trading_day: date
 ) -> float:
+    """OHLCV 인덱스에서 당일 종목 모멘텀 점수(없으면 0)."""
     from . import pred_hybrid
 
     if ohlcv_idx is None:
@@ -208,6 +209,7 @@ def _momentum_for_code(
 def _ohlcv_row_for_code(
     ohlcv_idx: pd.DataFrame | None, code: str, trading_day: date
 ) -> pd.Series | None:
+    """``(trading_day, code)`` 멀티인덱스에서 일봉 행(없으면 ``None``)."""
     if ohlcv_idx is None:
         return None
     try:
@@ -322,6 +324,7 @@ def _load_ks11_cached(start: date, end: date) -> pd.DataFrame:
 def _investor_flow_feats_row(
     idx: pd.DataFrame | None, code: str, trading_day: date
 ) -> list[float]:
+    """``returns_ml`` 인덱스에서 수급 lag 피처 5종(없으면 0 패딩)."""
     cols = (
         "foreign_net_vol_ratio_lag1",
         "inst_net_vol_ratio_lag1",
@@ -604,6 +607,7 @@ def _build_training_arrays(
         tw: dict[str, float],
         today_v: np.ndarray | None,
     ) -> list[float]:
+        """학습 행 1건용 ``_feat_vector`` 래퍼(코드 정규화·히스토리 kw 누적)."""
         c6 = str(code).zfill(6)
         return _feat_vector(
             train_events,

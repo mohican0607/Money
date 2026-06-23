@@ -19,6 +19,8 @@ from . import config, news, trading_calendar
 
 @dataclass
 class _NewsClip:
+    """리포트 참고 패널용 뉴스 한 건(분류·타이밍 메타 포함)."""
+
     day: date | None
     title: str
     description: str
@@ -94,10 +96,12 @@ _RISK_KW = (
 
 
 def _esc(s: str) -> str:
+    """HTML 이스케이프(속성 따옴표 없음)."""
     return html.escape(s, quote=False)
 
 
 def _clip_li(c: _NewsClip) -> str:
+    """``_NewsClip`` → 리포트 ``<li>`` HTML."""
     day_s = c.day.isoformat() if isinstance(c.day, date) else ""
     me = _esc(c.matched or c.category)
     te = _esc(c.title)
@@ -139,6 +143,7 @@ def _classify_blob(blob: str) -> str:
 
 
 def _news_clips_from_hits(hits: list[dict] | None, *, limit: int = 12) -> list[_NewsClip]:
+    """뉴스 hit dict 목록 → 분류된 ``_NewsClip`` 리스트."""
     out: list[_NewsClip] = []
     for h in hits or []:
         if len(out) >= limit:
@@ -369,6 +374,7 @@ def _technical_bullets(
 
 
 def _market_bullet(kospi_return: float | None, t_day: date) -> str | None:
+    """KOSPI 전일 대비 수익률 한 줄 bullet(없으면 ``None``)."""
     if kospi_return is None or not math.isfinite(float(kospi_return)):
         return None
     pct = float(kospi_return) * 100.0
@@ -377,6 +383,7 @@ def _market_bullet(kospi_return: float | None, t_day: date) -> str | None:
 
 
 def _section(title: str, bullets: list[str]) -> str:
+    """제목 + bullet ``<ul>`` HTML 섹션."""
     if not bullets:
         return ""
     items = "".join(f"<li>{b}</li>" for b in bullets)
@@ -384,6 +391,7 @@ def _section(title: str, bullets: list[str]) -> str:
 
 
 def _section_news(title: str, clips: list[_NewsClip], *, empty: str) -> str:
+    """카테고리별로 묶은 뉴스 클립 섹션 HTML."""
     if not clips:
         return f"<p><strong>{_esc(title)}</strong> — {empty}</p>"
     by_cat: dict[str, list[_NewsClip]] = {}

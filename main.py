@@ -696,6 +696,7 @@ def _prediction_signal_html(r: dict) -> str:
 
 
 def _enrich_rows_prediction_signal(rows_compare: list[dict]) -> None:
+    """비교 행마다 ``prediction_signal_html`` (ML·키워드·확신 요약) 채움."""
     for r in rows_compare:
         r["prediction_signal_html"] = _prediction_signal_html(r)
 
@@ -1515,6 +1516,7 @@ def _run_pipeline(
         )
 
     def _events_for_snapshot(ev: list[features.BreakoutEvent]) -> list[features.BreakoutEvent]:
+        """스냅샷 저장 구간(``train_start``~``end_date``)에 해당하는 이벤트만 필터."""
         return train_snapshot.events_for_storage(
             ev, train_start=train_start, storage_end=end_date
         )

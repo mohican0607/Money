@@ -200,10 +200,12 @@ _THEME_WEAK_FALLBACK_MIN = 4
 
 
 def _limit_up_threshold_pct() -> float:
+    """상한가 근접 판정 임계(퍼센트 포인트, 기본 29)."""
     return _LIMIT_UP_PCT
 
 
 def _strong_mover_threshold_pct() -> float:
+    """강한 급등(테마 리포트) 임계(퍼센트 포인트, 기본 25)."""
     return _STRONG_MOVER_PCT
 
 
@@ -257,6 +259,7 @@ def _actual_return_pct_points(row: dict[str, Any]) -> float | None:
 
 
 def _series_float(row: pd.Series, col: str) -> float | None:
+    """DataFrame 행에서 유한한 float 컬럼 값(없거나 비유한이면 ``None``)."""
     if col not in row.index:
         return None
     try:
@@ -317,6 +320,7 @@ def _strong_mover_price_row_valid(
 def _prev_trading_row_for_code(
     returns_df: pd.DataFrame, t_day: date, code: str
 ) -> pd.Series | None:
+    """``t_day`` 직전 거래일의 해당 종목 수익률 행."""
     prev_td = trading_calendar.last_trading_day_before(t_day)
     m = (returns_df["Date"] == pd.Timestamp(prev_td)) & (
         returns_df["Code"].astype(str).str.zfill(6) == str(code).zfill(6)
@@ -669,6 +673,7 @@ def _ensure_limit_up_theme_sectors(
             stock_sector_map[code] = _full_sector_label(label)
 
     def _limit_up_theme_label(stock: dict[str, Any]) -> str:
+        """상한가 종목의 표시용 테마 라벨(맵·행 필드 순)."""
         code = str(stock.get("code") or "").zfill(6)
         ts = str(stock.get("theme_sector") or "").strip()
         if ts:
@@ -756,6 +761,7 @@ def _stock_dict(
     listing_names: dict[str, str],
     kw_set: frozenset[str],
 ) -> dict[str, Any]:
+    """일간 수익률 행 → 테마·키워드 메타가 붙은 종목 dict."""
     code = str(stock_row["Code"]).zfill(6)
     name = str(stock_row.get("Name") or listing_names.get(code, ""))
     rp = round(float(stock_row["return_pct"]) * 100.0, 3)
@@ -974,6 +980,7 @@ def _compact_sector_label(label: str) -> str:
 
 
 def _sector_aliases_for_label(label: str) -> tuple[str, ...]:
+    """풀 테마 라벨 → 뉴스 매칭용 별칭 튜플."""
     for sector_label, aliases in _THEME_SECTORS:
         if sector_label == label:
             return aliases
@@ -1600,6 +1607,7 @@ def _enrich_seed_hits(
 def _format_stock_brief(
     stock: dict[str, Any], *, with_news: bool = True, with_theme: bool = False
 ) -> str:
+    """리포트용 종목 한 줄 요약(등락·상한·키워드·테마)."""
     nm = str(stock.get("name") or "").strip()
     rp = float(stock.get("return_pct") or 0.0)
     lim = "·상한" if stock.get("is_limit_up") or _is_near_limit_up_return_pct(rp) else ""
@@ -1768,6 +1776,7 @@ def _build_theme_narratives(
 
 
 def _alias_in_blob(blob: str, aliases: tuple[str, ...]) -> bool:
+    """텍스트에 테마 별칭(2자 이상)이 포함되는지."""
     low = blob.lower()
     for alias in aliases:
         a = str(alias).strip().lower()
@@ -1777,6 +1786,7 @@ def _alias_in_blob(blob: str, aliases: tuple[str, ...]) -> bool:
 
 
 def _stock_matches_sector(stock: dict[str, Any], aliases: tuple[str, ...]) -> bool:
+    """종목명·뉴스 키워드가 섹터 별칭과 매칭되는지."""
     name = str(stock.get("name") or "")
     if _alias_in_blob(name, aliases):
         return True
@@ -1805,6 +1815,7 @@ def _catalyst_phrase(top_kw: list[str], sector_key: str) -> str:
 
 
 def _sector_active_in_news(aliases: tuple[str, ...], seeds: list, top_kw: list) -> bool:
+    """당일 시드·상위 키워드 풀에 섹터 별칭이 등장하는지."""
     pool_blob = " ".join(str(x) for x in list(seeds) + list(top_kw))
     return _alias_in_blob(pool_blob, aliases)
 
@@ -2121,6 +2132,7 @@ def format_market_theme_flow_html(
     news_chars = int(row.get("news_chars") or 0)
 
     def _esc(s: str) -> str:
+        """로컬 HTML 이스케이프(시장·테마 요약 블록용)."""
         return html.escape(s, quote=True)
 
     sector_summaries = sectors if sectors else _build_sector_summaries(

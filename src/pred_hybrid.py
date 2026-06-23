@@ -78,6 +78,7 @@ def hybrid_rank_score(row: PredictionRow) -> float:
 
 
 def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> bool:
+    """고확신 1차 게이트: 상대 순위 + 뉴스 외 다요인 합의(``pred_factors.passes_dual_factor_gate``)."""
     from . import pred_factors
 
     ks11 = getattr(row, "ks11_ret_lag1", None)
@@ -111,6 +112,7 @@ def assign_hybrid_confidence_tiers(
     for pos, row in enumerate(ranked, start=1):
         h = hybrid_rank_score(row)
         ml = float(row.ml_prob or 0.0)
+        # 고확신: 상위 8위 이내 + 하이브리드·이중신호(비뉴스 기둥) 통과
         if high_n < max_high and pos <= 8 and h + 1e-12 >= high_floor and _dual_signal_ok(
             row, hybrid=h, top_hybrid=top_hybrid
         ):

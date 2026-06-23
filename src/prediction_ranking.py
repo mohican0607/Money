@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 
 def rank_score_for_row(row: PredictionRow) -> float:
+    """행의 하이브리드 랭킹 점수 — ``pred_hybrid.hybrid_rank_score`` 위임."""
     return pred_hybrid.hybrid_rank_score(row)
 
 
@@ -37,6 +38,7 @@ def effective_probability(row: PredictionRow, *, rank_position: int, pool_size: 
 
 
 def _tier_thresholds(*, regime_scale: float) -> tuple[float, float, float]:
+    """레짐 축소 배율을 반영한 (고확신, 중확신, 최소 출력) ML 확률 하한."""
     rs = max(0.25, float(regime_scale))
     high_floor = 0.12
     mid_floor = 0.06
@@ -61,6 +63,7 @@ def _ml_high_signal_ok(row: PredictionRow, *, rank_position: int) -> bool:
 
 
 def _pool_top_ml_prob(pool: list[PredictionRow]) -> float:
+    """풀 내 유한한 ML 확률의 최댓값(상대 확신 게이트용)."""
     top = 0.0
     for row in pool:
         mp = getattr(row, "ml_prob", None)
@@ -153,6 +156,7 @@ def is_high_confidence_prediction(row: PredictionRow) -> bool:
 
 
 def is_mid_confidence_prediction(row: PredictionRow) -> bool:
+    """``pred_mid`` 판정: 랭킹 모드면 ``confidence_tier==mid``, 레거시면 표시 % 10~20% 구간."""
     if config.PRED_RANKING_MODE:
         return str(getattr(row, "confidence_tier", "") or "") == "mid"
     pct = float(getattr(row, "predicted_return_pct", 0.0) or 0.0)
@@ -174,6 +178,7 @@ def row_pred_high_from_dict(row: dict) -> bool:
 
 
 def row_pred_mid_from_dict(row: dict) -> bool:
+    """``rows_compare`` dict 에서 ``pred_mid`` 판정."""
     if config.PRED_RANKING_MODE:
         return str(row.get("confidence_tier") or "") == "mid"
     pr = row.get("pred_ret")
@@ -243,6 +248,7 @@ def finalize_ranked_predictions(
         pred_hybrid.assign_hybrid_confidence_tiers(pool, regime_scale=r_scale)
         from . import pred_precision_gate
 
+        # 1차 하이브리드 tier → 정밀 게이트로 high 재필터(뉴스 단독·저적중 종목 제거)
         pred_precision_gate.refine_confidence_tiers(
             pool,
             feedback_ctx=prediction_accuracy_cache.build_feedback_context(),

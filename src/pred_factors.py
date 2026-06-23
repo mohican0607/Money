@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 
 def _clamp01(x: float) -> float:
+    """값을 [0, 1] 구간으로 클램프."""
     return max(0.0, min(1.0, float(x)))
 
 
@@ -128,6 +129,7 @@ def count_strong_pillars(
     threshold: float = 0.48,
     exclude: frozenset[str] = frozenset(),
 ) -> int:
+    """``threshold`` 이상인 기둥 수(``exclude`` 키는 제외)."""
     return sum(
         1
         for k, v in pillars.items()
@@ -136,6 +138,7 @@ def count_strong_pillars(
 
 
 def count_non_news_strong_pillars(pillars: dict[str, float], *, threshold: float = 0.45) -> int:
+    """뉴스 기둥을 제외한 강한 신호 기둥 수 — 고확신·정밀 게이트의 핵심 지표."""
     return count_strong_pillars(pillars, threshold=threshold, exclude=frozenset({"news"}))
 
 

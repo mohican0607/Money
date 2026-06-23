@@ -266,6 +266,7 @@ class BreakoutEvent:
 
 
 def _news_row_text(row: dict[str, str]) -> str:
+    """뉴스 row 제목+본문 한 줄 blob."""
     return f"{row.get('title', '')} {row.get('description', '')}".strip()
 
 

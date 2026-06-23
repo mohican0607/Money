@@ -124,16 +124,20 @@ _TECH_RISE_BITS = (
 
 @dataclass(frozen=True)
 class _ReasonPick:
+    """급등 이유 후보 1건(문구·신뢰 점수·출처 태그)."""
+
     text: str
     confidence: int
     source: str
 
 
 def _esc(s: str) -> str:
+    """HTML 이스케이프."""
     return html.escape(str(s or ""), quote=True)
 
 
 def _shorten(text: str, *, max_len: int = _REASON_MAX) -> str:
+    """공백 정리 후 최대 길이로 자름(말줄임)."""
     t = re.sub(r"\s+", " ", str(text or "").strip())
     if len(t) <= max_len:
         return t
@@ -141,6 +145,7 @@ def _shorten(text: str, *, max_len: int = _REASON_MAX) -> str:
 
 
 def _clean_phrase(text: str) -> str:
+    """제목·이슈 문구에서 괄호·상한가/급등 꼬리표 등 노이즈 제거."""
     t = re.sub(r"\s+", " ", str(text or "").strip())
     t = re.sub(r"^\[.*?\]\s*", "", t)
     for tail in (
@@ -159,6 +164,7 @@ def _clean_phrase(text: str) -> str:
 
 
 def _usable_catalyst(raw: str) -> str:
+    """범용·짧은 촉매 문자열 필터."""
     s = str(raw or "").strip()
     if len(s) < 2 or s.lower() in _GENERIC_CATALYSTS:
         return ""
@@ -166,14 +172,17 @@ def _usable_catalyst(raw: str) -> str:
 
 
 def _has_catalyst(blob: str) -> bool:
+    """``_CATALYST_EVENTS`` 키워드가 텍스트에 포함되는지."""
     return any(ev in str(blob or "") for ev in _CATALYST_EVENTS)
 
 
 def _is_noise_title(title: str) -> bool:
+    """시황 요약·맛보기 등 노이즈 제목 여부."""
     return any(bit in str(title or "") for bit in _NOISE_TITLE_BITS)
 
 
 def _is_generic_match(matched: str, name: str) -> bool:
+    """매칭 토큰이 외국인·수급 등 범용 키워드인지."""
     m = str(matched or "").strip()
     if not m or m == name:
         return False
@@ -181,11 +190,13 @@ def _is_generic_match(matched: str, name: str) -> bool:
 
 
 def _name_in_title(title: str, name: str) -> bool:
+    """종목명이 제목에 그대로 포함되는지."""
     n = (name or "").strip()
     return bool(n and n in str(title or ""))
 
 
 def _extract_issue_from_title(title: str, name: str) -> str:
+    """뉴스 제목에서 종목명 전후·구분자로 이슈 구절 추출."""
     raw = re.sub(r"\s+", " ", str(title or "").strip())
     raw = re.sub(r"^\[.*?\]\s*", "", raw)
     if not raw:
@@ -214,6 +225,11 @@ def _score_news_hit(
     keywords: list[str],
     relaxed: bool = False,
 ) -> int:
+    """
+    뉴스 hit 1건의 급등 이유 적합도 점수(-1=제외, 높을수록 우선).
+
+    종목명·매칭 토큰·촉매·금액·타이밍(early/late)을 가중합니다.
+    """
     title = str(hit.get("title") or "").strip()
     desc = str(hit.get("description") or "").strip()
     matched = str(hit.get("matched") or "").strip()
@@ -269,6 +285,7 @@ def _pick_from_news_hits(
     relaxed: bool = False,
     min_score: int = 30,
 ) -> _ReasonPick | None:
+    """뉴스 hit 목록에서 최고 점수 이유 1건 선택."""
     best: _ReasonPick | None = None
     for h in hits or []:
         if not isinstance(h, dict):
@@ -295,6 +312,7 @@ def _pick_from_row_list(
     source: str,
     require_name_in_title: bool = False,
 ) -> _ReasonPick | None:
+    """early/당일 뉴스 row 목록에서 종목 관련 최고 이유 1건."""
     best: _ReasonPick | None = None
     for _, row in rows:
         title = str(row.get("title") or "").strip()
@@ -338,6 +356,7 @@ def _pick_from_matched_rows(
 
 
 def _disclosure_phrase(kind: str, title: str) -> str:
+    """공시 제목에서 유상증자·계약 등 핵심 구절 추출."""
     t = _clean_phrase(title)
     for pat, fmt in (
         (r"(\d+(?:\.\d+)?억)\s*유상증자", r"\1 유상증자 결정"),
@@ -360,6 +379,7 @@ def _disclosure_phrase(kind: str, title: str) -> str:
 
 
 def _pick_from_disclosure(hits: list[dict[str, Any]] | None) -> _ReasonPick | None:
+    """공시 hit에서 최고 신뢰 이유 1건."""
     best: _ReasonPick | None = None
     for h in hits or []:
         if not isinstance(h, dict):
@@ -379,6 +399,7 @@ def _pick_from_disclosure(hits: list[dict[str, Any]] | None) -> _ReasonPick | No
 
 
 def _pick_from_rise_reason_html(compare_row: dict[str, Any] | None) -> _ReasonPick | None:
+    """메인 리포트 ``rise_reason_html`` 의 ``<li>`` 에서 기술·시황 노이즈 제외 후 1건."""
     if not compare_row:
         return None
     raw = str(compare_row.get("rise_reason_html") or "")
@@ -419,6 +440,7 @@ def _pick_from_theme_news(
     *,
     aliases: tuple[str, ...],
 ) -> _ReasonPick | None:
+    """테마 별칭이 매칭된 섹터 뉴스에서 이슈 1건(종목 직접 뉴스 없을 때)."""
     for rows, src in ((actual_ctx_rows, "theme_actual"), (early_rows, "theme_early")):
         for _, row in rows:
             blob = f"{row.get('title', '')} {row.get('description', '')}"
@@ -440,6 +462,7 @@ def _sector_context(
     code: str,
     theme_label: str,
 ) -> tuple[str, str, tuple[str, ...]]:
+    """종목의 축약 테마·섹터 촉매·뉴스 검색 별칭."""
     theme = srl._compact_sector_label(theme_label)
     if not theme and flow_row:
         stock_map = flow_row.get("theme_stock_sectors") or {}
@@ -466,6 +489,7 @@ def _stock_specific_keywords(
     compare_row: dict[str, Any] | None,
     early_rows: list[tuple[date, dict[str, str]]],
 ) -> list[str]:
+    """비교 행·급등 이력에서 종목별 구체 키워드(최대 8)."""
     raw: list[str] = list((compare_row or {}).get("keywords") or [])
     raw.extend(list((compare_row or {}).get("name_keyword_overlap_with_news") or []))
     bk, _ = features.breakout_keywords_for_stock(code, name, early_rows)
@@ -479,6 +503,7 @@ def _peer_names(
     code: str,
     theme: str,
 ) -> list[str]:
+    """같은 테마 상한·25%↑ 동반 급등 종목명(최대 3)."""
     if not flow_row or not theme:
         return []
     compact = srl._compact_sector_label(theme)
@@ -508,6 +533,7 @@ def _fallback_reason(
     return_pct: float,
     is_limit_up: bool,
 ) -> _ReasonPick:
+    """뉴스·공시 매칭 실패 시 테마·키워드·동반 급등·등락률 순 폴백."""
     if catalyst:
         text = catalyst if not theme else f"{catalyst}"
         return _ReasonPick(text=text, confidence=35, source="sector_catalyst")
@@ -548,6 +574,11 @@ def _reason_for_stock(
     return_pct: float,
     is_limit_up: bool,
 ) -> _ReasonPick:
+    """
+    한 종목의 급등 이유를 다단계 탐색해 최종 1건 반환.
+
+    actual/pred 뉴스 → 공시 → rise_reason HTML → 직접/매칭 뉴스 → 테마 뉴스 → 폴백.
+    """
     keywords = _stock_specific_keywords(code, name, compare_row, early_rows)
     theme, catalyst, aliases = _sector_context(flow_row, code=code, theme_label=theme_label)
     peers = _peer_names(flow_row, code=code, theme=theme)
@@ -605,6 +636,7 @@ def _reason_for_stock(
 
 
 def _format_bullet_line(name: str, reason: str, *, is_limit_up: bool) -> str:
+    """종목명 + 이유 한 줄 ``<li>`` HTML."""
     r = _shorten(reason.strip())
     if is_limit_up and r and "상한" not in r:
         r = f"{r}에 상한가"
@@ -621,6 +653,7 @@ def _collect_stock_entries(
     compare_rows: list[dict[str, Any]],
     listing_names: dict[str, str],
 ) -> tuple[list[dict[str, Any]], int]:
+    """상한·20%↑ 종목 엔트리 목록과 상한가 개수."""
     compare_by_code = {
         str(r.get("code", "")).zfill(6): r
         for r in compare_rows
@@ -630,6 +663,7 @@ def _collect_stock_entries(
     entries: list[dict[str, Any]] = []
 
     def _add(code: str, name: str, ret_pts: float, is_lim: bool) -> None:
+        """상한·급등 엔트리 목록에 중복 없이 추가."""
         c = str(code).zfill(6)
         if not c or c in seen:
             return

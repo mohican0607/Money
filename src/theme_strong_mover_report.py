@@ -23,10 +23,12 @@ _PEER_MAX = 5
 
 
 def _esc(s: str) -> str:
+    """HTML 이스케이프."""
     return html.escape(str(s or ""), quote=True)
 
 
 def _news_row_title(row: dict[str, str], *, max_len: int = _TITLE_MAX) -> str:
+    """뉴스 row에서 표시용 제목(없으면 description 앞부분)."""
     t = str(row.get("title") or "").strip()
     if not t:
         t = str(row.get("description") or "").strip()[:max_len]
@@ -40,6 +42,7 @@ def _stock_direct_news(
     *,
     limit: int = 1,
 ) -> list[tuple[date, str]]:
+    """종목 직접 매칭 early 뉴스 제목 목록."""
     from .features import _stock_relevant_news_rows
 
     out: list[tuple[date, str]] = []
@@ -56,6 +59,7 @@ def _news_clip_for_aliases(
     early_rows: list[tuple[date, dict[str, str]]],
     aliases: tuple[str, ...],
 ) -> tuple[date, str] | None:
+    """테마 별칭이 포함된 첫 early 뉴스 (날짜, 제목)."""
     if not aliases:
         return None
     for d, row in early_rows:
@@ -71,6 +75,7 @@ def _news_clip_for_aliases(
 def _sector_summary_for_label(
     flow_row: dict[str, Any], theme_compact: str
 ) -> dict[str, Any] | None:
+    """``theme_sector_summaries`` 에서 축약 라벨과 일치하는 섹터 요약 dict."""
     for summ in flow_row.get("theme_sector_summaries") or []:
         if not isinstance(summ, dict):
             continue
@@ -81,6 +86,7 @@ def _sector_summary_for_label(
 
 
 def _usable_catalyst(raw: str) -> str:
+    """범용·짧은 촉매 문자열은 빈 문자열로 제거."""
     s = str(raw or "").strip()
     if len(s) < 2 or s.lower() in _GENERIC_CATALYSTS:
         return ""
@@ -147,6 +153,7 @@ def _sector_rationale_compact(
 
 
 def _market_label(segment: str) -> str:
+    """``market_segment`` 코드 → KOSPI/KOSDAQ 표시."""
     seg = str(segment or "").lower()
     if seg == "kospi":
         return "KOSPI"
@@ -156,12 +163,14 @@ def _market_label(segment: str) -> str:
 
 
 def _plain_from_html(fragment: str, *, max_len: int = _TITLE_MAX) -> str:
+    """HTML fragment → 평문(태그 제거·길이 제한)."""
     s = re.sub(r"<[^>]+>", " ", str(fragment or ""))
     s = html.unescape(re.sub(r"\s+", " ", s).strip())
     return s[:max_len]
 
 
 def _news_hits_from_compare(compare_row: dict[str, Any] | None, *, limit: int = 2) -> list[str]:
+    """비교 행의 예측/실제 뉴스 hit·공시에서 표시용 문자열 추출."""
     if not compare_row:
         return []
     out: list[str] = []
@@ -460,6 +469,7 @@ def build_strong_mover_report_days(
     listing_names: dict[str, str],
     news_cutoff_label: str,
 ) -> list[dict[str, Any]]:
+    """여러 ``DayReport`` → 25%↑ 테마 리포트용 일자별 섹션 dict 목록."""
     by_day = {str(r.get("trading_day")): dict(r) for r in theme_flow_rows if r.get("trading_day")}
     market_by_code = stocks.market_segment_by_code()
     out: list[dict[str, Any]] = []
@@ -589,6 +599,7 @@ def format_strong_mover_theme_report_html(
     news_cutoff_label: str,
     preserved_day_html: dict[date, str] | None = None,
 ) -> str:
+    """일자 섹션 블록을 합쳐 완전한 테마 리포트 HTML 문자열 생성."""
     from jinja2 import Environment, select_autoescape
 
     preserved = preserved_day_html or {}
@@ -625,6 +636,7 @@ def render_strong_mover_theme_report(
     meta_note: str = "",
     preserved_day_html: dict[date, str] | None = None,
 ) -> Path | None:
+    """25%↑ 테마 리포트 HTML 파일을 ``out_path`` 에 저장. 섹션 없으면 ``None``."""
     days = build_strong_mover_report_days(
         day_reports,
         theme_flow_rows,
@@ -649,10 +661,12 @@ def render_strong_mover_theme_report(
 
 
 def theme_report_filename_for_month(year: int, month: int) -> str:
+    """월간 테마 리포트 파일명 (예: ``report_theme_25pct_2026.06.html``)."""
     return f"report_theme_25pct_{year}.{month:02d}.html"
 
 
 def theme_report_filename_for_range(d_from: date, d_to: date) -> str:
+    """구간 테마 리포트 파일명(동월이면 월간, 아니면 From_To)."""
     if d_from.year == d_to.year and d_from.month == d_to.month:
         return theme_report_filename_for_month(d_from.year, d_from.month)
     return (
