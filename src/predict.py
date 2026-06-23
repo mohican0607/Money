@@ -84,6 +84,8 @@ class PredictionRow:
     industry_limit_up_heat: float = 0.0
     investor_flow_score: float = 0.0
     foreign_net_vol_ratio: float = 0.0
+    relative_strength_score: float = 0.0
+    ks11_ret_lag1: float | None = None
     rank_score: float | None = None
     rank_position: int | None = None
     confidence_tier: str = "none"

@@ -1,53 +1,26 @@
 """
 고확신(pred_high) 적중률 극대화 게이트.
 
-하이브리드 랭킹 후 **다중 신호 합의(ML·뉴스·모멘텀·테마·업종)** 와
-누적 피드백(버킷·종목 이력)으로 ``confidence_tier=high`` 를 재필터링합니다.
+``pred_factors`` 다요인 기둥 합의로 ``confidence_tier=high`` 를 재필터링합니다.
 """
 from __future__ import annotations
 
-import math
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from . import config, prediction_accuracy_cache
+from . import config, pred_factors, prediction_accuracy_cache
 
 if TYPE_CHECKING:
     from .predict import PredictionRow
 
 
 def _pillar_scores(row: PredictionRow) -> dict[str, float]:
-    ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
-    nh = int(getattr(row, "keyword_hits", 0) or 0)
-    mention = float(getattr(row, "mention_score", 0.0) or 0.0)
-    nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
-    mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
-    ind_m = float(getattr(row, "industry_momentum", 0.0) or 0.0)
-    ind_ov = float(getattr(row, "industry_theme_overlap", 0.0) or 0.0)
-    ind_lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
-    return {
-        "ml": min(1.0, ml / 0.20),
-        "news": min(
-            1.0,
-            0.40 * nctx + 0.32 * min(1.0, nh / 3.0) + 0.28 * min(1.0, mention),
-        ),
-        "momentum": min(1.0, mom / 0.58),
-        "theme": min(1.0, max(ind_ov, ind_lim * 0.85)),
-        "industry": min(1.0, (ind_m * 0.65 + ind_lim * 0.35) / 0.38),
-    }
+    ks11 = getattr(row, "ks11_ret_lag1", None)
+    return pred_factors.compute_pillar_scores(row, ks11_ret_lag1=ks11)
 
 
 def conviction_score(row: PredictionRow) -> float:
-    """0~1 확신 점수(상위 기둥 가중 평균)."""
-    pillars = _pillar_scores(row)
-    vals = sorted(pillars.values(), reverse=True)
-    if len(vals) < 3:
-        return 0.0
-    w = (0.34, 0.28, 0.22, 0.10, 0.06)
-    s = sum(v * w[i] for i, v in enumerate(vals[: len(w)]))
-    strong = sum(1 for v in vals if v + 1e-12 >= 0.50)
-    if strong < int(config.PRED_PRECISION_MIN_PILLARS):
-        s *= 0.72
-    return max(0.0, min(1.0, s))
+    ks11 = getattr(row, "ks11_ret_lag1", None)
+    return pred_factors.conviction_score(row, ks11_ret_lag1=ks11)
 
 
 def _bucket_ok(row: PredictionRow, feedback_ctx: dict[str, object] | None) -> bool:
@@ -72,7 +45,6 @@ def _bucket_ok(row: PredictionRow, feedback_ctx: dict[str, object] | None) -> bo
 
 
 def _code_history_ok(code: str) -> bool:
-    """과거 고확신 이력이 나쁜 종목은 제외."""
     payload = prediction_accuracy_cache._load_payload()
     hp = payload.get("high_pred_by_code")
     tap = payload.get("t_code_actual_pct")
@@ -110,15 +82,14 @@ def passes_precision_gate(
     rank_position: int,
     feedback_ctx: dict[str, object] | None = None,
 ) -> bool:
-    """고확신 슬롯 통과 여부."""
     if rank_position > int(config.PRED_PRECISION_MAX_RANK):
         return False
     conv = conviction_score(row)
     if conv + 1e-12 < float(config.PRED_PRECISION_MIN_CONVICTION):
         return False
     pillars = _pillar_scores(row)
-    strong = sum(1 for v in pillars.values() if v + 1e-12 >= 0.48)
-    if strong < int(config.PRED_PRECISION_MIN_PILLARS):
+    non_news = pred_factors.count_non_news_strong_pillars(pillars, threshold=0.46)
+    if non_news < int(config.PRED_PRECISION_MIN_PILLARS):
         return False
     ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
     floor = max(
@@ -129,22 +100,20 @@ def passes_precision_gate(
         return False
     if top_ml > 1e-9 and ml + 1e-12 < top_ml * float(config.PRED_ML_HIGH_RELATIVE_PROB):
         return False
-    nh = int(getattr(row, "keyword_hits", 0) or 0)
-    mention = float(getattr(row, "mention_score", 0.0) or 0.0)
-    nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
-    mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
-    signals = 0
-    if nh >= int(config.PRED_ML_HIGH_MIN_KEYWORD_HITS):
-        signals += 1
-    if mention + 1e-12 >= float(config.PRED_MENTION_GATE_MIN):
-        signals += 1
-    if nctx + 1e-12 >= 0.30:
-        signals += 1
-    if mom + 1e-12 >= 0.22:
-        signals += 1
-    if pillars["theme"] + 1e-12 >= 0.45 or pillars["industry"] + 1e-12 >= 0.40:
-        signals += 1
-    if signals < 2:
+    if pillars["news"] + 1e-12 >= 0.52 and non_news < 2:
+        return False
+    non_news_signals = 0
+    if pillars["momentum"] + 1e-12 >= 0.40:
+        non_news_signals += 1
+    if pillars["flow"] + 1e-12 >= 0.40:
+        non_news_signals += 1
+    if pillars["relative_strength"] + 1e-12 >= 0.38:
+        non_news_signals += 1
+    if pillars["sector"] + 1e-12 >= 0.42:
+        non_news_signals += 1
+    if pillars["ml"] + 1e-12 >= 0.45:
+        non_news_signals += 1
+    if non_news_signals < 2:
         return False
     if not _bucket_ok(row, feedback_ctx):
         return False
@@ -159,12 +128,6 @@ def refine_confidence_tiers(
     feedback_ctx: dict[str, object] | None = None,
     regime_scale: float = 1.0,
 ) -> None:
-    """
-    하이브리드 tier 부여 후 고확신을 **확신 점수·다중 합의** 로 재선별합니다.
-
-    통과 종목만 ``high`` 유지. 아무도 통과하지 못하면 하이브리드 배정을 유지하거나
-    상위 ML 순위로 폴백해 예측 후보가 비지 않게 합니다.
-    """
     if not pool or not config.PRED_PRECISION_GATE_ENABLED:
         return
     rs = max(0.25, float(regime_scale))
@@ -178,11 +141,6 @@ def refine_confidence_tiers(
         key=lambda r: (conviction_score(r), float(getattr(r, "ml_prob", 0.0) or 0.0)),
         reverse=True,
     )
-    hybrid_high_codes = {
-        str(r.code).zfill(6)
-        for r in pool
-        if str(getattr(r, "confidence_tier", "")) == "high"
-    }
     promoted: list[str] = []
     for pos, row in enumerate(ranked, start=1):
         if len(promoted) >= max_high:
@@ -193,17 +151,6 @@ def refine_confidence_tiers(
             continue
         promoted.append(str(row.code).zfill(6))
 
-    if not promoted:
-        if hybrid_high_codes:
-            return
-        ml_floor = float(config.PRED_ML_MIN_OUTPUT_PROB)
-        for row in ranked[:max_high]:
-            ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
-            if ml + 1e-12 >= ml_floor:
-                promoted.append(str(row.code).zfill(6))
-        if not promoted and ranked:
-            promoted.append(str(ranked[0].code).zfill(6))
-
     promoted_set = set(promoted)
     for row in pool:
         code = str(row.code).zfill(6)
@@ -211,3 +158,4 @@ def refine_confidence_tiers(
             row.confidence_tier = "high"
         elif str(getattr(row, "confidence_tier", "")) == "high":
             row.confidence_tier = "mid"
+

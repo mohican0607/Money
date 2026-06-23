@@ -333,7 +333,7 @@ def build_day_strong_mover_sections(
         if str(stock.get("theme_sector") or "").strip():
             continue
         cr = compare_by_code.get(code)
-        sectors = srl._theme_labels_for_compare_row(
+        labels, _src = srl._theme_labels_for_compare_row(
             flow_row,
             cr or {
                 "code": code,
@@ -347,8 +347,8 @@ def build_day_strong_mover_sections(
             seeds=list(flow_row.get("theme_seed_hits") or []),
             top_kw=list(flow_row.get("top_keywords_sample") or []),
         )
-        if sectors:
-            stock["theme_sector"] = sectors[0]
+        if labels:
+            stock["theme_sector"] = labels[0]
 
     seeds = list(flow_row.get("theme_seed_hits") or [])
     top_kw = list(flow_row.get("top_keywords_sample") or [])

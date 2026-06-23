@@ -205,6 +205,20 @@ def _momentum_for_code(
     return pred_hybrid.momentum_raw_from_row(row)
 
 
+def _ohlcv_row_for_code(
+    ohlcv_idx: pd.DataFrame | None, code: str, trading_day: date
+) -> pd.Series | None:
+    if ohlcv_idx is None:
+        return None
+    try:
+        row = ohlcv_idx.loc[(trading_day, code)]
+    except KeyError:
+        return None
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[-1]
+    return row
+
+
 def _ml_scoring_candidate_codes(
     listing_codes: list[str],
     listing_names: dict[str, str],
@@ -946,6 +960,9 @@ def rank_predictions_ml(
         dtype=np.float64,
     )
     buf: list[predict.PredictionRow] = []
+    ks11_ret, _ = _ks11_market_feats(target_day)
+    from . import pred_factors
+
     for fi in range(len(cand_ix)):
         i = cand_ix[fi]
         code = listing_codes[i]
@@ -966,9 +983,15 @@ def rank_predictions_ml(
             continue
         p = float(proba[fi])
         pr.ml_prob = p
+        pr.ks11_ret_lag1 = ks11_ret
         pr.momentum_score = _momentum_for_code(ohlcv_idx, code, target_day)
+        ohlcv_row = _ohlcv_row_for_code(ohlcv_idx, code, target_day)
+        if ohlcv_row is not None:
+            pr.relative_strength_score = pred_factors.relative_strength_from_row(
+                ohlcv_row, ks11_ret_lag1=ks11_ret
+            )
         try:
-            row = ohlcv_idx.loc[(target_day, code)]
+            row = ohlcv_row if ohlcv_row is not None else ohlcv_idx.loc[(target_day, code)]
             if isinstance(row, pd.DataFrame):
                 row = row.iloc[-1]
             pr.investor_flow_score = float(row.get("investor_flow_score") or 0.0)
@@ -984,9 +1007,8 @@ def rank_predictions_ml(
             _, nctx = feats_for_code(news_ctx, news_text_blob, code)
             pr.news_context_score = nctx
         pr.reasons = [
-            f"전체뉴스 ML(맥락 {pr.news_context_score * 100:.0f}%·ML {p * 100:.1f}%·"
-            f"모멘텀 {pr.momentum_score * 100:.0f}%·수급 {pr.investor_flow_score * 100:.0f}%·"
-            f"외국인순매수/거래량 {pr.foreign_net_vol_ratio * 100:.1f}%p·키워드 {pr.keyword_hits}) "
+            f"다요인 랭킹: {pred_factors.format_factor_summary(pr, ks11_ret_lag1=ks11_ret)} · "
+            f"ML {p * 100:.1f}% · 키워드 {pr.keyword_hits} · "
             f"익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정."
         ] + list(pr.reasons)
         buf.append(pr)
@@ -994,7 +1016,6 @@ def rank_predictions_ml(
     buf.sort(key=lambda r: -pred_hybrid.hybrid_rank_score(r))
     out = buf[:top_n]
 
-    ks11_ret, _ = _ks11_market_feats(target_day)
     out = prediction_ranking.finalize_ranked_predictions(
         out,
         target_day=target_day,

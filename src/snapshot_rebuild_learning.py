@@ -217,13 +217,29 @@ def _is_strong_mover_return_pct(return_pct_points: float) -> bool:
     return float(return_pct_points) + 1e-9 >= _STRONG_MOVER_PCT
 
 
+def _compare_row_actual_ret_pct_points(actual_ret: float) -> float:
+    """``rows_compare.actual_ret``(소수, 0.25=25%, 1.778=177.8%) → 퍼센트 포인트."""
+    return float(actual_ret) * 100.0
+
+
+def _stock_return_pct_field_to_points(v: float) -> float:
+    """
+    종목 dict ``return_pct`` 를 퍼센트 포인트로 통일.
+
+    OHLCV 유래는 이미 29.8 형태, 비교 표 유래는 1.778(소수)일 수 있어 |v|≤3 이면 소수로 본다.
+    """
+    v = float(v)
+    if abs(v) <= 3.0:
+        return v * 100.0
+    return v
+
+
 def _compare_row_return_pct_points(row: dict[str, Any]) -> float | None:
     """비교 표 행의 대표 상승률(퍼센트 포인트). 실제·예측 중 더 큰 값."""
     candidates: list[float] = []
     ar = row.get("actual_ret")
     if ar is not None and math.isfinite(float(ar)):
-        v = float(ar)
-        candidates.append(v * 100.0 if -1.5 <= v <= 1.5 else v)
+        candidates.append(_compare_row_actual_ret_pct_points(float(ar)))
     pr = row.get("pred_ret")
     if pr is not None and math.isfinite(float(pr)):
         candidates.append(float(pr))
@@ -237,8 +253,7 @@ def _actual_return_pct_points(row: dict[str, Any]) -> float | None:
     ar = row.get("actual_ret")
     if ar is None or not math.isfinite(float(ar)):
         return None
-    v = float(ar)
-    return v * 100.0 if -1.5 <= v <= 1.5 else v
+    return _compare_row_actual_ret_pct_points(float(ar))
 
 
 def _series_float(row: pd.Series, col: str) -> float | None:
@@ -1096,10 +1111,7 @@ def _stock_return_pct_display(stock: dict[str, Any]) -> float:
         v = float(raw)
     except (TypeError, ValueError):
         return 0.0
-    # rows_compare actual_ret 는 소수(0.25=25%)로 넘어올 수 있음
-    if -1.5 <= v <= 1.5:
-        return v * 100.0
-    return v
+    return _stock_return_pct_field_to_points(v)
 
 
 def _theme_relax_for_stock(stock: dict[str, Any]) -> bool:

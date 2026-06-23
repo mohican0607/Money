@@ -70,67 +70,20 @@ def momentum_candidate_codes(
 
 
 def hybrid_rank_score(row: PredictionRow) -> float:
-    """ML·모멘텀·전체뉴스 맥락·업종·투자자 수급 하이브리드 점수."""
-    ml = getattr(row, "ml_prob", None)
-    ml_v = float(ml) if ml is not None and math.isfinite(float(ml)) else 0.0
-    mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
-    nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
-    nh = int(getattr(row, "keyword_hits", 0) or 0)
-    mention = float(getattr(row, "mention_score", 0.0) or 0.0)
-    ind_m = float(getattr(row, "industry_momentum", 0.0) or 0.0)
-    ind_ov = float(getattr(row, "industry_theme_overlap", 0.0) or 0.0)
-    inv = float(getattr(row, "investor_flow_score", 0.0) or 0.0)
-    fr = max(0.0, float(getattr(row, "foreign_net_vol_ratio", 0.0) or 0.0))
-    inv_boost = min(1.0, inv + 0.35 * min(fr / 0.08, 1.0))
-    news = 0.50 * nctx + 0.22 * min(1.0, nh / 5.0) + 0.18 * min(mention, 1.0) + 0.10 * ind_ov
-    ind_lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
-    sector = 0.50 * ind_m + 0.30 * ind_ov + 0.20 * ind_lim
-    w_inv = float(config.PRED_INVESTOR_FLOW_HYBRID_WEIGHT)
-    if not config.PRED_INVESTOR_FLOW_ENABLED:
-        w_inv = 0.0
-    if ml_v > 0:
-        base = 0.34 * ml_v + 0.26 * mom + 0.26 * news + 0.14 * sector
-        return base + w_inv * inv_boost
-    base = 0.40 * mom + 0.34 * news + 0.18 * sector
-    return base + w_inv * inv_boost
+    """ML·모멘텀·수급·상대강도·섹터·시장 다요인 점수(뉴스 보조)."""
+    from . import pred_factors
+
+    ks11 = getattr(row, "ks11_ret_lag1", None)
+    return pred_factors.multi_factor_rank_score(row, ks11_ret_lag1=ks11)
 
 
 def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> bool:
-    nh = int(getattr(row, "keyword_hits", 0) or 0)
-    mention = float(getattr(row, "mention_score", 0.0) or 0.0)
-    mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
-    nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
-    ind_ov = float(getattr(row, "industry_theme_overlap", 0.0) or 0.0)
-    inv = float(getattr(row, "investor_flow_score", 0.0) or 0.0)
-    fr = float(getattr(row, "foreign_net_vol_ratio", 0.0) or 0.0)
-    ml = float(row.ml_prob or 0.0)
-    rel_hi = float(config.PRED_ML_HIGH_RELATIVE_PROB)
-    rel = hybrid + 1e-12 >= top_hybrid * rel_hi
-    if not rel:
-        return False
-    ml_floor = max(0.04, float(config.PRED_ML_MIN_OUTPUT_PROB))
-    strong_news = nctx + 1e-12 >= 0.50 and nh >= 1
-    if not strong_news and ml + 1e-12 < ml_floor:
-        return False
-    if ind_ov + 1e-12 >= 0.45 and (nh >= 1 or mom + 1e-12 >= 0.10):
-        return True
-    if config.PRED_INVESTOR_FLOW_ENABLED and inv + 1e-12 >= 0.50 and fr + 1e-12 >= 0.025:
-        return True
-    if config.PRED_INVESTOR_FLOW_ENABLED and inv + 1e-12 >= 0.42 and (nh >= 1 or mom + 1e-12 >= 0.12):
-        return True
-    if nctx + 1e-12 >= 0.32 and (mom + 1e-12 >= 0.14 or nh >= 1):
-        return True
-    if nh >= max(1, int(config.PRED_ML_HIGH_MIN_KEYWORD_HITS) - 1) and mom + 1e-12 >= 0.14:
-        return True
-    if mention + 1e-12 >= float(config.PRED_MENTION_GATE_MIN) * 0.85 and nh >= 1:
-        return True
-    if mom + 1e-12 >= 0.48 and nh >= 1:
-        return True
-    if nh >= 1 and nctx + 1e-12 >= 0.18:
-        return True
-    if strong_news and nh >= 2:
-        return True
-    return False
+    from . import pred_factors
+
+    ks11 = getattr(row, "ks11_ret_lag1", None)
+    return pred_factors.passes_dual_factor_gate(
+        row, hybrid=hybrid, top_hybrid=top_hybrid, ks11_ret_lag1=ks11
+    )
 
 
 def assign_hybrid_confidence_tiers(
@@ -158,7 +111,7 @@ def assign_hybrid_confidence_tiers(
     for pos, row in enumerate(ranked, start=1):
         h = hybrid_rank_score(row)
         ml = float(row.ml_prob or 0.0)
-        if high_n < max_high and pos <= 10 and h + 1e-12 >= high_floor and _dual_signal_ok(
+        if high_n < max_high and pos <= 8 and h + 1e-12 >= high_floor and _dual_signal_ok(
             row, hybrid=h, top_hybrid=top_hybrid
         ):
             row.confidence_tier = "high"
@@ -178,7 +131,7 @@ def assign_hybrid_confidence_tiers(
             mid_n += 1
 
     if high_n == 0 and mid_n == 0 and ranked:
-        for row in ranked[:max_mid]:
+        for row in ranked[: min(max_mid, 5)]:
             row.confidence_tier = "mid"
             mid_n += 1
 

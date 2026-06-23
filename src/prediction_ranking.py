@@ -233,6 +233,8 @@ def finalize_ranked_predictions(
     for pos, row in enumerate(pool, start=1):
         row.rank_position = pos
         row.rank_score = rank_score_for_row(row)
+        if getattr(row, "ks11_ret_lag1", None) is None and ks11_ret_lag1 is not None:
+            row.ks11_ret_lag1 = ks11_ret_lag1
         prob = effective_probability(row, rank_position=pos, pool_size=pool_size)
         if getattr(row, "ml_prob", None) is None:
             row.ml_prob = prob if config.PRED_RANKING_MODE else None
@@ -254,14 +256,15 @@ def finalize_ranked_predictions(
             )
 
     if config.PRED_RANKING_MODE and not config.PRED_USE_DISPLAY_RANK_MAPPING:
+        from . import pred_factors
+
         for pos, row in enumerate(pool, start=1):
             prob = effective_probability(row, rank_position=pos, pool_size=pool_size)
             tier = str(row.confidence_tier or "none")
             rank_note = (
-                f"하이브리드 랭킹: 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정 "
-                f"점수 {row.rank_score * 100:.1f}% · 순위 {pos}/{pool_size} · 확신 {tier}"
-                f" (뉴스맥락 {float(getattr(row, 'news_context_score', 0) or 0) * 100:.0f}%·"
-                f"ML {prob * 100:.1f}%·모멘텀 {float(getattr(row, 'momentum_score', 0) or 0) * 100:.0f}%)"
+                f"다요인 랭킹: 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정 "
+                f"점수 {row.rank_score * 100:.1f}% · 순위 {pos}/{pool_size} · 확신 {tier} "
+                f"({pred_factors.format_factor_summary(row, ks11_ret_lag1=getattr(row, 'ks11_ret_lag1', None))})"
             )
             row.reasons = [rank_note] + [
                 x for x in row.reasons if not x.startswith("랭킹 모드:")

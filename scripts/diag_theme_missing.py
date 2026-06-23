@@ -18,7 +18,7 @@ def _max_pct(actual_sort: str | None, pred_sort: str | None) -> float | None:
     if actual_sort is not None and actual_sort.strip():
         try:
             v = float(actual_sort)
-            vals.append(v * 100.0 if -1.5 <= v <= 1.5 else v)
+            vals.append(srl._compare_row_actual_ret_pct_points(v))
         except ValueError:
             pass
     if pred_sort is not None and pred_sort.strip():
