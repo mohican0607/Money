@@ -82,6 +82,8 @@ class PredictionRow:
     industry_momentum: float = 0.0
     industry_theme_overlap: float = 0.0
     industry_limit_up_heat: float = 0.0
+    investor_flow_score: float = 0.0
+    foreign_net_vol_ratio: float = 0.0
     rank_score: float | None = None
     rank_position: int | None = None
     confidence_tier: str = "none"
@@ -336,6 +338,7 @@ def prediction_row_for_code(
     theme_weights: dict[str, float] | None = None,
     allow_momentum_only: bool = False,
     allow_news_context_only: bool = False,
+    allow_investor_flow_only: bool = False,
 ) -> PredictionRow | None:
     """
     단일 종목에 대해 키워드 교집합 수 + 종목명 언급 점수로 스코어하고 ``PredictionRow`` 를 만듭니다.
@@ -356,10 +359,10 @@ def prediction_row_for_code(
         return None
     mention_gate = float(config.PRED_MENTION_GATE_MIN)
     if n_hit < min_keyword_hits and mention < mention_gate:
-        if not (allow_momentum_only or allow_news_context_only):
+        if not (allow_momentum_only or allow_news_context_only or allow_investor_flow_only):
             return None
     if n_hit < 1 and mention < mention_gate:
-        if not (allow_momentum_only or allow_news_context_only):
+        if not (allow_momentum_only or allow_news_context_only or allow_investor_flow_only):
             return None
     score = n_hit * 1.0 + mention * 5.0
     tw = theme_weights or {}

@@ -166,6 +166,16 @@ PRED_USE_ML_RANKER = os.getenv("PRED_USE_ML_RANKER", "1").strip().lower() in (
     "yes",
     "on",
 )
+# 외국인·기관·개인 순매수(네이버) 피처를 ML·하이브리드 예측에 반영.
+PRED_INVESTOR_FLOW_ENABLED = os.getenv("PRED_INVESTOR_FLOW_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+INVESTOR_FLOW_PREFETCH_MAX_CODES = _positive_int_env("INVESTOR_FLOW_PREFETCH_MAX_CODES", 520)
+INVESTOR_FLOW_FETCH_WORKERS = _positive_int_env("INVESTOR_FLOW_FETCH_WORKERS", 4)
+PRED_INVESTOR_FLOW_HYBRID_WEIGHT = _float_env("PRED_INVESTOR_FLOW_HYBRID_WEIGHT", 0.14)
 # 전일 급등·뉴스 테마 가중치를 익일 예측에 반영(B안: JSON 스냅샷 + 휴리스틱·ML 피처 1개).
 THEME_CARRYOVER_ENABLED = os.getenv("THEME_CARRYOVER_ENABLED", "1").strip().lower() in (
     "1",
@@ -178,7 +188,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 15
+PREDICTION_FREEZE_SCHEMA_VERSION = 16
 
 # --- 고확신 정밀 게이트(다중 신호 합의) ---
 PRED_PRECISION_GATE_ENABLED = os.getenv("PRED_PRECISION_GATE_ENABLED", "0").strip().lower() in (

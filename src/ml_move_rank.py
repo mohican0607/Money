@@ -70,6 +70,11 @@ FEATURE_NAMES = (
     "vol_surge_ratio",
     "ret_vs_ks11_lag1",
     "ks11_regime_risk_off",
+    "foreign_net_vol_ratio_lag1",
+    "inst_net_vol_ratio_lag1",
+    "foreign_holding_pct_lag1",
+    "foreign_net_sum3_ratio",
+    "investor_flow_score",
     "news_cos_code",
     "news_cos_global",
     "news_dot_code",
@@ -80,7 +85,7 @@ FEATURE_NAMES = (
     "industry_limit_up_heat",
 )
 
-ML_MODEL_VERSION = 15
+ML_MODEL_VERSION = 16
 MAX_NEG_PER_DAY = 120
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
@@ -164,6 +169,11 @@ def _day_candidate_codes(
     mom = pred_hybrid.momentum_candidate_codes(
         returns_ml, target_day, listing_codes
     )
+    from . import investor_flow
+
+    flow_codes = investor_flow.investor_flow_candidate_codes(
+        returns_ml, target_day, listing_codes
+    )
     news_ctx_codes: list[str] = []
     if news_ctx_bundle:
         today_v = tfidf_vector(
@@ -176,7 +186,7 @@ def _day_candidate_codes(
             dict(news_ctx_bundle.get("profiles") or {}),
             today_v,
         )
-    return list(dict.fromkeys(news + mom + news_ctx_codes))
+    return list(dict.fromkeys(news + mom + news_ctx_codes + flow_codes))
 
 
 def _momentum_for_code(
@@ -294,6 +304,38 @@ def _load_ks11_cached(start: date, end: date) -> pd.DataFrame:
         return market_index.load_index_frame("KS11", start, end)
     except Exception:
         return pd.DataFrame()
+
+def _investor_flow_feats_row(
+    idx: pd.DataFrame | None, code: str, trading_day: date
+) -> list[float]:
+    cols = (
+        "foreign_net_vol_ratio_lag1",
+        "inst_net_vol_ratio_lag1",
+        "foreign_holding_pct_lag1",
+        "foreign_net_sum3_ratio",
+        "investor_flow_score",
+    )
+    if idx is None:
+        return [0.0] * len(cols)
+    try:
+        row = idx.loc[(trading_day, code)]
+    except KeyError:
+        return [0.0] * len(cols)
+    if isinstance(row, pd.DataFrame):
+        row = row.iloc[-1]
+    out: list[float] = []
+    for c in cols:
+        try:
+            v = float(row.get(c, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            v = 0.0
+        if math.isnan(v) or math.isinf(v):
+            v = 0.0
+        if c == "foreign_holding_pct_lag1":
+            v = v / 100.0
+        out.append(v)
+    return out
+
 
 def _price_feats_row(idx: pd.DataFrame | None, code: str, trading_day: date) -> list[float]:
     """``returns_ml`` 인덱스에서 종목·거래일 시세 피처. 없으면 0으로 채움."""
@@ -471,7 +513,8 @@ def _feat_vector(
             lift = np.zeros(len(vocab), dtype=np.float64)
         ctx_part = context_feature_vector(today_v, prof, global_c, lift)
     ind_mom, ind_ov, ind_lim = _industry_feats(code, before_exclusive, ohlcv_idx, kw_news)
-    return base + price + [float(ret_vs_ks11), float(risk_off)] + ctx_part + [
+    investor = _investor_flow_feats_row(ohlcv_idx, code, before_exclusive)
+    return base + price + investor + [float(ret_vs_ks11), float(risk_off)] + ctx_part + [
         float(ind_mom),
         float(ind_ov),
         float(ind_lim),
@@ -834,7 +877,7 @@ def rank_predictions_ml(
     kw_news, _ = ctx
     tw = theme_weights or {}
     ohlcv_idx = _ohlcv_lookup(returns_ml)
-    from . import pred_hybrid, prediction_ranking
+    from . import investor_flow, pred_hybrid, prediction_ranking
     from .news_context_ml import context_score_from_feats, feats_for_code
 
     news_ctx = (ml_bundle or {}).get("news_ctx")
@@ -860,6 +903,12 @@ def rank_predictions_ml(
         pred_hybrid.momentum_candidate_codes(returns_ml, target_day, listing_codes)
     )
     news_ctx_only: set[str] = set(score_codes) - news_only - mom_only
+    flow_only = set(
+        investor_flow.investor_flow_candidate_codes(
+            returns_ml, target_day, listing_codes
+        )
+    )
+    flow_only -= news_only | mom_only
     code_to_ix = {c: i for i, c in enumerate(listing_codes)}
     cand_ix: list[int] = []
     for c in score_codes:
@@ -911,12 +960,22 @@ def rank_predictions_ml(
             theme_weights=tw,
             allow_momentum_only=code in mom_only and code not in news_only,
             allow_news_context_only=code in news_ctx_only,
+            allow_investor_flow_only=code in flow_only,
         )
         if pr is None:
             continue
         p = float(proba[fi])
         pr.ml_prob = p
         pr.momentum_score = _momentum_for_code(ohlcv_idx, code, target_day)
+        try:
+            row = ohlcv_idx.loc[(target_day, code)]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[-1]
+            pr.investor_flow_score = float(row.get("investor_flow_score") or 0.0)
+            pr.foreign_net_vol_ratio = float(row.get("foreign_net_vol_ratio_lag1") or 0.0)
+        except (KeyError, TypeError, ValueError):
+            pr.investor_flow_score = 0.0
+            pr.foreign_net_vol_ratio = 0.0
         ind_mom, ind_ov, ind_lim = _industry_feats(code, target_day, ohlcv_idx, kw_news)
         pr.industry_momentum = ind_mom
         pr.industry_theme_overlap = ind_ov
@@ -926,7 +985,8 @@ def rank_predictions_ml(
             pr.news_context_score = nctx
         pr.reasons = [
             f"전체뉴스 ML(맥락 {pr.news_context_score * 100:.0f}%·ML {p * 100:.1f}%·"
-            f"모멘텀 {pr.momentum_score * 100:.0f}%·키워드 {pr.keyword_hits}) "
+            f"모멘텀 {pr.momentum_score * 100:.0f}%·수급 {pr.investor_flow_score * 100:.0f}%·"
+            f"외국인순매수/거래량 {pr.foreign_net_vol_ratio * 100:.1f}%p·키워드 {pr.keyword_hits}) "
             f"익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정."
         ] + list(pr.reasons)
         buf.append(pr)

@@ -191,6 +191,8 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
                         else None
                     ),
                     confidence_tier=str(x.get("confidence_tier") or "none"),
+                    investor_flow_score=float(x.get("investor_flow_score", 0.0) or 0.0),
+                    foreign_net_vol_ratio=float(x.get("foreign_net_vol_ratio", 0.0) or 0.0),
                 )
             )
         except (TypeError, ValueError):
@@ -220,6 +222,8 @@ def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[
                 else int(r.rank_position)
             ),
             "confidence_tier": str(getattr(r, "confidence_tier", "none") or "none"),
+            "investor_flow_score": float(getattr(r, "investor_flow_score", 0.0) or 0.0),
+            "foreign_net_vol_ratio": float(getattr(r, "foreign_net_vol_ratio", 0.0) or 0.0),
         }
         for r in rows
     ]
@@ -1543,6 +1547,21 @@ def _run_pipeline(
     codes = listing["Code"].astype(str).str.zfill(6).tolist()
     names = dict(zip(codes, listing["Name"].astype(str)))
     market_by_code = stocks.market_segment_by_code()
+
+    if config.PRED_INVESTOR_FLOW_ENABLED:
+        from src import investor_flow
+
+        event_codes = [str(e.code).zfill(6) for e in all_train_events]
+        prio = investor_flow.priority_codes_for_prefetch(
+            returns, codes, train_event_codes=event_codes
+        )
+        n_flow = investor_flow.warm_cache_for_codes(prio)
+        if n_flow:
+            print(f"투자자 수급(외국인·기관·개인): {n_flow}종 신규 캐시", flush=True)
+        returns_ml = investor_flow.merge_flow_features(returns_ml)
+        returns_by_code, returns_ml_by_code = stocks.returns_by_code_index(
+            returns, returns_ml
+        )
 
     ks11 = market_index.load_index_frame(
         "KS11", train_start - timedelta(days=5), end_date

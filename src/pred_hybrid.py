@@ -70,7 +70,7 @@ def momentum_candidate_codes(
 
 
 def hybrid_rank_score(row: PredictionRow) -> float:
-    """ML·모멘텀·전체뉴스 맥락·업종 하이브리드 점수."""
+    """ML·모멘텀·전체뉴스 맥락·업종·투자자 수급 하이브리드 점수."""
     ml = getattr(row, "ml_prob", None)
     ml_v = float(ml) if ml is not None and math.isfinite(float(ml)) else 0.0
     mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
@@ -79,12 +79,20 @@ def hybrid_rank_score(row: PredictionRow) -> float:
     mention = float(getattr(row, "mention_score", 0.0) or 0.0)
     ind_m = float(getattr(row, "industry_momentum", 0.0) or 0.0)
     ind_ov = float(getattr(row, "industry_theme_overlap", 0.0) or 0.0)
+    inv = float(getattr(row, "investor_flow_score", 0.0) or 0.0)
+    fr = max(0.0, float(getattr(row, "foreign_net_vol_ratio", 0.0) or 0.0))
+    inv_boost = min(1.0, inv + 0.35 * min(fr / 0.08, 1.0))
     news = 0.50 * nctx + 0.22 * min(1.0, nh / 5.0) + 0.18 * min(mention, 1.0) + 0.10 * ind_ov
     ind_lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
     sector = 0.50 * ind_m + 0.30 * ind_ov + 0.20 * ind_lim
+    w_inv = float(config.PRED_INVESTOR_FLOW_HYBRID_WEIGHT)
+    if not config.PRED_INVESTOR_FLOW_ENABLED:
+        w_inv = 0.0
     if ml_v > 0:
-        return 0.34 * ml_v + 0.26 * mom + 0.26 * news + 0.14 * sector
-    return 0.42 * mom + 0.38 * news + 0.20 * sector
+        base = 0.34 * ml_v + 0.26 * mom + 0.26 * news + 0.14 * sector
+        return base + w_inv * inv_boost
+    base = 0.40 * mom + 0.34 * news + 0.18 * sector
+    return base + w_inv * inv_boost
 
 
 def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> bool:
@@ -93,6 +101,8 @@ def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> 
     mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
     nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
     ind_ov = float(getattr(row, "industry_theme_overlap", 0.0) or 0.0)
+    inv = float(getattr(row, "investor_flow_score", 0.0) or 0.0)
+    fr = float(getattr(row, "foreign_net_vol_ratio", 0.0) or 0.0)
     ml = float(row.ml_prob or 0.0)
     rel_hi = float(config.PRED_ML_HIGH_RELATIVE_PROB)
     rel = hybrid + 1e-12 >= top_hybrid * rel_hi
@@ -103,6 +113,10 @@ def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> 
     if not strong_news and ml + 1e-12 < ml_floor:
         return False
     if ind_ov + 1e-12 >= 0.45 and (nh >= 1 or mom + 1e-12 >= 0.10):
+        return True
+    if config.PRED_INVESTOR_FLOW_ENABLED and inv + 1e-12 >= 0.50 and fr + 1e-12 >= 0.025:
+        return True
+    if config.PRED_INVESTOR_FLOW_ENABLED and inv + 1e-12 >= 0.42 and (nh >= 1 or mom + 1e-12 >= 0.12):
         return True
     if nctx + 1e-12 >= 0.32 and (mom + 1e-12 >= 0.14 or nh >= 1):
         return True
