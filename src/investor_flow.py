@@ -331,12 +331,10 @@ def merge_flow_features(returns_ml: pd.DataFrame) -> pd.DataFrame:
     if not config.PRED_INVESTOR_FLOW_ENABLED or returns_ml is None or returns_ml.empty:
         return returns_ml
     df = returns_ml.copy()
-    for col in _FLOW_COLS:
-        if col not in df.columns:
-            df[col] = 0.0
+    n = len(df)
+    arrays: dict[str, list[float]] = {col: [0.0] * n for col in _FLOW_COLS}
 
-    cache: dict[str, dict[date, dict[str, Any]]] = {}
-    for i, row in df.iterrows():
+    for pos, (_, row) in enumerate(df.iterrows()):
         code = str(row.get("Code", "")).zfill(6)
         d_raw = row.get("Date")
         if isinstance(d_raw, pd.Timestamp):
@@ -345,11 +343,12 @@ def merge_flow_features(returns_ml: pd.DataFrame) -> pd.DataFrame:
             t_day = d_raw
         else:
             continue
-        if code not in cache:
-            cache[code] = _history_by_code(code)
         feats = flow_features_for_day(code, t_day)
-        for k, v in feats.items():
-            df.at[i, k] = v
+        for k in _FLOW_COLS:
+            arrays[k][pos] = float(feats.get(k, 0.0))
+
+    for k in _FLOW_COLS:
+        df[k] = arrays[k]
     return df
 
 

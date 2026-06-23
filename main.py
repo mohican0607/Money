@@ -841,6 +841,65 @@ def _enrich_rows_actual_ret_prev_day(
         r["actual_ret_prev_day"] = stocks.actual_return_on_date(returns, code, prev_td)
 
 
+def _enrich_rows_stock_ret_tooltip(
+    rows: list[dict],
+    returns,
+    t_day: date,
+    *,
+    n_day: date | None = None,
+    now_kst: datetime | None = None,
+) -> None:
+    """종목명 tooltip: 기준일 N(현재)·N-1·N-2 일봉 등락률(%)."""
+    try:
+        n_basis = n_day or trading_calendar.last_trading_day_before(t_day)
+    except ValueError:
+        for r in rows:
+            r["stock_ret_tooltip"] = []
+        return
+
+    day_chain: list[tuple[str, date]] = []
+    d = n_basis
+    for label in ("N", "N-1", "N-2"):
+        day_chain.append((label, d))
+        try:
+            d = trading_calendar.last_trading_day_before(d)
+        except ValueError:
+            break
+
+    today = (now_kst or datetime.now(trading_calendar.KST)).date()
+    intraday_map: dict[str, float] = {}
+    if (
+        n_basis == today
+        and trading_calendar.is_trading_day(n_basis)
+        and not trading_calendar.is_krx_daily_bar_effective_closed(n_basis, now_kst=now_kst)
+    ):
+        codes = sorted({str(r.get("code", "")).zfill(6) for r in rows if r.get("code")})
+        if codes:
+            snap = stocks.best_effort_intraday_pct_by_code(n_basis, codes, returns_df=returns)
+            if snap:
+                intraday_map = snap
+
+    for r in rows:
+        code = str(r.get("code", "")).zfill(6)
+        tips: list[dict[str, object]] = []
+        for label, td in day_chain:
+            ret = stocks.actual_return_on_date(returns, code, td) if code else None
+            intraday = False
+            pct: float | None = float(ret) * 100.0 if ret is not None else None
+            if label == "N" and pct is None and code and code in intraday_map:
+                pct = float(intraday_map[code])
+                intraday = True
+            tips.append(
+                {
+                    "label": label,
+                    "date": td.isoformat(),
+                    "pct": pct,
+                    "intraday": intraday,
+                }
+            )
+        r["stock_ret_tooltip"] = tips
+
+
 def _rise_band_for_row(
     pred_ret_pct: float | None,
     actual_ret_ratio: float | None,
@@ -2143,6 +2202,7 @@ def _run_pipeline(
                 )
 
         _enrich_rows_actual_ret_prev_day(rows_compare, returns, T)
+        _enrich_rows_stock_ret_tooltip(rows_compare, returns, T, now_kst=now_kst_td)
 
         if config.THEME_CARRYOVER_ENABLED and rows_compare and not day_forward:
             theme_carryover.persist_rich_snapshot(
@@ -2763,6 +2823,13 @@ def main() -> None:
 
     환경 변수 ``NO_AUTO_OPEN_OUTPUT`` 이 설정되지 않았으면 Windows/macOS에서 이번에 생성한 리포트 HTML 중 최신 파일 하나만 연다.
     """
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8")
+            except (AttributeError, OSError, ValueError):
+                pass
+
     mode, arg_date, range_end, snap_mode, use_freeze = _parse_cli()
     if mode == "usage":
         _print_usage()
@@ -2951,6 +3018,13 @@ def main() -> None:
             f"기준일 N={n_day} 장 마감 전: 관측일 T={t_day} 캘린더 뉴스는 수집하지 않습니다.",
             flush=True,
         )
+    if snap_mode == "append_learning":
+        print(
+            f"--append-rebuild-learning: T={t_day.isoformat()} - "
+            "예측 고정 캐시가 있으면 14:30 예측 후보를 유지하고, "
+            "실제 상승률·테마·rebuild_learning 만 갱신합니다.",
+            flush=True,
+        )
 
     po = _run_pipeline(
         test_days,
@@ -2964,13 +3038,6 @@ def main() -> None:
         skip_news_fetch_after=skip_news_fetch_after,
         respect_prediction_freeze=use_freeze,
     )
-    if snap_mode == "append_learning":
-        print(
-            f"--append-rebuild-learning: T={t_day.isoformat()} — "
-            "예측 고정 캐시가 있으면 14:30 예측 후보를 유지하고, "
-            "실제 상승률·테마·rebuild_learning 만 갱신합니다.",
-            flush=True,
-        )
     if po.day_reports and po.day_reports[0].trading_day != t_day:
         actual_t = po.day_reports[0].trading_day
         print(

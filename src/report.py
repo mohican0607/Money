@@ -62,6 +62,43 @@ def format_prediction_signal_cell(row: dict[str, Any]) -> str:
     return base
 
 
+def format_stock_ret_tooltip_lines(row: dict[str, Any] | None) -> str:
+    """종목명 호버 popup 상단 — N-2·N-1·N 일봉 등락률(%) HTML."""
+    if not row:
+        return ""
+    items = row.get("stock_ret_tooltip") or []
+    if not items:
+        return ""
+    parts = ['<div class="stock-ret-lines" aria-label="N-2·N-1·N 일봉 등락률">']
+    for it in reversed(items):
+        label = str(it.get("label") or "").strip()
+        dt = str(it.get("date") or "")
+        pct = it.get("pct")
+        intraday = bool(it.get("intraday"))
+        lbl = "N&nbsp;&nbsp;" if label == "N" else label
+        mmdd = f"{dt[5:7]}{dt[8:10]}" if len(dt) >= 10 else ""
+        cls = ""
+        if pct is not None:
+            try:
+                pv = float(pct)
+                cls = " ok" if pv >= 0 else " bad"
+                pct_s = f"{pv:.2f}%"
+            except (TypeError, ValueError):
+                pct_s = "—"
+        else:
+            pct_s = "—"
+        dt_suffix = f"({mmdd}·장중)" if intraday and mmdd else (f"({mmdd})" if mmdd else "")
+        parts.append(
+            f'<span class="stock-ret-line{cls}">'
+            f'<span class="stock-ret-lbl">{lbl}</span>: '
+            f'<span class="stock-ret-pct">{pct_s}</span> '
+            f'<span class="stock-ret-dt">{dt_suffix}</span>'
+            f"</span>"
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def build_mover_rationale_ref_block(rationale_inner_html: str) -> str:
     """「왜 올랐나」 패널 HTML."""
     inner = (rationale_inner_html or "").strip()
@@ -392,6 +429,7 @@ def render_report(
         week_note=week_note,
         interaction_snippet=REPORT_TABLE_INTERACTION_SNIPPET,
         format_prediction_signal_cell=format_prediction_signal_cell,
+        format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
@@ -577,6 +615,7 @@ def render_compact_tabbed_report(
         week_panels=week_panels or [],
         interaction_snippet=REPORT_TABLE_INTERACTION_SNIPPET,
         format_prediction_signal_cell=format_prediction_signal_cell,
+        format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
@@ -777,15 +816,27 @@ _TEMPLATE = r"""
       background: #0f1419; border-radius: 6px;
     }
     .stock-chart-caption { display: block; margin-top: 8px; font-size: 0.74rem; color: var(--muted); text-align: center; line-height: 1.4; }
+    .stock-ret-lines {
+      display: flex; flex-direction: row; flex-wrap: wrap; gap: 0 1.25em; justify-content: center; align-items: center;
+      margin-bottom: 10px; padding: 8px 10px; background: #151c24; border-radius: 6px;
+      font-size: 0.78rem; font-variant-numeric: tabular-nums; line-height: 1.45;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .stock-ret-line { white-space: nowrap; }
+    .stock-ret-lbl { color: var(--text); font-weight: 600; }
+    .stock-ret-line.ok .stock-ret-pct { color: var(--ok); }
+    .stock-ret-line.bad .stock-ret-pct { color: var(--bad); }
+    .stock-ret-dt { color: var(--muted); }
   </style>
 </head>
 <body>
-{% macro stock_name_link(code, name) -%}
+{% macro stock_name_link(code, name, r=none) -%}
 <span class="stock-chart-tip" tabindex="0">
-  <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}" title="클릭: 네이버 차트 · 호버: 일봉 캔들">{{ name }}</a>
+  <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}"{# title="클릭: 네이버 차트 · 호버: 일봉·최근 등락률" #}>{{ name }}</a>
   <span class="stock-chart-popup" role="tooltip">
+    {% if r %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
     <img class="stock-chart-img" src="{{ naver_chart_day_img_url(code) }}" alt="{{ name }} 일봉 캔들 차트" width="700" height="289" loading="lazy" decoding="async" referrerpolicy="no-referrer-when-downgrade"/>
-    <span class="stock-chart-caption">일봉 캔들 · 가로축은 거래일(네이버 금융 이미지)</span>
+    <span class="stock-chart-caption">일봉 캔들 · N=기준일</span>
   </span>
 </span>
 {%- endmacro %}
@@ -946,7 +997,7 @@ _TEMPLATE = r"""
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측≥{{ meta.threshold }}{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
           </td>
           <td data-sort-col="stock" data-sort-value="{{ r.name }} {{ r.code }}">
-            {{ stock_name_link(r.code, r.name) }}
+            {{ stock_name_link(r.code, r.name, r) }}
             {# <div class="pill">{{ r.code }}</div> #}
           </td>
           <td class="{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
@@ -1337,15 +1388,27 @@ _COMPACT_TEMPLATE = r"""
       background: #0f1419; border-radius: 6px;
     }
     .stock-chart-caption { display: block; margin-top: 8px; font-size: 0.74rem; color: var(--muted); text-align: center; line-height: 1.4; }
+    .stock-ret-lines {
+      display: flex; flex-direction: row; flex-wrap: wrap; gap: 0 1.25em; justify-content: center; align-items: center;
+      margin-bottom: 10px; padding: 8px 10px; background: #151c24; border-radius: 6px;
+      font-size: 0.78rem; font-variant-numeric: tabular-nums; line-height: 1.45;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .stock-ret-line { white-space: nowrap; }
+    .stock-ret-lbl { color: var(--text); font-weight: 600; }
+    .stock-ret-line.ok .stock-ret-pct { color: var(--ok); }
+    .stock-ret-line.bad .stock-ret-pct { color: var(--bad); }
+    .stock-ret-dt { color: var(--muted); }
   </style>
 </head>
 <body>
-{% macro stock_name_link(code, name) -%}
+{% macro stock_name_link(code, name, r=none) -%}
 <span class="stock-chart-tip" tabindex="0">
-  <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}" title="클릭: 네이버 차트 · 호버: 일봉 캔들">{{ name }}</a>
+  <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}"{# title="클릭: 네이버 차트 · 호버: 일봉·최근 등락률" #}>{{ name }}</a>
   <span class="stock-chart-popup" role="tooltip">
+    {% if r %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
     <img class="stock-chart-img" src="{{ naver_chart_day_img_url(code) }}" alt="{{ name }} 일봉 캔들 차트" width="700" height="289" loading="lazy" decoding="async" referrerpolicy="no-referrer-when-downgrade"/>
-    <span class="stock-chart-caption">일봉 캔들 · 가로축은 거래일(네이버 금융 이미지)</span>
+    <span class="stock-chart-caption">일봉 캔들 · N=기준일</span>
   </span>
 </span>
 {%- endmacro %}
@@ -1490,7 +1553,7 @@ _COMPACT_TEMPLATE = r"""
         {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
       </td>
       <td data-sort-col="stock" data-sort-value="{{ r.name }} {{ r.code }}">
-        {{ stock_name_link(r.code, r.name) }}
+        {{ stock_name_link(r.code, r.name, r) }}
         {# <div class="pill">{{ r.code }}</div> #}
       </td>
       <td class="{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
@@ -1926,6 +1989,17 @@ _DATED_N_TEMPLATE = r"""
       background: #0f1419; border-radius: 6px;
     }
     .stock-chart-caption { display: block; margin-top: 8px; font-size: 0.74rem; color: var(--muted); text-align: center; line-height: 1.4; }
+    .stock-ret-lines {
+      display: flex; flex-direction: row; flex-wrap: wrap; gap: 0 1.25em; justify-content: center; align-items: center;
+      margin-bottom: 10px; padding: 8px 10px; background: #151c24; border-radius: 6px;
+      font-size: 0.78rem; font-variant-numeric: tabular-nums; line-height: 1.45;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .stock-ret-line { white-space: nowrap; }
+    .stock-ret-lbl { color: var(--text); font-weight: 600; }
+    .stock-ret-line.ok .stock-ret-pct { color: var(--ok); }
+    .stock-ret-line.bad .stock-ret-pct { color: var(--bad); }
+    .stock-ret-dt { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -1974,12 +2048,13 @@ _DATED_N_TEMPLATE = r"""
   </div>
 </span>
 {%- endmacro %}
-{% macro stock_name_link(code, name) -%}
+{% macro stock_name_link(code, name, r=none) -%}
 <span class="stock-chart-tip" tabindex="0">
-  <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}" title="클릭: 네이버 차트 · 호버: 일봉 캔들">{{ name }}</a>
+  <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}"{# title="클릭: 네이버 차트 · 호버: 일봉·최근 등락률" #}>{{ name }}</a>
   <span class="stock-chart-popup" role="tooltip">
+    {% if r %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
     <img class="stock-chart-img" src="{{ naver_chart_day_img_url(code) }}" alt="{{ name }} 일봉 캔들 차트" width="700" height="289" loading="lazy" decoding="async" referrerpolicy="no-referrer-when-downgrade"/>
-    <span class="stock-chart-caption">일봉 캔들 · 가로축은 거래일(네이버 금융 이미지)</span>
+    <span class="stock-chart-caption">일봉 캔들 · N=기준일</span>
   </span>
 </span>
 {%- endmacro %}
@@ -2057,7 +2132,7 @@ _DATED_N_TEMPLATE = r"""
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block;color:var(--warn)">예측≥{{ meta.threshold }}</span>{% endif %}
           </td>
           <td data-sort-col="stock" data-sort-value="{{ r.name }} {{ r.code }}">
-            {{ stock_name_link(r.code, r.name) }}
+            {{ stock_name_link(r.code, r.name, r) }}
             {# <div class="pill">{{ r.code }}</div> #}
           </td>
           <td class="num {% if not meta.prediction_only and r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
@@ -2412,6 +2487,7 @@ def render_dated_n_report(
         naver_chart_day_img_url=naver_chart_day_img_url,
         naver_disclosure_url=naver_disclosure_url,
         format_prediction_signal_cell=format_prediction_signal_cell,
+        format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
     )
     body_inner = _strip_html_body_inner(html)
     merge_dated_n_rollup(rollup_path=out_rollup, n_compact=n_compact, body_inner=body_inner)
