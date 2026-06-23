@@ -12,27 +12,25 @@ KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까�
 
 | 경로 | 역할 |
 |------|------|
-| `main.py` | CLI 진입점. 모드별 파이프라인(`_run_pipeline`) 호출, HTML 저장, (선택) 자동 열기 |
+| `main.py` | **CLI 진입점만** (~330줄). 모드 분기 후 `src.pipeline` 호출 |
+| `src/pipeline/` | 파이프라인 오케스트레이션 (`run`, `batch`, `freeze`, `enrich`, `compare`, `cli` …) |
+| `src/prediction/` | 예측 스택 (`predict`, `ml_move_rank`, `pred_hybrid`, `prediction_ranking` …) |
+| `src/learning/` | 테마·시장 흐름·`rebuild_learning` 병합 (`market_theme.py`) |
+| `src/report/` | HTML 리포트 — `types` · `templates` · `render` |
 | `src/config.py` | 경로, 환경 변수, 훈련·테스트 날짜, 급등 임계값, ML·테마·피드백 플래그 |
 | `src/stocks.py` | KRX 상장·OHLCV Parquet 캐시, 일간 수익률, pykrx 전종목 등락률, 장중 스냅샷 |
 | `src/news.py` | 일자별 뉴스(네이버 API / Google RSS / mock), early·late 분류, 캐시 JSON |
 | `src/trading_calendar.py` | XKRX 거래일 + `KRX_AD_HOC_SESSION_CLOSURES`(선거·제헌절 등 임시 휴장) |
 | `src/features.py` | 토큰·키워드, `BreakoutEvent`(과거 급등–뉴스) 구축 |
-| `src/predict.py` | 종목 스코어·예측 수익률·갭 설명 HTML·키워드 피드백 반영 |
-| `src/pred_hybrid.py` | ML·시세 모멘텀·뉴스맥락 **하이브리드 순위**·고/중 확신 게이트 |
-| `src/news_context_ml.py` | 전체 뉴스 TF-IDF·급등일 프로필 유사도·ML 피처 5종·맥락 후보 확장 |
-| `src/prediction_ranking.py` | 랭킹 확정·확신 게이트·Hit@K·레짐 보수 조정 |
-| `src/ml_move_rank.py` | 감독학습 랭커(v13) 학습·추론, KS11 시장 피처, miss 진단 가중 |
+| `src/predict.py`, `pred_*.py`, `ml_move_rank.py` … | **호환 shim** → 실제 구현은 `src/prediction/` |
 | `src/market_index.py` | KOSPI 등 지수 일봉·당일 수익률 |
-| `src/report.py` | Jinja2 HTML(월간 탭·단일일·dated 누적 리포트) |
+| `src/snapshot_rebuild_learning.py` | **호환 shim** → `src.learning.market_theme` |
+| `src/report/` | Jinja2 HTML(월간·단일일·dated 누적) — `types` · `templates` · `render` |
 | `src/train_snapshot.py` | `breakout_train_snapshot.json` 로드·저장(`train_events`) |
-| `src/snapshot_rebuild_learning.py` | `rebuild_learning`·`market_theme_flow`·`prediction_gap_rollup` 병합 |
 | `src/snapshot_miss_diagnosis.py` | 미예측 급등·고예측 실패 원인 태그·한글 힌트 |
 | `src/prediction_accuracy_cache.py` | 관측일별 예측–실적 비율·이력·키워드 피드백 JSON |
 | `src/theme_carryover.py` | 전일 급등·뉴스 테마 가중치 JSON(`daily_theme_snapshots.json`) |
 | `src/disclosure.py` | 네이버 종목 공시 hit(리포트 툴팁) |
-| `src/pred_factors.py` | 다요인(ML·모멘텀·수급·섹터·뉴스) 기둥 점수·랭킹·확신 합성 |
-| `src/pred_precision_gate.py` | 고확신(pred_high) 정밀 재필터 — 기둥 합의·ML·피드백 버킷·종목 이력 |
 | `src/investor_flow.py` | 네이버 투자자별 순매수 수집·캐시·ML/하이브리드 수급 피처 |
 | `src/stock_listing_sector.py` | 네이버 업종(industryCode)·동종 모멘텀·리포트 업종 pill |
 | `src/day_mover_rationale.py` | 상한·20%↑ 종목 「왜 올랐나」 한 줄 HTML(`mover_rationale_html`) |
@@ -275,17 +273,25 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 
 ## 8. 모듈별 주요 함수
 
-### `main.py`
+### `main.py` / `src/pipeline/`
 
 | 함수 | 역할 |
 |------|------|
-| `_parse_cli` | 모드·날짜·스냅샷 플래그 파싱 |
-| `_run_pipeline` | OHLCV·뉴스·학습·일별 예측·캐시 병합 |
-| `_build_rebuild_learning_payload` | 구간 `DayReport` → `rebuild_learning` dict |
-| `_render_monthly_batch` | 월별 HTML·목차 |
-| `_load/_save_prediction_freeze_payload` | 예측 고정 JSON |
+| `main()` | CLI 모드 분기(단일일·구간·weekly) |
+| `pipeline.run_pipeline` | OHLCV·뉴스·학습·일별 예측·비교 (구 `_run_pipeline`) |
+| `pipeline.render_monthly_batch` | 월별 HTML·목차 |
+| `pipeline.freeze` | `prediction_freeze_by_t.json` load/save |
 
-### `src/predict.py`
+### `src/prediction/` (shim: `src/predict.py` 등)
+
+| 함수 | 역할 |
+|------|------|
+| `predict_for_trading_day` | 전 종목 스코어 → 상위 N, ML 또는 휴리스틱 |
+| `finalize_ranked_predictions` | 순위·확신·표시 % 일괄 확정 |
+| `fit_or_load_classifier` | ML 학습 또는 joblib 로드(v13) |
+| `refine_confidence_tiers` | 고확신 정밀 게이트 |
+
+### `src/predict.py` (shim → `prediction.predict`)
 
 | 함수 | 역할 |
 |------|------|
@@ -355,15 +361,23 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 | `try_krx_change_pct_by_code` | pykrx 당일 등락률 맵 |
 | `big_movers_from_krx_pct_map` | 급등·급락 종목 목록 |
 
-### `src/snapshot_rebuild_learning.py`
+### `src/learning/` (shim: `snapshot_rebuild_learning.py`)
 
 | 함수 | 역할 |
 |------|------|
 | `build_market_theme_flow` | 일별 시장·테마 요약 |
 | `merge_rebuild_learning_dict` | `daily` 병합·누적 재계산 |
 | `merge_extended_rebuild_into_snapshot` | JSON 파일 저장 |
-| `_theme_labels_for_compare_row` | 비교 행·뉴스·시드로 테마 라벨 추정 |
 | `format_market_theme_flow_html` | 일자 시장·테마 HTML 블록 |
+| `_theme_labels_for_compare_row` | 비교 행·뉴스·시드로 테마 라벨 추정 |
+
+### `src/report/`
+
+| 함수 | 역할 |
+|------|------|
+| `render_compact_tabbed_report` | 월간/구간 HTML |
+| `render_dated_n_report` | 단일일 dated rollup |
+| `DayReport` | 거래일 파이프라인 결과 dataclass |
 
 ### `src/pred_factors.py` / `src/pred_precision_gate.py`
 
@@ -436,14 +450,13 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 
 ## 10. 코드 읽는 순서(권장)
 
-1. `main.py` — `_parse_cli` → `main` → `_run_pipeline`
-2. `src/config.py`
-3. `src/stocks.py` → `src/news.py` → `src/investor_flow.py`
-4. `src/features.py` → `src/news_context_ml.py` → `src/predict.py`
-5. `src/pred_factors.py` → `src/pred_hybrid.py` → `src/prediction_ranking.py` → `src/pred_precision_gate.py` → `src/ml_move_rank.py`
+1. `main.py` — `parse_cli` → `main` → `src.pipeline.run_pipeline`
+2. `src/pipeline/run.py` — 핵심 파이프라인(구 `main._run_pipeline`)
+3. `src/config.py`
+4. `src/stocks.py` → `src/news.py` → `src/investor_flow.py`
+5. `src/prediction/` — `predict` → `pred_hybrid` → `prediction_ranking` → `ml_move_rank`
 6. `src/prediction_accuracy_cache.py` → `src/snapshot_rebuild_learning.py`
-7. `src/day_mover_rationale.py` → `src/move_reference.py` → `src/theme_strong_mover_report.py`
-8. `src/report.py`
+7. `src/learning/market_theme.py` → `src/day_mover_rationale.py` → `src/report/`
 
 ---
 
