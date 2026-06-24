@@ -19,7 +19,12 @@ from typing import Any
 
 import pandas as pd
 
-from .. import config, features, news, predict, trading_calendar, train_snapshot, snapshot_miss_diagnosis
+from .. import config, trading_calendar
+from .. import features
+from .. import news
+from ..learning import support as snapshot_miss_diagnosis
+from ..learning import support as train_snapshot
+from ..prediction import predict
 
 
 def _news_blob_for_trading_day(
@@ -782,7 +787,7 @@ def _stock_dict(
 def _listing_industry_sector_label(code: str, name: str = "") -> str:
     """네이버 KRX 업종(기사 없을 때 업종 pill)."""
     try:
-        from .. import stock_listing_sector as sls
+        from .. import stocks as sls
 
         lab = sls.compact_label_for_code(code, name=name)
         return _compact_sector_label(lab) if lab else ""
@@ -1975,7 +1980,7 @@ def build_market_theme_flow(
             assign_pool, seeds=seed_hits, top_kw=top_kw
         )
         try:
-            from .. import stock_listing_sector as sls
+            from .. import stocks as sls
 
             prefetch = list(
                 {str(s.get("code") or "").zfill(6) for s in leaders_25 + assign_pool[:60]}
@@ -2787,7 +2792,7 @@ def enrich_compare_rows_theme_for_day(
     news_cutoff_label: str,
 ) -> None:
     """단일 ``DayReport`` 비교 표 ``예측 신호`` 에 25%↑ 테마 pill을 붙입니다."""
-    from .. import move_reference
+    from ..report import content as move_reference
 
     if not flow_row or not getattr(dr, "rows_compare", None):
         return
@@ -2845,7 +2850,7 @@ def enrich_day_reports_market_theme(
     ``DayReport`` 목록에 ``market_theme_html`` 을 채우고, 비교 행 ``rise_reason_html`` 에
     early 뉴스·종목명 겹침 한 줄을 덧붙입니다. 스냅샷 병합용 ``market_theme_flow`` 행 목록을 반환합니다.
     """
-    from .. import day_mover_rationale
+    from ..report import content as day_mover_rationale
 
     forward_placeholder = (
         '<p class="sub"><strong>장 시작 전·예측 전용.</strong> '

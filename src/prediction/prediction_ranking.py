@@ -10,16 +10,349 @@ import math
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from .. import config, prediction_accuracy_cache
-from . import pred_hybrid
+import pandas as pd
+
+from .. import config
+from ..prediction import accuracy_cache as prediction_accuracy_cache
+# --- hybrid / multi-factor (from pred_hybrid) ---
+
+if TYPE_CHECKING:
+    from .predict import PredictionRow
+
+
+# --- multi-factor pillars (merged from pred_factors) ---
+
+
+def _clamp01(x: float) -> float:
+    """값을 [0, 1] 구간으로 클램프."""
+    return max(0.0, min(1.0, float(x)))
+
+
+def market_regime_score(ks11_ret_lag1: float | None) -> float:
+    """KOSPI 전일 수익률 기반 리스크온(1)~오프(0)."""
+    if ks11_ret_lag1 is None or not math.isfinite(float(ks11_ret_lag1)):
+        return 1.0
+    r = float(ks11_ret_lag1)
+    if r >= 0.01:
+        return 1.0
+    if r <= -0.03:
+        return 0.35
+    if r < 0:
+        return 0.55 + 15.0 * r
+    return 0.85 + 15.0 * r
+
+
+def relative_strength_from_row(
+    row: Any,
+    *,
+    ks11_ret_lag1: float | None = None,
+) -> float:
+    """종목 전일 수익 − KOSPI 전일 수익 → 0~1 상대강도."""
+    try:
+        ret = float(row.get("ret_lag1") if hasattr(row, "get") else getattr(row, "ret_lag1", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        ret = 0.0
+    if ks11_ret_lag1 is None or not math.isfinite(float(ks11_ret_lag1)):
+        return _clamp01(ret / 0.12) if ret > 0 else 0.0
+    excess = ret - float(ks11_ret_lag1)
+    return _clamp01((excess + 0.015) / 0.10)
+
+
+def compute_pillar_scores(
+    row: PredictionRow,
+    *,
+    ks11_ret_lag1: float | None = None,
+) -> dict[str, float]:
+    """0~1 기둥 점수: ml·모멘텀·수급·상대강도·섹터·뉴스·시장."""
+    ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
+    nh = int(getattr(row, "keyword_hits", 0) or 0)
+    mention = float(getattr(row, "mention_score", 0.0) or 0.0)
+    nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
+    mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
+    inv = float(getattr(row, "investor_flow_score", 0.0) or 0.0)
+    fr = max(0.0, float(getattr(row, "foreign_net_vol_ratio", 0.0) or 0.0))
+    ind_m = float(getattr(row, "industry_momentum", 0.0) or 0.0)
+    ind_ov = float(getattr(row, "industry_theme_overlap", 0.0) or 0.0)
+    ind_lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    rs = float(getattr(row, "relative_strength_score", 0.0) or 0.0)
+    mkt = market_regime_score(ks11_ret_lag1)
+
+    flow = _clamp01(inv + 0.40 * min(fr / 0.06, 1.0))
+    sector = _clamp01(0.45 * ind_m / 0.38 + 0.35 * ind_ov + 0.20 * ind_lim)
+    news = _clamp01(0.35 * nctx + 0.35 * min(1.0, nh / 4.0) + 0.30 * min(mention, 1.0))
+
+    return {
+        "ml": _clamp01(ml / 0.18),
+        "momentum": _clamp01(mom / 0.55),
+        "flow": flow,
+        "relative_strength": rs,
+        "sector": sector,
+        "news": news,
+        "market": mkt,
+    }
+
+
+def multi_factor_rank_score(
+    row: PredictionRow,
+    *,
+    ks11_ret_lag1: float | None = None,
+) -> float:
+    """하이브리드 최종 랭킹 점수(0~1). 뉴스 비중 최소."""
+    p = compute_pillar_scores(row, ks11_ret_lag1=ks11_ret_lag1)
+    w_ml = float(config.PRED_FACTOR_W_ML)
+    w_mom = float(config.PRED_FACTOR_W_MOMENTUM)
+    w_flow = float(config.PRED_FACTOR_W_FLOW)
+    w_rs = float(config.PRED_FACTOR_W_RELATIVE_STRENGTH)
+    w_sec = float(config.PRED_FACTOR_W_SECTOR)
+    w_news = float(config.PRED_FACTOR_W_NEWS)
+    w_mkt = float(config.PRED_FACTOR_W_MARKET)
+
+    ml_v = float(getattr(row, "ml_prob", 0.0) or 0.0)
+    if ml_v <= 0:
+        s = (
+            0.38 * p["momentum"]
+            + 0.28 * p["flow"]
+            + 0.18 * p["relative_strength"]
+            + 0.12 * p["sector"]
+            + 0.04 * p["news"]
+        )
+    else:
+        s = (
+            w_ml * p["ml"]
+            + w_mom * p["momentum"]
+            + w_flow * p["flow"]
+            + w_rs * p["relative_strength"]
+            + w_sec * p["sector"]
+            + w_news * p["news"]
+            + w_mkt * p["market"]
+        )
+    if ks11_ret_lag1 is not None and float(ks11_ret_lag1) < float(config.PRED_REGIME_KS11_SOFT_MIN):
+        s *= float(config.PRED_REGIME_OUTPUT_SCALE)
+    return _clamp01(s)
+
+
+def count_strong_pillars(
+    pillars: dict[str, float],
+    *,
+    threshold: float = 0.48,
+    exclude: frozenset[str] = frozenset(),
+) -> int:
+    """``threshold`` 이상인 기둥 수(``exclude`` 키는 제외)."""
+    return sum(
+        1
+        for k, v in pillars.items()
+        if k not in exclude and v + 1e-12 >= threshold
+    )
+
+
+def count_non_news_strong_pillars(pillars: dict[str, float], *, threshold: float = 0.45) -> int:
+    """뉴스 기둥을 제외한 강한 신호 기둥 수 — 고확신·정밀 게이트의 핵심 지표."""
+    return count_strong_pillars(pillars, threshold=threshold, exclude=frozenset({"news"}))
+
+
+def passes_dual_factor_gate(
+    row: PredictionRow,
+    *,
+    hybrid: float,
+    top_hybrid: float,
+    ks11_ret_lag1: float | None = None,
+) -> bool:
+    """고확신 1차 게이트: 상대 순위 + 뉴스 외 신호 + 복합 합의."""
+    rel_hi = float(config.PRED_ML_HIGH_RELATIVE_PROB)
+    if hybrid + 1e-12 < top_hybrid * rel_hi:
+        return False
+
+    pillars = compute_pillar_scores(row, ks11_ret_lag1=ks11_ret_lag1)
+    non_news = count_non_news_strong_pillars(pillars, threshold=0.44)
+    if non_news < 1:
+        return False
+
+    ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
+    ml_floor = max(0.05, float(config.PRED_ML_MIN_OUTPUT_PROB))
+
+    if pillars["news"] + 1e-12 >= 0.50 and non_news == 0:
+        return False
+
+    strong_total = count_strong_pillars(pillars, threshold=0.46)
+    if strong_total < int(config.PRED_FACTOR_MIN_STRONG_PILLARS):
+        return False
+
+    if ml + 1e-12 >= ml_floor:
+        return True
+    if pillars["momentum"] + 1e-12 >= 0.50 and pillars["flow"] + 1e-12 >= 0.42:
+        return True
+    if pillars["momentum"] + 1e-12 >= 0.55 and pillars["relative_strength"] + 1e-12 >= 0.45:
+        return True
+    if pillars["sector"] + 1e-12 >= 0.52 and non_news >= 2:
+        return True
+    return False
+
+
+def conviction_score(row: PredictionRow, *, ks11_ret_lag1: float | None = None) -> float:
+    """정밀 게이트용 확신 점수."""
+    pillars = compute_pillar_scores(row, ks11_ret_lag1=ks11_ret_lag1)
+    core = {k: v for k, v in pillars.items() if k != "news"}
+    vals = sorted(core.values(), reverse=True)
+    if len(vals) < 3:
+        return 0.0
+    w = (0.32, 0.26, 0.22, 0.12, 0.08)
+    s = sum(v * w[i] for i, v in enumerate(vals[: len(w)]))
+    s += 0.06 * pillars["news"]
+    non_news = count_non_news_strong_pillars(pillars)
+    if non_news < int(config.PRED_PRECISION_MIN_PILLARS):
+        s *= 0.65
+    return _clamp01(s)
+
+
+def format_factor_summary(
+    row: PredictionRow,
+    *,
+    ks11_ret_lag1: float | None = None,
+) -> str:
+    """리포트용 한 줄 요인 요약."""
+    p = compute_pillar_scores(row, ks11_ret_lag1=ks11_ret_lag1)
+    tags: list[str] = []
+    for key, label in (
+        ("ml", "ML"),
+        ("momentum", "모멘텀"),
+        ("flow", "수급"),
+        ("relative_strength", "상대강도"),
+        ("sector", "섹터"),
+        ("news", "뉴스"),
+    ):
+        v = p[key]
+        if v + 1e-12 >= 0.45:
+            tags.append(f"{label}{v * 100:.0f}%")
+    if not tags:
+        tags.append("복합신호약")
+    mkt = p["market"]
+    return " · ".join(tags[:5]) + f" (시장{mkt * 100:.0f}%)"
+
+
+_MOM_COLS = ("vol_surge_ratio", "ret_lag1", "ret_roll_std5", "close_ma20_ratio")
+
+
+def momentum_raw_from_row(row: pd.Series | dict) -> float:
+    """전일 시세 요약 → 0~1 모멘텀 점수."""
+    try:
+        vs = float(row.get("vol_surge_ratio") or 0.0)
+        rl = max(0.0, float(row.get("ret_lag1") or 0.0))
+        rs = float(row.get("ret_roll_std5") or 0.0)
+        ma = float(row.get("close_ma20_ratio") or 1.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not all(math.isfinite(x) for x in (vs, rl, rs, ma)):
+        return 0.0
+    s = (
+        0.42 * min(vs / 2.8, 1.0)
+        + 0.33 * min(rl / 0.12, 1.0)
+        + 0.15 * min(rs / 0.07, 1.0)
+        + 0.10 * min(max(ma - 0.92, 0.0) / 0.18, 1.0)
+    )
+    return max(0.0, min(1.0, s))
+
+
+def momentum_candidate_codes(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+    listing_codes: list[str],
+    *,
+    top_k: int = 110,
+) -> list[str]:
+    """당일 관측 시점 시세로 모멘텀 상위 종목(뉴스 없어도 후보)."""
+    allowed = {str(c).zfill(6) for c in listing_codes}
+    sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
+    if sl.empty:
+        return []
+    scored: list[tuple[float, str]] = []
+    for _, r in sl.iterrows():
+        code = str(r["Code"]).zfill(6)
+        if code not in allowed:
+            continue
+        mom = momentum_raw_from_row(r)
+        vs = float(r.get("vol_surge_ratio") or 0.0)
+        rl = max(0.0, float(r.get("ret_lag1") or 0.0))
+        if mom >= 0.20 or vs >= 1.35 or rl >= 0.055:
+            scored.append((mom, code))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [c for _, c in scored[: max(20, int(top_k))]]
+
+
+def hybrid_rank_score(row: PredictionRow) -> float:
+    """ML·모멘텀·수급·상대강도·섹터·시장 다요인 점수(뉴스 보조)."""
+    ks11 = getattr(row, "ks11_ret_lag1", None)
+    return multi_factor_rank_score(row, ks11_ret_lag1=ks11)
+
+
+def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> bool:
+    """고확신 1차 게이트: 상대 순위 + 뉴스 외 다요인 합의."""
+    ks11 = getattr(row, "ks11_ret_lag1", None)
+    return passes_dual_factor_gate(
+        row, hybrid=hybrid, top_hybrid=top_hybrid, ks11_ret_lag1=ks11
+    )
+
+
+def assign_hybrid_confidence_tiers(
+    pool: list[PredictionRow],
+    *,
+    regime_scale: float = 1.0,
+) -> None:
+    """하이브리드 순위 + 이중 신호(뉴스∩모멘텀)로 고·중 확신 부여."""
+    rs = max(0.25, float(regime_scale))
+    max_high = max(1, int(round(int(config.PRED_OUTPUT_MAX) * rs)))
+    max_mid = max(1, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
+    high_floor = max(0.08, float(config.PRED_ML_HIGH_CONFIDENCE_PROB)) / rs
+    mid_floor = max(0.045, float(config.PRED_ML_MID_CONFIDENCE_PROB)) / rs
+
+    for row in pool:
+        row.confidence_tier = "none"
+
+    if not pool:
+        return
+
+    ranked = sorted(pool, key=hybrid_rank_score, reverse=True)
+    top_hybrid = hybrid_rank_score(ranked[0])
+    high_n = mid_n = 0
+
+    for pos, row in enumerate(ranked, start=1):
+        h = hybrid_rank_score(row)
+        ml = float(row.ml_prob or 0.0)
+        # 고확신: 상위 8위 이내 + 하이브리드·이중신호(비뉴스 기둥) 통과
+        if high_n < max_high and pos <= 8 and h + 1e-12 >= high_floor and _dual_signal_ok(
+            row, hybrid=h, top_hybrid=top_hybrid
+        ):
+            row.confidence_tier = "high"
+            high_n += 1
+            continue
+        mid_ok = h + 1e-12 >= mid_floor
+        nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
+        nh = int(getattr(row, "keyword_hits", 0) or 0)
+        if not mid_ok and nctx + 1e-12 >= 0.45 and nh >= 1:
+            mid_ok = True
+        if (
+            mid_n < max_mid
+            and mid_ok
+            and (ml + 1e-12 >= mid_floor * 0.70 or float(row.momentum_score or 0) >= 0.28 or nctx + 1e-12 >= 0.40)
+        ):
+            row.confidence_tier = "mid"
+            mid_n += 1
+
+    if high_n == 0 and mid_n == 0 and ranked:
+        for row in ranked[: min(max_mid, 5)]:
+            row.confidence_tier = "mid"
+            mid_n += 1
+
+    for pos, row in enumerate(ranked, start=1):
+        row.rank_position = pos
+        row.rank_score = hybrid_rank_score(row)
 
 if TYPE_CHECKING:
     from .predict import PredictionRow
 
 
 def rank_score_for_row(row: PredictionRow) -> float:
-    """행의 하이브리드 랭킹 점수 — ``pred_hybrid.hybrid_rank_score`` 위임."""
-    return pred_hybrid.hybrid_rank_score(row)
+    """행의 하이브리드 랭킹 점수."""
+    return hybrid_rank_score(row)
 
 
 def _heuristic_pseudo_prob(rank_position: int, pool_size: int) -> float:
@@ -246,11 +579,9 @@ def finalize_ranked_predictions(
             row.ml_prob = prob if config.PRED_RANKING_MODE else None
 
     if config.PRED_RANKING_MODE:
-        pred_hybrid.assign_hybrid_confidence_tiers(pool, regime_scale=r_scale)
-        from . import pred_precision_gate
-
+        assign_hybrid_confidence_tiers(pool, regime_scale=r_scale)
         # 1차 하이브리드 tier → 정밀 게이트로 high 재필터(뉴스 단독·저적중 종목 제거)
-        pred_precision_gate.refine_confidence_tiers(
+        refine_confidence_tiers(
             pool,
             feedback_ctx=prediction_accuracy_cache.build_feedback_context(),
             regime_scale=r_scale,
@@ -263,21 +594,183 @@ def finalize_ranked_predictions(
             )
 
     if config.PRED_RANKING_MODE and not config.PRED_USE_DISPLAY_RANK_MAPPING:
-        from . import pred_factors
-
         for pos, row in enumerate(pool, start=1):
             prob = effective_probability(row, rank_position=pos, pool_size=pool_size)
             tier = str(row.confidence_tier or "none")
             rank_note = (
                 f"다요인 랭킹: 익일 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정 "
                 f"점수 {row.rank_score * 100:.1f}% · 순위 {pos}/{pool_size} · 확신 {tier} "
-                f"({pred_factors.format_factor_summary(row, ks11_ret_lag1=getattr(row, 'ks11_ret_lag1', None))})"
+                f"({format_factor_summary(row, ks11_ret_lag1=getattr(row, 'ks11_ret_lag1', None))})"
             )
             row.reasons = [rank_note] + [
                 x for x in row.reasons if not x.startswith("랭킹 모드:")
             ]
 
     return pool
+
+
+# --- precision gate (merged from pred_precision_gate) ---
+
+
+def _pillar_scores(row: PredictionRow) -> dict[str, float]:
+    """``compute_pillar_scores`` 래퍼(행에 KS11 lag1 이 있으면 전달)."""
+    ks11 = getattr(row, "ks11_ret_lag1", None)
+    return compute_pillar_scores(row, ks11_ret_lag1=ks11)
+
+
+def precision_conviction_score(row: PredictionRow) -> float:
+    """다요인 기둥 합의 기반 확신 점수(0~1). ``conviction_score`` 위임."""
+    ks11 = getattr(row, "ks11_ret_lag1", None)
+    return conviction_score(row, ks11_ret_lag1=ks11)
+
+
+def _bucket_ok(row: PredictionRow, feedback_ctx: dict[str, object] | None) -> bool:
+    """과거 예측–실적 버킷 평균 정합도가 하한 이상이면 True(표본 부족 시 통과)."""
+    if not feedback_ctx:
+        return True
+    stats = feedback_ctx.get("signal_bucket_stats")
+    if not isinstance(stats, dict):
+        return True
+    key = prediction_accuracy_cache._signal_bucket_key(
+        pred_ret=float(getattr(row, "predicted_return_pct", 0.0) or 0.0),
+        keyword_hits=int(getattr(row, "keyword_hits", 0) or 0),
+        mention_score=float(getattr(row, "mention_score", 0.0) or 0.0),
+    )
+    b = stats.get(key)
+    if not isinstance(b, dict):
+        return True
+    n = int(b.get("count", 0) or 0)
+    if n < int(config.PRED_PRECISION_BUCKET_MIN_SAMPLES):
+        return True
+    mean_r = float(b.get("mean_ratio", 0.0) or 0.0)
+    return mean_r + 1e-12 >= float(config.PRED_PRECISION_BUCKET_MIN_RATIO)
+
+
+def _code_history_ok(code: str) -> bool:
+    """종목별 과거 고확신 예측의 급등 적중률이 ``PRED_PRECISION_CODE_MIN_HIT_RATE`` 이상이면 True."""
+    payload = prediction_accuracy_cache._load_payload()
+    hp = payload.get("high_pred_by_code")
+    tap = payload.get("t_code_actual_pct")
+    if not isinstance(hp, dict) or not isinstance(tap, dict):
+        return True
+    hist = hp.get(str(code).zfill(6))
+    if not isinstance(hist, list) or len(hist) < int(config.PRED_PRECISION_CODE_MIN_TRIES):
+        return True
+    hits = 0
+    n = 0
+    thr = float(config.BIG_MOVE_THRESHOLD) * 100.0
+    for ent in hist[-12:]:
+        if not isinstance(ent, dict):
+            continue
+        t = str(ent.get("trading_day") or ent.get("day") or "")
+        if not t:
+            continue
+        key = f"{t}:{str(code).zfill(6)}"
+        act = tap.get(key)
+        if act is None:
+            continue
+        n += 1
+        if float(act) + 1e-9 >= thr:
+            hits += 1
+    if n < int(config.PRED_PRECISION_CODE_MIN_TRIES):
+        return True
+    rate = hits / n
+    return rate + 1e-12 >= float(config.PRED_PRECISION_CODE_MIN_HIT_RATE)
+
+
+def passes_precision_gate(
+    row: PredictionRow,
+    *,
+    top_ml: float,
+    rank_position: int,
+    feedback_ctx: dict[str, object] | None = None,
+) -> bool:
+    """
+    고확신 슬롯 승격 조건: 순위·확신·비뉴스 기둥·ML 절대/상대 하한·피드백 버킷·종목 이력.
+
+    ``top_ml`` 은 당일 풀 최고 ML 확률(상대 하한 ``PRED_ML_HIGH_RELATIVE_PROB`` 용).
+    """
+    if rank_position > int(config.PRED_PRECISION_MAX_RANK):
+        return False
+    conv = precision_conviction_score(row)
+    if conv + 1e-12 < float(config.PRED_PRECISION_MIN_CONVICTION):
+        return False
+    pillars = _pillar_scores(row)
+    non_news = count_non_news_strong_pillars(pillars, threshold=0.46)
+    if non_news < int(config.PRED_PRECISION_MIN_PILLARS):
+        return False
+    ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
+    floor = max(
+        float(config.PRED_ML_HIGH_CONFIDENCE_PROB),
+        float(config.PRED_PRECISION_ML_FLOOR),
+    )
+    if ml + 1e-12 < floor:
+        return False
+    if top_ml > 1e-9 and ml + 1e-12 < top_ml * float(config.PRED_ML_HIGH_RELATIVE_PROB):
+        return False
+    if pillars["news"] + 1e-12 >= 0.52 and non_news < 2:
+        return False
+    non_news_signals = 0
+    if pillars["momentum"] + 1e-12 >= 0.40:
+        non_news_signals += 1
+    if pillars["flow"] + 1e-12 >= 0.40:
+        non_news_signals += 1
+    if pillars["relative_strength"] + 1e-12 >= 0.38:
+        non_news_signals += 1
+    if pillars["sector"] + 1e-12 >= 0.42:
+        non_news_signals += 1
+    if pillars["ml"] + 1e-12 >= 0.45:
+        non_news_signals += 1
+    if non_news_signals < 2:
+        return False
+    if not _bucket_ok(row, feedback_ctx):
+        return False
+    if not _code_history_ok(str(row.code).zfill(6)):
+        return False
+    return True
+
+
+def refine_confidence_tiers(
+    pool: list[PredictionRow],
+    *,
+    feedback_ctx: dict[str, object] | None = None,
+    regime_scale: float = 1.0,
+) -> None:
+    """
+    하이브리드 tier 부여 후 ``confidence_tier=high`` 를 정밀 게이트로 재필터링합니다.
+
+    통과 종목만 ``high`` 유지, 기존 ``high`` 미통과는 ``mid`` 로 강등. ``PRED_PRECISION_GATE_ENABLED=0`` 이면 no-op.
+    """
+    if not pool or not config.PRED_PRECISION_GATE_ENABLED:
+        return
+    rs = max(0.25, float(regime_scale))
+    max_high = max(1, int(round(int(config.PRED_PRECISION_MAX_HIGH) * rs)))
+    top_ml = max(
+        (float(getattr(r, "ml_prob", 0.0) or 0.0) for r in pool),
+        default=0.0,
+    )
+    ranked = sorted(
+        pool,
+        key=lambda r: (precision_conviction_score(r), float(getattr(r, "ml_prob", 0.0) or 0.0)),
+        reverse=True,
+    )
+    promoted: list[str] = []
+    for pos, row in enumerate(ranked, start=1):
+        if len(promoted) >= max_high:
+            break
+        if not passes_precision_gate(
+            row, top_ml=top_ml, rank_position=pos, feedback_ctx=feedback_ctx
+        ):
+            continue
+        promoted.append(str(row.code).zfill(6))
+
+    promoted_set = set(promoted)
+    for row in pool:
+        code = str(row.code).zfill(6)
+        if code in promoted_set:
+            row.confidence_tier = "high"
+        elif str(getattr(row, "confidence_tier", "")) == "high":
+            row.confidence_tier = "mid"
 
 
 def compute_hit_at_k_metrics(

@@ -12,8 +12,8 @@ import math
 from datetime import date, datetime
 from pathlib import Path
 
-from . import config, trading_calendar
-from . import stocks
+from .. import config, trading_calendar
+from .. import stocks
 
 TRACK_PATH = config.TRAIN_CACHE_DIR / "prediction_accuracy_track.json"
 

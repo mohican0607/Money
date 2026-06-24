@@ -1,7 +1,6 @@
-"""Compatibility shim — prefer ``src.learning.market_theme``."""
+"""Compatibility: ``from src.snapshot_rebuild_learning import _LIMIT_UP_RET_DECIMAL`` 등."""
 from src.learning import market_theme as _mt
 
-# ``import *`` 는 ``_`` 이름을보내지 않으므로 진단 스크립트 호환을 위해 전부 복사.
 for _name, _val in vars(_mt).items():
     if _name.startswith("__"):
         continue

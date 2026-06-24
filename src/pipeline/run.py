@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import math
+import os
 import time
+from collections import Counter
 from datetime import date, datetime, timedelta
+
+from tqdm import tqdm
 
 from src import (
     config,
@@ -27,12 +31,20 @@ from src import (
     trading_calendar,
 )
 
-from .compare import (
+from .rows import (
     _append_compare_row_from_prediction,
+    _enrich_cumulative_accuracy_avg,
+    _enrich_cumulative_actual_over_pred_from_history,
+    _enrich_cumulative_actual_over_pred_from_history_for_field,
+    _enrich_cumulative_hit_rate,
     _enrich_rows_prediction_signal,
+    _gap_analysis_html_for_row,
+    _pred_reason_fields,
+    _prediction_row_strict_or_loose,
+    _rise_band_for_row,
     _sync_forward_day_rows_from_predictions,
 )
-from .enrich import (
+from .rows import (
     _apply_postclose_actual_snapshot_rows,
     _apply_preclose_actual_snapshot_rows,
     _backfill_day_actuals_from_returns,
@@ -44,7 +56,7 @@ from .enrich import (
     _fetch_live_intraday_snapshot_pct_by_code,
     _movers_data_note_for_report,
 )
-from .freeze import (
+from .support import (
     _freeze_entry_usable,
     _ignore_freeze_for_trading_day,
     _load_prediction_freeze_payload,
@@ -52,14 +64,15 @@ from .freeze import (
     _prediction_rows_to_frozen_items,
     _save_prediction_freeze_payload,
 )
-from .news_io import _collect_calendar_days_for_trading_range, _fetch_news_for_calendar_days
-from .scheduling import (
+from .support import _collect_calendar_days_for_trading_range, _fetch_news_for_calendar_days
+from .support import (
     _observation_day_forward_mode,
     _refresh_incomplete_market_theme_on_day_reports,
     _resolve_pipeline_ohlcv_end,
     _should_skip_ohlcv_right_gap,
 )
 from .types import PipelineOut
+
 
 def _run_pipeline(
     test_days: list[date],

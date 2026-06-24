@@ -1,7 +1,7 @@
 """월간 HTML 배치 렌더."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from src import (
@@ -13,12 +13,14 @@ from src import (
     trading_calendar,
 )
 
-from .enrich import (
+from .rows import (
     _enrich_cumulative_accuracy_avg,
     _enrich_cumulative_hit_rate,
     _enrich_cumulative_actual_over_pred_from_history,
 )
+from .support import _collect_calendar_days_for_trading_range, _fetch_news_for_calendar_days
 from .types import PipelineOut
+
 
 def _render_monthly_batch(
     po: PipelineOut,

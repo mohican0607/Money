@@ -15,7 +15,8 @@ from datetime import date, timedelta
 from collections.abc import Callable
 from typing import Any
 
-from .. import config, prediction_accuracy_cache
+from .. import config
+from ..prediction import accuracy_cache as prediction_accuracy_cache
 from ..features import (
     BreakoutEvent,
     filter_keywords,

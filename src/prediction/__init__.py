@@ -16,3 +16,5 @@ __all__ = [
     "rank_predictions_ml",
     "finalize_ranked_predictions",
 ]
+
+from . import accuracy_cache as prediction_accuracy_cache  # noqa: F401

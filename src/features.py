@@ -15,7 +15,8 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from . import config, news
+from . import config
+from . import news
 
 # 한글 2글자 이상, 영단어 3글자 이상
 _TOKEN = re.compile(r"[가-힣]{2,}|[A-Za-z][A-Za-z0-9]{2,}")

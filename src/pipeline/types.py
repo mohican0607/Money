@@ -10,12 +10,7 @@ from src import report
 
 @dataclass
 class PipelineOut:
-    """
-    ``_run_pipeline`` 한 번 호출의 집계 결과.
-
-    월간 HTML 메타(훈련 구간, 뉴스 출처, 상관 키워드)와 late-뉴스 프로브 카운터,
-    pykrx 실패 시 리포트 각주 문구를 담습니다.
-    """
+    """``run_pipeline`` 한 번 호출의 집계 결과."""
 
     day_reports: list[report.DayReport]
     news_source: str

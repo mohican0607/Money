@@ -1,7 +1,7 @@
 """
 학습·테마 사후 병합 — ``market_theme_flow`` · ``rebuild_learning``.
 
-기존 ``from src import snapshot_rebuild_learning`` 는 루트 shim 으로 호환됩니다.
+``market_theme`` · ``aux`` 는 루트 shim 으로 호환됩니다.
 """
 from .market_theme import (
     build_market_theme_flow,
