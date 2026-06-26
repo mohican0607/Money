@@ -395,6 +395,27 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
   bindStockChartTips(document);
 })();
 </script>"""
+
+_ACTUAL_RET_FMT_MACROS = r"""{% macro fmt_ret_ratio_pct(ratio) -%}
+{% if ratio < 0 %}<span class="bad">{{ "%.2f"|format(ratio * 100) }}</span>{% else %}{{ "%.2f"|format(ratio * 100) }}{% endif %}
+{%- endmacro %}
+{% macro fmt_ret_pct_pts(pct) -%}
+{% if pct < 0 %}<span class="bad">{{ "%.2f"|format(pct) }}</span>{% else %}{{ "%.2f"|format(pct) }}{% endif %}
+{%- endmacro %}
+{% macro actual_ret_prev_suffix(r) -%}
+{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ fmt_ret_ratio_pct(r.actual_ret_prev_day) }}){% endif %}
+{%- endmacro %}
+{% macro actual_ret_yesterday_or_dash(r) -%}
+{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %}N-1 ({{ fmt_ret_ratio_pct(r.actual_ret_prev_day) }}){% else %}—{% endif %}
+{%- endmacro %}"""
+
+_ACTUAL_RET_CELL_BODY = r"""{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ fmt_ret_ratio_pct(r.actual_ret) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ fmt_ret_ratio_pct(r.actual_ret) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}"""
+
+
+def _actual_ret_cell_macro(name: str) -> str:
+    return _ACTUAL_RET_FMT_MACROS + f"{{% macro {name}(r) -%}}{_ACTUAL_RET_CELL_BODY}{{%- endmacro %}}\n"
+
+
 _TEMPLATE = r"""
 <!DOCTYPE html>
 <html lang="ko">
@@ -634,15 +655,7 @@ _TEMPLATE = r"""
   </span>
 </span>
 {%- endmacro %}
-{% macro actual_ret_prev_suffix(r) -%}
-{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% endif %}
-{%- endmacro %}
-{% macro actual_ret_yesterday_or_dash(r) -%}
-{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %}N-1 ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% else %}—{% endif %}
-{%- endmacro %}
-{% macro actual_ret_cell(r) -%}
-{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}
-{%- endmacro %}
+__ACTUAL_RET_CELL_MACRO__
 {% macro cumulative_accuracy_td(r, meta) -%}
 <td class="cumulative-accuracy-td" style="white-space:nowrap;font-variant-numeric:tabular-nums">
   {% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
@@ -1230,15 +1243,7 @@ _COMPACT_TEMPLATE = r"""
   </span>
 </span>
 {%- endmacro %}
-{% macro actual_ret_prev_suffix(r) -%}
-{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% endif %}
-{%- endmacro %}
-{% macro actual_ret_yesterday_or_dash(r) -%}
-{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %}N-1 ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% else %}—{% endif %}
-{%- endmacro %}
-{% macro actual_ret_cell_monthly(r) -%}
-{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}
-{%- endmacro %}
+__ACTUAL_RET_CELL_MACRO_MONTHLY__
 {% macro compact_cumulative_td(r, meta) -%}
 <td class="cumulative-accuracy-td" style="white-space:nowrap;font-variant-numeric:tabular-nums">
   {% if r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
@@ -1910,15 +1915,7 @@ _DATED_N_TEMPLATE = r"""
   </span>
 </span>
 {%- endmacro %}
-{% macro actual_ret_prev_suffix(r) -%}
-{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% endif %}
-{%- endmacro %}
-{% macro actual_ret_yesterday_or_dash(r) -%}
-{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %}N-1 ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% else %}—{% endif %}
-{%- endmacro %}
-{% macro actual_ret_cell_dated(r) -%}
-{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}
-{%- endmacro %}
+__ACTUAL_RET_CELL_MACRO_DATED__
   <h1>기준일 N={{ n_day.isoformat() }} → 관측일 T={{ t_day.isoformat() }}</h1>
   <p class="sub">
     {{ meta.run_subtitle }} · 급등 기준 {{ meta.threshold }} · 뉴스: {{ meta.news_source }}
@@ -2150,5 +2147,13 @@ _DATED_N_TEMPLATE = r"""
 </body>
 </html>
 """
+
+_TEMPLATE = _TEMPLATE.replace("__ACTUAL_RET_CELL_MACRO__", _actual_ret_cell_macro("actual_ret_cell"))
+_COMPACT_TEMPLATE = _COMPACT_TEMPLATE.replace(
+    "__ACTUAL_RET_CELL_MACRO_MONTHLY__", _actual_ret_cell_macro("actual_ret_cell_monthly")
+)
+_DATED_N_TEMPLATE = _DATED_N_TEMPLATE.replace(
+    "__ACTUAL_RET_CELL_MACRO_DATED__", _actual_ret_cell_macro("actual_ret_cell_dated")
+)
 
 _m_dated_style = re.search(r"<style>\s*(.*?)\s*</style>", _DATED_N_TEMPLATE, re.DOTALL)
