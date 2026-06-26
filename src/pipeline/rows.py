@@ -461,14 +461,27 @@ def _enrich_rows_stock_ret_tooltip(
     t_day: date,
     *,
     n_day: date | None = None,
+    forward_observation: bool = False,
     now_kst: datetime | None = None,
 ) -> None:
-    """종목별 tooltip: 기준일 N(현재)·N-1·N-2 일봉 등락률(%)."""
+    """
+    종목별 tooltip: N·N-1·N-2 일봉 등락률(%).
+
+    - 관측일 ``T`` 실적이 확정된 구간: **N = T**(당일 급등·실제%와 같은 날짜).
+    - 예측 전용(``forward_observation``): **N = T 직전 거래일**(기준일).
+  """
     try:
-        n_basis = n_day or trading_calendar.last_trading_day_before(t_day)
+        if n_day is not None:
+            n_basis = n_day
+        elif forward_observation:
+            n_basis = trading_calendar.last_trading_day_before(t_day)
+        else:
+            n_basis = t_day
     except ValueError:
         for r in rows:
             r["stock_ret_tooltip"] = []
+            r.pop("report_n_day", None)
+            r.pop("stock_chart_n_bar_offset", None)
         return
 
     day_chain: list[tuple[str, date]] = []
@@ -493,8 +506,13 @@ def _enrich_rows_stock_ret_tooltip(
             if snap:
                 intraday_map = snap
 
+    chart_end = trading_calendar.ohlcv_request_end_cap(now_kst=now_kst)
+    n_bar_offset = trading_calendar.trading_sessions_after_exclusive(n_basis, chart_end)
+
     for r in rows:
         code = str(r.get("code", "")).zfill(6)
+        r["report_n_day"] = n_basis.isoformat()
+        r["stock_chart_n_bar_offset"] = n_bar_offset
         tips: list[dict[str, object]] = []
         for label, td in day_chain:
             ret = stocks.actual_return_on_date(returns, code, td) if code else None

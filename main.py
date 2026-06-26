@@ -280,6 +280,12 @@ def main() -> None:
         )
         t_day = actual_t
 
+    try:
+        n_day = trading_calendar.last_trading_day_before(t_day)
+    except ValueError as e:
+        print(e)
+        return
+
     meta_compact = {
         "train_range": (
             f"{po.train_start} ~ 각 관측일 T 직전까지(워크포워드, "

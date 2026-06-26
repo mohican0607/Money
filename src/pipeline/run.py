@@ -883,7 +883,13 @@ def _run_pipeline(
                 )
 
         _enrich_rows_actual_ret_prev_day(rows_compare, returns, T)
-        _enrich_rows_stock_ret_tooltip(rows_compare, returns, T, now_kst=now_kst_td)
+        _enrich_rows_stock_ret_tooltip(
+            rows_compare,
+            returns,
+            T,
+            forward_observation=day_forward,
+            now_kst=now_kst_td,
+        )
 
         if config.THEME_CARRYOVER_ENABLED and rows_compare and not day_forward:
             theme_carryover.persist_rich_snapshot(

@@ -111,6 +111,9 @@ _NOISE_TITLE_BITS = (
     "장 마감",
     "코스피·코스닥",
     "특징주 정리",
+    "띠별 운세",
+    "오늘의 띠",
+    "운세",
 )
 
 _TECH_RISE_BITS = (
@@ -437,6 +440,82 @@ def _pick_from_rise_reason_html(compare_row: dict[str, Any] | None) -> _ReasonPi
     return best
 
 
+def _catalyst_relevant_to_sector(
+    catalyst: str,
+    *,
+    compact: str,
+    full: str,
+    aliases: tuple[str, ...],
+) -> bool:
+    """당일 공통 키워드(예: HBM4)가 섹터와 무관하면 섹터 이슈로 표시하지 않음."""
+    cat = str(catalyst or "").strip()
+    if not cat:
+        return False
+    blob = f"{compact} {full} {' '.join(aliases)}".lower()
+    cat_l = cat.lower()
+    if compact and compact.lower() in cat_l:
+        return True
+    for a in aliases:
+        al = str(a).strip().lower()
+        if len(al) >= 2 and al in cat_l:
+            return True
+    if any(al in blob for al in cat_l.split() if len(al) >= 2):
+        return True
+    return False
+
+
+def _is_generic_day_theme_phrase(phrase: str, *, aliases: tuple[str, ...]) -> bool:
+    """당일 시장 공통 테마 문구(예: HBM4의 전망) — 종목별 이유로 쓰지 않음."""
+    p = str(phrase or "").strip()
+    if not p:
+        return True
+    if re.search(r"의\s*(전망|기대|수혜|관련|흐름)", p):
+        if not _catalyst_relevant_to_sector(
+            p, compact="", full="", aliases=aliases
+        ):
+            return True
+    m = re.search(r"([A-Za-z0-9&][A-Za-z0-9&.\-]{1,20})", p)
+    if m and re.search(r"의\s*전망", p):
+        token = m.group(1).lower()
+        blob = f"{' '.join(aliases)}".lower()
+        if token not in blob and not any(token in str(a).lower() for a in aliases):
+            return True
+    return False
+
+
+def _stock_reason_context_rows(
+    news_by_calendar: dict[date, list[dict[str, str]]] | None,
+    t_day: date,
+    early_rows: list[tuple[date, dict[str, str]]],
+    actual_ctx_rows: list[tuple[date, dict[str, str]]],
+    *,
+    lookback_sessions: int = 4,
+) -> list[tuple[date, dict[str, str]]]:
+    """당일·late·직전 거래일 뉴스를 합쳐 종목 이유 탐색용 row 목록."""
+    rows: list[tuple[date, dict[str, str]]] = list(actual_ctx_rows)
+    seen = {str(r.get("title") or "") for _, r in rows if str(r.get("title") or "")}
+    if news_by_calendar and lookback_sessions > 0:
+        try:
+            end_prev = trading_calendar.last_trading_day_before(t_day)
+            start_prev = end_prev
+            for _ in range(max(0, lookback_sessions - 1)):
+                start_prev = trading_calendar.last_trading_day_before(start_prev)
+            for d in trading_calendar.trading_sessions_in_range(start_prev, end_prev):
+                for r in news_by_calendar.get(d, []):
+                    title = str(r.get("title") or "")
+                    if title and title not in seen:
+                        seen.add(title)
+                        rows.append((d, r))
+        except ValueError:
+            pass
+    for d, r in early_rows:
+        title = str(r.get("title") or "")
+        if title and title not in seen:
+            seen.add(title)
+            rows.append((d, r))
+    return rows
+
+
 def _pick_from_theme_news(
     early_rows: list[tuple[date, dict[str, str]]],
     actual_ctx_rows: list[tuple[date, dict[str, str]]],
@@ -454,6 +533,8 @@ def _pick_from_theme_news(
                 continue
             phrase = _extract_issue_from_title(title, "") or _clean_phrase(title)
             if len(phrase) < 4:
+                continue
+            if _is_generic_day_theme_phrase(phrase, aliases=aliases):
                 continue
             return _ReasonPick(text=phrase, confidence=46, source=src)
     return None
@@ -481,7 +562,14 @@ def _sector_context(
             sec = str(summ.get("sector") or "")
             if srl._compact_sector_label(sec) != theme:
                 continue
-            catalyst = _usable_catalyst(str(summ.get("catalyst") or ""))
+            raw_cat = _usable_catalyst(str(summ.get("catalyst") or ""))
+            if raw_cat and _catalyst_relevant_to_sector(
+                raw_cat,
+                compact=theme,
+                full=full,
+                aliases=aliases,
+            ):
+                catalyst = raw_cat
             break
     return theme, catalyst, aliases
 
@@ -529,6 +617,7 @@ def _peer_names(
 
 def _fallback_reason(
     *,
+    name: str,
     theme: str,
     catalyst: str,
     keywords: list[str],
@@ -540,24 +629,31 @@ def _fallback_reason(
     if catalyst:
         text = catalyst if not theme else f"{catalyst}"
         return _ReasonPick(text=text, confidence=35, source="sector_catalyst")
-    if keywords:
-        kw = ", ".join(keywords[:3])
-        label = theme or "테마"
-        return _ReasonPick(
-            text=f"{label} ({kw}) 이슈",
-            confidence=28,
-            source="keywords",
-        )
     if theme and peers:
         return _ReasonPick(
             text=f"{theme} 동반 급등({', '.join(peers)} 등)",
-            confidence=22,
+            confidence=28,
             source="peers",
+        )
+    usable_kw = [
+        k
+        for k in keywords
+        if str(k).strip()
+        and str(k).lower() not in (name or "").strip().lower()
+        and (name or "").strip().lower() not in str(k).lower()
+    ]
+    if usable_kw:
+        kw = ", ".join(usable_kw[:3])
+        label = theme or "테마"
+        return _ReasonPick(
+            text=f"{label} ({kw}) 이슈",
+            confidence=24,
+            source="keywords",
         )
     if theme:
         return _ReasonPick(text=f"{theme} 테마 급등", confidence=18, source="theme_only")
     if is_limit_up:
-        return _ReasonPick(text="당일 상한가(직접 뉴스·공시 미매칭)", confidence=10, source="bare")
+        return _ReasonPick(text="당일 상한가(종목 직접 뉴스·공시 미확인)", confidence=10, source="bare")
     return _ReasonPick(
         text=f"당일 +{return_pct:.1f}% 급등",
         confidence=8,
@@ -627,8 +723,18 @@ def _reason_for_stock(
         picks.append(p)
 
     if picks:
-        return max(picks, key=lambda p: p.confidence)
+        filtered: list[_ReasonPick] = []
+        for p in picks:
+            if _is_generic_day_theme_phrase(p.text, aliases=aliases):
+                if p.source in ("theme_early", "theme_actual", "sector_catalyst", "ctx_match", "early_match"):
+                    continue
+                if not _name_in_title(p.text, name) and name not in p.text:
+                    continue
+            filtered.append(p)
+        if filtered:
+            return max(filtered, key=lambda p: p.confidence)
     return _fallback_reason(
+        name=name,
         theme=theme,
         catalyst=catalyst,
         keywords=keywords,
@@ -649,6 +755,38 @@ def _format_bullet_line(name: str, reason: str, *, is_limit_up: bool) -> str:
         f'<li style="margin-bottom:6px;line-height:1.5">'
         f"<strong>{_esc(name)}</strong>: {_esc(r)}</li>"
     )
+
+
+def _stock_reason_text(
+    compare_row: dict[str, Any] | None,
+    *,
+    code: str,
+    name: str,
+    early_rows: list[tuple[date, dict[str, str]]],
+    actual_ctx_rows: list[tuple[date, dict[str, str]]],
+    flow_row: dict[str, Any] | None,
+    theme_label: str,
+    return_pct: float,
+    is_limit_up: bool,
+) -> str:
+    """종목별 급등 이유 평문(테마 리포트 표·불릿 공통)."""
+    pick = _reason_for_stock(
+        compare_row if isinstance(compare_row, dict) else None,
+        code=code,
+        name=name,
+        early_rows=early_rows,
+        actual_ctx_rows=actual_ctx_rows,
+        flow_row=flow_row,
+        theme_label=theme_label,
+        return_pct=return_pct,
+        is_limit_up=is_limit_up,
+    )
+    r = _shorten(pick.text.strip())
+    if is_limit_up and r and "상한" not in r:
+        r = f"{r}에 상한가"
+    if not r:
+        r = "상한가" if is_limit_up else f"당일 +{return_pct:.1f}% 급등"
+    return _esc(r)
 
 
 def _collect_stock_entries(
@@ -741,8 +879,9 @@ def format_day_mover_rationale_html(
     listing_names: dict[str, str],
     early_rows: list[tuple[date, dict[str, str]]],
     actual_ctx_rows: list[tuple[date, dict[str, str]]] | None = None,
-    forward_observation: bool = False,
+    news_by_calendar: dict[date, list[dict[str, str]]] | None = None,
     trading_day: date | None = None,
+    forward_observation: bool = False,
     now_kst: datetime | None = None,
 ) -> str:
     """장 마감 확정일 — 상한가·20%↑ 종목마다 한 줄 요약(내부 HTML)."""
@@ -757,7 +896,12 @@ def format_day_mover_rationale_html(
     if not entries:
         return ""
 
-    ctx_rows = list(actual_ctx_rows or [])
+    ctx_rows = _stock_reason_context_rows(
+        news_by_calendar,
+        trading_day,
+        early_rows,
+        list(actual_ctx_rows or []),
+    )
     stock_map = (
         flow_row.get("theme_stock_sectors")
         if isinstance(flow_row, dict) and isinstance(flow_row.get("theme_stock_sectors"), dict)
@@ -832,8 +976,9 @@ def enrich_day_report_mover_rationale(
         listing_names=listing_names,
         early_rows=early_rows,
         actual_ctx_rows=actual_ctx_rows,
-        forward_observation=bool(getattr(dr, "forward_observation", False)),
+        news_by_calendar=news_by_calendar,
         trading_day=t_day,
+        forward_observation=bool(getattr(dr, "forward_observation", False)),
         now_kst=now_kst,
     )
     setattr(dr, "mover_rationale_html", inner or "")
@@ -1489,7 +1634,9 @@ def _sector_rationale_compact(
 
     parts: list[str] = []
     catalyst = _usable_catalyst(str((summ or {}).get("catalyst") or ""))
-    if catalyst:
+    if catalyst and _catalyst_relevant_to_sector(
+        catalyst, compact=compact, full=full, aliases=aliases
+    ):
         parts.append(f"이슈: {_esc(catalyst)}")
 
     kw = [
@@ -1580,12 +1727,14 @@ def _rise_reason_bullet(compare_row: dict[str, Any] | None) -> str:
         "수집을 생략",
         "미확정",
         "인과 단정",
+        "종목 특징",
+        "시장·국제",
     )
     for m in re.finditer(r"<li[^>]*>(.*?)</li>", raw, flags=re.I | re.S):
         line = _plain_from_html(m.group(1), max_len=_THEME_REASON_MAX)
         if len(line) < 12:
             continue
-        if any(bit in line for bit in skip_bits):
+        if any(bit in line for bit in skip_bits + _TECH_RISE_BITS):
             continue
         if re.match(r"^\d{4}-\d{2}-\d{2}\s", line):
             continue
@@ -1682,6 +1831,22 @@ def build_day_strong_mover_sections(
 
     t_day: date = dr.trading_day
     early_rows = srl._early_news_rows_for_trading_day(news_by_calendar, t_day)
+    actual_ctx_rows = _stock_reason_context_rows(
+        news_by_calendar,
+        t_day,
+        early_rows,
+        news.rows_for_actual_context(news_by_calendar, t_day),
+    )
+    listing_names = flow_row.get("_listing_names") or {}
+    mover_rationale_html = format_day_mover_rationale_html(
+        flow_row=flow_row,
+        compare_rows=list(dr.rows_compare or []),
+        listing_names=listing_names,
+        early_rows=early_rows,
+        actual_ctx_rows=actual_ctx_rows,
+        news_by_calendar=news_by_calendar,
+        trading_day=t_day,
+    )
     if dr.rows_compare:
         srl._patch_flow_row_strong_movers_from_compare(
             flow_row,
@@ -1764,9 +1929,6 @@ def build_day_strong_mover_sections(
     ):
         stocks.sort(key=lambda s: float(s.get("return_pct") or 0), reverse=True)
         full_label = srl._full_sector_label(theme) or theme
-        summ = _sector_summary_for_label(flow_row, theme)
-        cat = _usable_catalyst(str((summ or {}).get("catalyst") or ""))
-        sector_aliases = srl._sector_aliases_for_label(full_label)
         sector_blocks.append(
             {
                 "theme": theme,
@@ -1800,16 +1962,24 @@ def build_day_strong_mover_sections(
                                 )
                             )
                         ),
-                        "reason": _stock_reason_summary(
-                            s,
-                            theme=theme,
+                        "reason": _stock_reason_text(
+                            compare_by_code.get(str(s.get("code") or "").zfill(6)),
+                            code=str(s.get("code") or "").zfill(6),
+                            name=str(s.get("name") or ""),
                             early_rows=early_rows,
-                            sector_catalyst=cat,
-                            sector_aliases=sector_aliases,
-                            compare_row=compare_by_code.get(
-                                str(s.get("code") or "").zfill(6)
+                            actual_ctx_rows=actual_ctx_rows,
+                            flow_row=flow_row,
+                            theme_label=theme,
+                            return_pct=float(s.get("return_pct") or 0),
+                            is_limit_up=bool(
+                                not s.get("is_intraday_limit_down")
+                                and (
+                                    s.get("is_limit_up")
+                                    or srl._is_near_limit_up_return_pct(
+                                        float(s.get("return_pct") or 0)
+                                    )
+                                )
                             ),
-                            peers=stocks,
                         ),
                     }
                     for s in stocks
@@ -1824,6 +1994,7 @@ def build_day_strong_mover_sections(
         "news_cutoff_label": news_cutoff_label,
         "news_prev_day": trading_calendar.last_trading_day_before(t_day).isoformat(),
         "overview_html": _compact_day_overview(flow_row),
+        "mover_rationale_html": mover_rationale_html,
         "sectors": sector_blocks,
     }
 
@@ -1863,6 +2034,12 @@ _THEME_DAY_SECTION_TEMPLATE = r"""
     <h2>{{ day.trading_day.isoformat() }}</h2>
     <p class="day-meta">early {{ day.news_prev_day }} {{ day.news_cutoff_label }}</p>
     {% if day.overview_html %}{{ day.overview_html | safe }}{% endif %}
+    {% if day.mover_rationale_html %}
+    <div class="mover-rationale-block">
+      <h3 class="mover-rationale-h">왜 올랐나 (상한가·급등)</h3>
+      {{ day.mover_rationale_html | safe }}
+    </div>
+    {% endif %}
 
     {% for sec in day.sectors %}
     <h3>{{ sec.theme }} ({{ sec.count }})</h3>
@@ -1914,6 +2091,11 @@ _THEME_REPORT_SHELL_TEMPLATE = r"""
     .day-meta { font-size: 0.78rem; color: var(--muted); margin: 0 0 6px; }
     .day-stats { margin: 0 0 8px; font-size: 0.82rem; }
     .sector-why { margin: 0 0 6px; font-size: 0.8rem; color: #c8d8e8; }
+    .mover-rationale-block { margin: 10px 0 14px; padding: 10px 12px;
+      background: #1a2838; border: 1px solid #3a5a4a; border-radius: 8px; }
+    .mover-rationale-h { font-size: 0.92rem; color: var(--ok); margin: 0 0 8px; }
+    .mover-rationale-block ul { margin: 0; padding-left: 18px; }
+    .mover-rationale-block li { margin-bottom: 6px; line-height: 1.5; }
     table.stocks { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-bottom: 10px; }
     table.stocks th { text-align: left; color: var(--muted); font-weight: 600;
                       border-bottom: 1px solid #2a3f5c; padding: 4px 6px; }

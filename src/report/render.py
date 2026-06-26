@@ -69,8 +69,13 @@ def format_stock_ret_tooltip_lines(row: dict[str, Any] | None) -> str:
         dt = str(it.get("date") or "")
         pct = it.get("pct")
         intraday = bool(it.get("intraday"))
-        lbl = "N&nbsp;&nbsp;" if label == "N" else label
+        lbl_base = "N" if label == "N" else label
         mmdd = f"{dt[5:7]}{dt[8:10]}" if len(dt) >= 10 else ""
+        if mmdd:
+            mmdd_bit = f"{mmdd}·장중" if intraday else mmdd
+            lbl = f"{lbl_base}({mmdd_bit})"
+        else:
+            lbl = lbl_base
         cls = ""
         if pct is not None:
             try:
@@ -81,16 +86,42 @@ def format_stock_ret_tooltip_lines(row: dict[str, Any] | None) -> str:
                 pct_s = "—"
         else:
             pct_s = "—"
-        dt_suffix = f"({mmdd}·장중)" if intraday and mmdd else (f"({mmdd})" if mmdd else "")
         parts.append(
             f'<span class="stock-ret-line{cls}">'
             f'<span class="stock-ret-lbl">{lbl}</span>: '
-            f'<span class="stock-ret-pct">{pct_s}</span> '
-            f'<span class="stock-ret-dt">{dt_suffix}</span>'
+            f'<span class="stock-ret-pct">{pct_s}</span>'
             f"</span>"
         )
     parts.append("</div>")
     return "".join(parts)
+
+
+def stock_chart_n_day_iso(row: dict[str, Any] | None) -> str:
+    """compare 행의 기준일 N(ISO). 차트 N 봉 마커·캡션용."""
+    if not row:
+        return ""
+    explicit = str(row.get("report_n_day") or "").strip()
+    if len(explicit) >= 10:
+        return explicit[:10]
+    for it in row.get("stock_ret_tooltip") or []:
+        if str(it.get("label") or "").strip() == "N":
+            dt = str(it.get("date") or "").strip()
+            if len(dt) >= 10:
+                return dt[:10]
+    return ""
+
+
+def stock_chart_n_bar_offset(row: dict[str, Any] | None) -> int | None:
+    """차트 우측 끝 대비 N 봉 offset(0=최우측). 없거나 범위 밖이면 ``None``."""
+    if not row:
+        return None
+    off = row.get("stock_chart_n_bar_offset")
+    if off is None:
+        return None
+    try:
+        return int(off)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_mover_rationale_ref_block(rationale_inner_html: str) -> str:
@@ -215,7 +246,7 @@ def naver_disclosure_url(code: str) -> str:
 
 
 def naver_chart_day_img_url(code: str) -> str:
-    """네이버 금융 일봉 캔들 차트 정적 PNG(가로축 거래일, 약 700×289px)."""
+    """네이버 금융 일봉 캔들 PNG 베이스 URL(호버 시 JS로 최신 이미지 로드, 약 700×289px)."""
     c = str(code).zfill(6)
     return f"https://ssl.pstatic.net/imgfinance/chart/item/candle/day/{c}.png"
 
@@ -261,6 +292,8 @@ def render_report(
         interaction_snippet=REPORT_TABLE_INTERACTION_SNIPPET,
         format_prediction_signal_cell=format_prediction_signal_cell,
         format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
+        stock_chart_n_day_iso=stock_chart_n_day_iso,
+        stock_chart_n_bar_offset=stock_chart_n_bar_offset,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
@@ -367,6 +400,22 @@ def _monday_of_iso_week(d: date) -> date:
     return d - timedelta(days=d.weekday())
 
 
+def iso_week_chart_view_end(
+    monday: date, *, now_kst: datetime | None = None
+) -> date:
+    """
+    주간 탭 차트 캡션용 — ISO 주(월~금) 마지막 거래일, 단 오늘 장마감 상한 이내.
+
+    현재 주(예: 6/22~)이면 오늘(또는 장중이면 전 거래일)까지, 지난 주면 그 주 금요일(또는
+    그 주 마지막 거래일)까지를 봅니다.
+    """
+    friday = monday + timedelta(days=4)
+    sessions = trading_calendar.trading_sessions_in_range(monday, friday)
+    week_end = sessions[-1] if sessions else monday
+    cap = trading_calendar.ohlcv_request_end_cap(now_kst=now_kst)
+    return week_end if week_end <= cap else cap
+
+
 def _panel_days_from_reports_and_preserved(
     reports: list[DayReport],
     preserved_day_html: dict[date, str] | None,
@@ -402,6 +451,7 @@ def _week_panels_from_panel_days(panel_days: list[dict]) -> list[dict]:
                 "monday": mon,
                 "label": f"{mon.isoformat()} 주 · {fd.isoformat()} ~ {ld.isoformat()}",
                 "days": wdays,
+                "chart_view_end": iso_week_chart_view_end(mon).isoformat(),
             }
         )
     return week_panels
@@ -448,6 +498,8 @@ def render_compact_tabbed_report(
         interaction_snippet=REPORT_TABLE_INTERACTION_SNIPPET,
         format_prediction_signal_cell=format_prediction_signal_cell,
         format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
+        stock_chart_n_day_iso=stock_chart_n_day_iso,
+        stock_chart_n_bar_offset=stock_chart_n_bar_offset,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
@@ -644,6 +696,8 @@ def render_dated_n_report(
         naver_disclosure_url=naver_disclosure_url,
         format_prediction_signal_cell=format_prediction_signal_cell,
         format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
+        stock_chart_n_day_iso=stock_chart_n_day_iso,
+        stock_chart_n_bar_offset=stock_chart_n_bar_offset,
     )
     body_inner = _strip_html_body_inner(html)
     merge_dated_n_rollup(rollup_path=out_rollup, n_compact=n_compact, body_inner=body_inner)

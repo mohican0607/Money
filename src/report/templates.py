@@ -5,6 +5,18 @@ import re
 
 REPORT_TABLE_INTERACTION_MARKER = "money-report-table-interaction"
 REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
+<style>
+.stock-chart-popup.stock-chart-popup-floating {
+  display: block !important;
+  position: fixed !important;
+  z-index: 4000 !important;
+  min-width: min(720px, calc(100vw - 32px)) !important;
+  max-width: min(720px, calc(100vw - 24px)) !important;
+  max-height: min(90vh, 520px) !important;
+  overflow: auto !important;
+  box-sizing: border-box;
+}
+</style>
 <script>
 (function () {
   function numKey(v) {
@@ -170,9 +182,217 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     window.addEventListener("resize", refreshOpenIntegrateTips);
     window.addEventListener("scroll", refreshOpenIntegrateTips, true);
   }
+  function bindStockChartTips(root) {
+    var NAVER_DAY_CHART_BARS = 72;
+    var NAVER_CHART_PLOT_LEFT = 0.075;
+    var NAVER_CHART_PLOT_WIDTH = 0.85;
+    var NAVER_CHART_MARKER_TOP = "4%";
+    var NAVER_CHART_MARKER_BOTTOM = "16%";
+    var NAVER_CHART_LABEL_TOP = "1%";
+    function parseYmd(s) {
+      var p = String(s || "").split("-");
+      if (p.length < 3) return null;
+      var y = parseInt(p[0], 10);
+      var m = parseInt(p[1], 10) - 1;
+      var d = parseInt(p[2], 10);
+      if (isNaN(y) || isNaN(m) || isNaN(d)) return null;
+      return new Date(y, m, d);
+    }
+    function formatYmd(d) {
+      var y = d.getFullYear();
+      var m = String(d.getMonth() + 1).padStart(2, "0");
+      var day = String(d.getDate()).padStart(2, "0");
+      return y + "-" + m + "-" + day;
+    }
+    function kstParts(now) {
+      var parts = {};
+      new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Asia/Seoul",
+        year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", hour12: false,
+        weekday: "short"
+      }).formatToParts(now || new Date()).forEach(function (p) {
+        if (p.type !== "literal") parts[p.type] = p.value;
+      });
+      return parts;
+    }
+    function prevWeekday(d) {
+      var x = new Date(d.getTime());
+      do {
+        x.setDate(x.getDate() - 1);
+      } while (x.getDay() === 0 || x.getDay() === 6);
+      return x;
+    }
+    function liveChartAxisEndYmdKst() {
+      var p = kstParts();
+      var d = parseYmd(p.year + "-" + p.month + "-" + p.day);
+      if (!d) return null;
+      var wd = p.weekday;
+      var isWeekday = wd !== "Sat" && wd !== "Sun";
+      var hour = parseInt(p.hour, 10);
+      var minute = parseInt(p.minute, 10);
+      if (isWeekday && (hour < 15 || (hour === 15 && minute < 30))) {
+        d = prevWeekday(d);
+      }
+      return formatYmd(d);
+    }
+    function chartAxisEndYmdKst(frame) {
+      return liveChartAxisEndYmdKst();
+    }
+    function updateChartCaption(frame) {
+      if (!frame || !frame.parentElement) return;
+      var cap = frame.parentElement.querySelector(".stock-chart-caption");
+      if (!cap) return;
+      var base = cap.getAttribute("data-caption-base");
+      if (!base) {
+        base = (cap.textContent || "").replace(/\s*\(~[^)]*\)\s*$/, "");
+        cap.setAttribute("data-caption-base", base);
+      }
+      var live = liveChartAxisEndYmdKst();
+      var suffix = "";
+      if (live) {
+        suffix = " (~" + live.slice(5, 7) + "/" + live.slice(8, 10) + "까지)";
+      }
+      cap.textContent = base + suffix;
+    }
+    function tradingSessionsAfterExclusive(startYmd, endYmd) {
+      var start = parseYmd(startYmd);
+      var end = parseYmd(endYmd);
+      if (!start || !end || end <= start) return 0;
+      var d = new Date(start.getTime());
+      d.setDate(d.getDate() + 1);
+      var n = 0;
+      while (d <= end) {
+        if (d.getDay() !== 0 && d.getDay() !== 6) n++;
+        d.setDate(d.getDate() + 1);
+      }
+      return n;
+    }
+    function resolveNBarOffset(frame) {
+      var nDay = frame.getAttribute("data-n-day");
+      if (!nDay) return null;
+      var chartEnd = chartAxisEndYmdKst(frame);
+      if (!chartEnd) return null;
+      return tradingSessionsAfterExclusive(nDay, chartEnd);
+    }
+    function positionStockChartNMarker(frame) {
+      if (!frame) return;
+      var nDay = frame.getAttribute("data-n-day");
+      var marker = frame.querySelector(".stock-chart-n-marker");
+      var label = frame.querySelector(".stock-chart-n-label");
+      if (!nDay || !marker) {
+        frame.classList.remove("has-n-marker");
+        return;
+      }
+      var offset = resolveNBarOffset(frame);
+      if (offset === null || offset < 0 || offset >= NAVER_DAY_CHART_BARS) {
+        frame.classList.remove("has-n-marker");
+        return;
+      }
+      var fracFromRight = offset / Math.max(1, NAVER_DAY_CHART_BARS - 1);
+      var xPct = (NAVER_CHART_PLOT_LEFT + NAVER_CHART_PLOT_WIDTH * (1 - fracFromRight)) * 100;
+      marker.style.left = xPct + "%";
+      marker.style.top = NAVER_CHART_MARKER_TOP;
+      marker.style.bottom = NAVER_CHART_MARKER_BOTTOM;
+      if (label) {
+        label.style.left = xPct + "%";
+        label.style.top = NAVER_CHART_LABEL_TOP;
+        label.textContent = "N " + (nDay.length >= 10 ? nDay.slice(5, 7) + "/" + nDay.slice(8, 10) : "N");
+      }
+      frame.classList.add("has-n-marker");
+    }
+    function positionStockChartPopup(tip) {
+      var popup = tip.querySelector(".stock-chart-popup");
+      var anchor = tip.querySelector(".stock");
+      if (!popup || !anchor) return;
+      var margin = 10;
+      var gap = 6;
+      popup.classList.add("stock-chart-popup-floating");
+      popup.style.setProperty("display", "block", "important");
+      var pw = popup.offsetWidth;
+      var ph = popup.offsetHeight;
+      var ar = anchor.getBoundingClientRect();
+      var vw = window.innerWidth;
+      var vh = window.innerHeight;
+      var left = ar.left;
+      if (left + pw > vw - margin) left = Math.max(margin, vw - pw - margin);
+      if (left < margin) left = margin;
+      var top = ar.bottom + gap;
+      if (top + ph > vh - margin) top = ar.top - ph - gap;
+      if (top < margin) top = margin;
+      popup.style.setProperty("left", left + "px", "important");
+      popup.style.setProperty("top", top + "px", "important");
+    }
+    function resetStockChartPopup(tip) {
+      var popup = tip.querySelector(".stock-chart-popup");
+      if (!popup) return;
+      popup.classList.remove("stock-chart-popup-floating");
+      popup.style.removeProperty("left");
+      popup.style.removeProperty("top");
+      popup.style.removeProperty("display");
+    }
+    function refreshOpenStockChartTips() {
+      var s = root || document;
+      s.querySelectorAll(".stock-chart-tip").forEach(function (tip) {
+        if (tip.matches(":hover") || tip.matches(":focus-within")) {
+          positionStockChartPopup(tip);
+        }
+      });
+    }
+    var scope = root || document;
+    scope.querySelectorAll(".stock-chart-tip").forEach(function (tip) {
+      var frame = tip.querySelector(".stock-chart-frame");
+      var img = tip.querySelector("img.stock-chart-img");
+      if (!img) return;
+      var base = img.getAttribute("data-chart-base");
+      if (!base) {
+        var legacySrc = img.getAttribute("src");
+        if (!legacySrc) return;
+        base = legacySrc.split("?")[0];
+        img.setAttribute("data-chart-base", base);
+        img.removeAttribute("src");
+      }
+      function refreshChart() {
+        positionStockChartPopup(tip);
+        var bust = Date.now() + "-" + Math.random().toString(36).slice(2, 10);
+        var url = base + "?sidcode=" + bust;
+        img.addEventListener("load", function onChartLoad() {
+          img.removeEventListener("load", onChartLoad);
+          updateChartCaption(frame);
+          positionStockChartNMarker(frame);
+          positionStockChartPopup(tip);
+        });
+        img.removeAttribute("src");
+        img.src = url;
+        updateChartCaption(frame);
+        positionStockChartNMarker(frame);
+      }
+      tip.addEventListener("mouseenter", refreshChart);
+      tip.addEventListener("focusin", refreshChart);
+      tip.addEventListener("mouseleave", function (e) {
+        var to = e.relatedTarget;
+        if (to && tip.contains(to)) return;
+        resetStockChartPopup(tip);
+      });
+      tip.addEventListener("focusout", function (e) {
+        var to = e.relatedTarget;
+        if (to && tip.contains(to)) return;
+        resetStockChartPopup(tip);
+      });
+      window.addEventListener("resize", function () {
+        if (tip.matches(":hover") || tip.matches(":focus-within")) {
+          positionStockChartNMarker(frame);
+          positionStockChartPopup(tip);
+        }
+      });
+    });
+    window.addEventListener("resize", refreshOpenStockChartTips);
+    window.addEventListener("scroll", refreshOpenStockChartTips, true);
+  }
   document.querySelectorAll("table.rows-compare").forEach(bindSortTable);
   bindMarketRowFilters(document);
   bindIntegrateTips(document);
+  bindStockChartTips(document);
 })();
 </script>"""
 _TEMPLATE = r"""
@@ -365,10 +585,24 @@ _TEMPLATE = r"""
     }
     .stock-chart-tip:hover .stock-chart-popup,
     .stock-chart-tip:focus-within .stock-chart-popup { display: block; }
-    .stock-chart-img {
+    .stock-chart-frame { position: relative; display: block; width: 100%; max-width: 700px; }
+    .stock-chart-frame .stock-chart-img {
       display: block; width: 100%; max-width: 700px; height: auto;
       background: #0f1419; border-radius: 6px;
     }
+    .stock-chart-n-marker {
+      display: none; position: absolute; width: 2px; margin-left: -1px;
+      background: #e6c07b; box-shadow: 0 0 8px rgba(230, 192, 123, 0.9);
+      pointer-events: none; z-index: 2;
+    }
+    .stock-chart-n-label {
+      display: none; position: absolute; transform: translate(-50%, 0);
+      font-size: 0.66rem; font-weight: 700; line-height: 1.2;
+      color: #1a1a1a; background: #e6c07b; padding: 1px 5px; border-radius: 3px;
+      pointer-events: none; z-index: 3; white-space: nowrap;
+    }
+    .stock-chart-frame.has-n-marker .stock-chart-n-marker,
+    .stock-chart-frame.has-n-marker .stock-chart-n-label { display: block; }
     .stock-chart-caption { display: block; margin-top: 8px; font-size: 0.74rem; color: var(--muted); text-align: center; line-height: 1.4; }
     .stock-ret-lines {
       display: flex; flex-direction: row; flex-wrap: wrap; gap: 0 1.25em; justify-content: center; align-items: center;
@@ -389,16 +623,25 @@ _TEMPLATE = r"""
   <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}"{# title="클릭: 네이버 차트 · 호버: 일봉·최근 등락률" #}>{{ name }}</a>
   <span class="stock-chart-popup" role="tooltip">
     {% if r %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
-    <img class="stock-chart-img" src="{{ naver_chart_day_img_url(code) }}" alt="{{ name }} 일봉 캔들 차트" width="700" height="289" loading="lazy" decoding="async" referrerpolicy="no-referrer-when-downgrade"/>
-    <span class="stock-chart-caption">일봉 캔들 · N=기준일</span>
+    {% set chart_n_day = stock_chart_n_day_iso(r) if r else "" %}
+    {% set chart_n_off = stock_chart_n_bar_offset(r) if r else none %}
+    <div class="stock-chart-frame"{% if chart_n_day %} data-n-day="{{ chart_n_day }}"{% endif %}{% if chart_n_off is not none %} data-n-offset="{{ chart_n_off }}"{% endif %}>
+      <img class="stock-chart-img" data-chart-base="{{ naver_chart_day_img_url(code) }}" alt="{{ name }} 일봉 캔들 차트" width="700" height="289" decoding="async" referrerpolicy="no-referrer-when-downgrade"/>
+      <span class="stock-chart-n-marker" aria-hidden="true"></span>
+      <span class="stock-chart-n-label" aria-hidden="true">N</span>
+    </div>
+    <span class="stock-chart-caption">일봉 캔들 · 호버 시 최신{% if chart_n_day %} · 노란 세로선=N({{ chart_n_day[5:7] }}/{{ chart_n_day[8:10] }}){% endif %}</span>
   </span>
 </span>
 {%- endmacro %}
 {% macro actual_ret_prev_suffix(r) -%}
 {% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% endif %}
 {%- endmacro %}
+{% macro actual_ret_yesterday_or_dash(r) -%}
+{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %}N-1 ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% else %}—{% endif %}
+{%- endmacro %}
 {% macro actual_ret_cell(r) -%}
-{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}
+{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}
 {%- endmacro %}
 {% macro cumulative_accuracy_td(r, meta) -%}
 <td class="cumulative-accuracy-td" style="white-space:nowrap;font-variant-numeric:tabular-nums">
@@ -786,6 +1029,7 @@ _COMPACT_TEMPLATE = r"""
     .pill { display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 0.72rem;
              margin: 1px 3px 1px 0; background: #243044; color: var(--muted); }
     .tab-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+    .tab-bar.tab-bar-bottom { margin-top: 20px; margin-bottom: 0; }
     .tab-btn { font: inherit; cursor: pointer; padding: 8px 12px; border-radius: 8px; border: 1px solid #2a3548;
               background: #131b28; color: var(--muted); }
     .tab-btn.active { background: var(--accent); color: #0f1419; border-color: var(--accent); font-weight: 600; }
@@ -937,10 +1181,24 @@ _COMPACT_TEMPLATE = r"""
     }
     .stock-chart-tip:hover .stock-chart-popup,
     .stock-chart-tip:focus-within .stock-chart-popup { display: block; }
-    .stock-chart-img {
+    .stock-chart-frame { position: relative; display: block; width: 100%; max-width: 700px; }
+    .stock-chart-frame .stock-chart-img {
       display: block; width: 100%; max-width: 700px; height: auto;
       background: #0f1419; border-radius: 6px;
     }
+    .stock-chart-n-marker {
+      display: none; position: absolute; width: 2px; margin-left: -1px;
+      background: #e6c07b; box-shadow: 0 0 8px rgba(230, 192, 123, 0.9);
+      pointer-events: none; z-index: 2;
+    }
+    .stock-chart-n-label {
+      display: none; position: absolute; transform: translate(-50%, 0);
+      font-size: 0.66rem; font-weight: 700; line-height: 1.2;
+      color: #1a1a1a; background: #e6c07b; padding: 1px 5px; border-radius: 3px;
+      pointer-events: none; z-index: 3; white-space: nowrap;
+    }
+    .stock-chart-frame.has-n-marker .stock-chart-n-marker,
+    .stock-chart-frame.has-n-marker .stock-chart-n-label { display: block; }
     .stock-chart-caption { display: block; margin-top: 8px; font-size: 0.74rem; color: var(--muted); text-align: center; line-height: 1.4; }
     .stock-ret-lines {
       display: flex; flex-direction: row; flex-wrap: wrap; gap: 0 1.25em; justify-content: center; align-items: center;
@@ -961,16 +1219,25 @@ _COMPACT_TEMPLATE = r"""
   <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}"{# title="클릭: 네이버 차트 · 호버: 일봉·최근 등락률" #}>{{ name }}</a>
   <span class="stock-chart-popup" role="tooltip">
     {% if r %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
-    <img class="stock-chart-img" src="{{ naver_chart_day_img_url(code) }}" alt="{{ name }} 일봉 캔들 차트" width="700" height="289" loading="lazy" decoding="async" referrerpolicy="no-referrer-when-downgrade"/>
-    <span class="stock-chart-caption">일봉 캔들 · N=기준일</span>
+    {% set chart_n_day = stock_chart_n_day_iso(r) if r else "" %}
+    {% set chart_n_off = stock_chart_n_bar_offset(r) if r else none %}
+    <div class="stock-chart-frame"{% if chart_n_day %} data-n-day="{{ chart_n_day }}"{% endif %}{% if chart_n_off is not none %} data-n-offset="{{ chart_n_off }}"{% endif %}>
+      <img class="stock-chart-img" data-chart-base="{{ naver_chart_day_img_url(code) }}" alt="{{ name }} 일봉 캔들 차트" width="700" height="289" decoding="async" referrerpolicy="no-referrer-when-downgrade"/>
+      <span class="stock-chart-n-marker" aria-hidden="true"></span>
+      <span class="stock-chart-n-label" aria-hidden="true">N</span>
+    </div>
+    <span class="stock-chart-caption">일봉 캔들 · 호버 시 최신{% if chart_n_day %} · 노란 세로선=N({{ chart_n_day[5:7] }}/{{ chart_n_day[8:10] }}){% endif %}</span>
   </span>
 </span>
 {%- endmacro %}
 {% macro actual_ret_prev_suffix(r) -%}
 {% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% endif %}
 {%- endmacro %}
+{% macro actual_ret_yesterday_or_dash(r) -%}
+{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %}N-1 ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% else %}—{% endif %}
+{%- endmacro %}
 {% macro actual_ret_cell_monthly(r) -%}
-{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}
+{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}
 {%- endmacro %}
 {% macro compact_cumulative_td(r, meta) -%}
 <td class="cumulative-accuracy-td" style="white-space:nowrap;font-variant-numeric:tabular-nums">
@@ -1082,6 +1349,14 @@ _COMPACT_TEMPLATE = r"""
 </div>
 {% endif %}
 {%- endmacro %}
+{% macro week_tabs_bar(week_panels, extra_class='') -%}
+<div class="tab-bar{% if extra_class %} {{ extra_class }}{% endif %}" role="tablist">
+  {% for w in week_panels %}
+  <button type="button" class="tab-btn{% if loop.first %} active{% endif %}" role="tab"
+          aria-selected="{{ 'true' if loop.first else 'false' }}" data-tab-idx="{{ loop.index0 }}">{{ w.label }}</button>
+  {% endfor %}
+</div>
+{%- endmacro %}
 {% macro compact_day_table(d, meta, empty_extra='') -%}
 {% if d.rows_compare %}
 <table class="rows-compare">
@@ -1183,17 +1458,12 @@ _COMPACT_TEMPLATE = r"""
   {% endif %}
 
   {% if week_tabs_stack_days and week_panels %}
-  <section class="tabs-wrap">
+  <section class="tabs-wrap week-tabs-wrap">
     <h2>주간별 (탭 · ISO 주 월요일 기준)</h2>
     <p class="sub" style="margin-top:0">각 탭은 한 주(월~금)를 <strong>월요일 날짜</strong>로 묶었습니다. 탭 안에서는 해당 주의 거래일을 <strong>일자 순</strong>으로 위에서 아래에 표시합니다. 앵커: <code>#day-YYYY-MM-DD</code></p>
-    <div class="tab-bar" role="tablist">
-      {% for w in week_panels %}
-      <button type="button" class="tab-btn{% if loop.first %} active{% endif %}" role="tab"
-              aria-selected="{{ 'true' if loop.first else 'false' }}" data-tab-idx="{{ loop.index0 }}">{{ w.label }}</button>
-      {% endfor %}
-    </div>
+    {{ week_tabs_bar(week_panels) }}
     {% for w in week_panels %}
-    <div class="tab-panel{% if loop.first %} active{% endif %}" role="tabpanel" data-tab-panel="{{ loop.index0 }}">
+    <div class="tab-panel{% if loop.first %} active{% endif %}" role="tabpanel" data-tab-panel="{{ loop.index0 }}" data-chart-view-end="{{ w.chart_view_end }}">
       {% for day in w.days %}
       {% if day.preserved_html %}
       {{ day.preserved_html | safe }}
@@ -1205,6 +1475,7 @@ _COMPACT_TEMPLATE = r"""
           {{ market_filter_radios(d.trading_day.isoformat() ~ "-" ~ w.monday.isoformat(), d.forward_observation | default(false)) }}
         </div>
         {{ market_theme_panel(d) }}
+        {{ mover_rationale_panel(d) }}
         {{ hit_at_k_panel(d, meta) }}
         {{ compact_day_table(d, meta) }}
       </section>
@@ -1212,22 +1483,28 @@ _COMPACT_TEMPLATE = r"""
       {% endfor %}
     </div>
     {% endfor %}
+    {{ week_tabs_bar(week_panels, 'tab-bar-bottom') }}
   </section>
   <script>
   (function () {
-    var bar = document.querySelector(".tabs-wrap .tab-bar");
-    if (!bar) return;
-    var wrap = bar.closest(".tabs-wrap");
-    var btns = bar.querySelectorAll(".tab-btn");
+    var wrap = document.querySelector(".week-tabs-wrap");
+    if (!wrap) return;
+    var bars = wrap.querySelectorAll(".tab-bar");
     var panels = wrap.querySelectorAll(".tab-panel");
     function show(i) {
-      btns.forEach(function (b, j) {
-        b.classList.toggle("active", j === i);
-        b.setAttribute("aria-selected", j === i ? "true" : "false");
+      bars.forEach(function (bar) {
+        bar.querySelectorAll(".tab-btn").forEach(function (b, j) {
+          b.classList.toggle("active", j === i);
+          b.setAttribute("aria-selected", j === i ? "true" : "false");
+        });
       });
       panels.forEach(function (p, j) { p.classList.toggle("active", j === i); });
     }
-    btns.forEach(function (b, i) { b.addEventListener("click", function () { show(i); }); });
+    bars.forEach(function (bar) {
+      bar.querySelectorAll(".tab-btn").forEach(function (b, i) {
+        b.addEventListener("click", function () { show(i); });
+      });
+    });
   })();
   </script>
   {% elif stack_days %}
@@ -1262,6 +1539,7 @@ _COMPACT_TEMPLATE = r"""
           {{ market_filter_radios(d.trading_day.isoformat() ~ "-daytab-" ~ loop.index0|string) }}
         </div>
         {{ market_theme_panel(d) }}
+        {{ mover_rationale_panel(d) }}
         {{ hit_at_k_panel(d, meta) }}
         {{ compact_day_table(d, meta) }}
       </div>
@@ -1538,10 +1816,24 @@ _DATED_N_TEMPLATE = r"""
     }
     .stock-chart-tip:hover .stock-chart-popup,
     .stock-chart-tip:focus-within .stock-chart-popup { display: block; }
-    .stock-chart-img {
+    .stock-chart-frame { position: relative; display: block; width: 100%; max-width: 700px; }
+    .stock-chart-frame .stock-chart-img {
       display: block; width: 100%; max-width: 700px; height: auto;
       background: #0f1419; border-radius: 6px;
     }
+    .stock-chart-n-marker {
+      display: none; position: absolute; width: 2px; margin-left: -1px;
+      background: #e6c07b; box-shadow: 0 0 8px rgba(230, 192, 123, 0.9);
+      pointer-events: none; z-index: 2;
+    }
+    .stock-chart-n-label {
+      display: none; position: absolute; transform: translate(-50%, 0);
+      font-size: 0.66rem; font-weight: 700; line-height: 1.2;
+      color: #1a1a1a; background: #e6c07b; padding: 1px 5px; border-radius: 3px;
+      pointer-events: none; z-index: 3; white-space: nowrap;
+    }
+    .stock-chart-frame.has-n-marker .stock-chart-n-marker,
+    .stock-chart-frame.has-n-marker .stock-chart-n-label { display: block; }
     .stock-chart-caption { display: block; margin-top: 8px; font-size: 0.74rem; color: var(--muted); text-align: center; line-height: 1.4; }
     .stock-ret-lines {
       display: flex; flex-direction: row; flex-wrap: wrap; gap: 0 1.25em; justify-content: center; align-items: center;
@@ -1607,16 +1899,25 @@ _DATED_N_TEMPLATE = r"""
   <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}"{# title="클릭: 네이버 차트 · 호버: 일봉·최근 등락률" #}>{{ name }}</a>
   <span class="stock-chart-popup" role="tooltip">
     {% if r %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
-    <img class="stock-chart-img" src="{{ naver_chart_day_img_url(code) }}" alt="{{ name }} 일봉 캔들 차트" width="700" height="289" loading="lazy" decoding="async" referrerpolicy="no-referrer-when-downgrade"/>
-    <span class="stock-chart-caption">일봉 캔들 · N=기준일</span>
+    {% set chart_n_day = stock_chart_n_day_iso(r) if r else "" %}
+    {% set chart_n_off = stock_chart_n_bar_offset(r) if r else none %}
+    <div class="stock-chart-frame"{% if chart_n_day %} data-n-day="{{ chart_n_day }}"{% endif %}{% if chart_n_off is not none %} data-n-offset="{{ chart_n_off }}"{% endif %}>
+      <img class="stock-chart-img" data-chart-base="{{ naver_chart_day_img_url(code) }}" alt="{{ name }} 일봉 캔들 차트" width="700" height="289" decoding="async" referrerpolicy="no-referrer-when-downgrade"/>
+      <span class="stock-chart-n-marker" aria-hidden="true"></span>
+      <span class="stock-chart-n-label" aria-hidden="true">N</span>
+    </div>
+    <span class="stock-chart-caption">일봉 캔들 · 호버 시 최신{% if chart_n_day %} · 노란 세로선=N({{ chart_n_day[5:7] }}/{{ chart_n_day[8:10] }}){% endif %}</span>
   </span>
 </span>
 {%- endmacro %}
 {% macro actual_ret_prev_suffix(r) -%}
 {% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% endif %}
 {%- endmacro %}
+{% macro actual_ret_yesterday_or_dash(r) -%}
+{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %}N-1 ({{ "%.2f"|format(r.actual_ret_prev_day * 100) }}){% else %}—{% endif %}
+{%- endmacro %}
 {% macro actual_ret_cell_dated(r) -%}
-{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}—{{ actual_ret_prev_suffix(r) }}{% endif %}
+{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ "%.2f"|format(r.actual_ret * 100) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ "%.2f"|format(r.actual_ret * 100) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ "%.2f"|format(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}
 {%- endmacro %}
   <h1>기준일 N={{ n_day.isoformat() }} → 관측일 T={{ t_day.isoformat() }}</h1>
   <p class="sub">

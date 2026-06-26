@@ -109,9 +109,9 @@ def last_trading_day_on_or_before(d: date) -> date:
     raise ValueError(f"No XKRX session on or before {d}")
 
 
-def ohlcv_request_end_cap_today() -> date:
+def ohlcv_request_end_cap(*, now_kst: datetime | None = None) -> date:
     """
-    일봉 OHLCV 요청 시 ``end`` 상한으로 쓸 날짜.
+    일봉 OHLCV·차트 우측 끝 상한으로 쓸 거래일.
 
     거래일 당일이 **아직 정규장 종가(15:30 KST) 전**이면 당일 봉은 소스에 없거나 불완전한 경우가
     많아 **전 거래일**까지만 요청합니다. (개장 전·장중 모두 포함.)
@@ -119,11 +119,27 @@ def ohlcv_request_end_cap_today() -> date:
     그 외(전일 이전 캘린더일, 또는 당일 장 마감 후)에는 KST 기준 오늘(포함) 이전의
     가장 가까운 거래일입니다.
     """
-    now_kst = datetime.now(KST)
-    today_ = now_kst.date()
-    if is_trading_day(today_) and is_before_krx_regular_close_kst(today_, now_kst=now_kst):
+    now = now_kst or datetime.now(KST)
+    today_ = now.date()
+    if is_trading_day(today_) and is_before_krx_regular_close_kst(today_, now_kst=now):
         return last_trading_day_before(today_)
     return last_trading_day_on_or_before(today_)
+
+
+def ohlcv_request_end_cap_today() -> date:
+    """``ohlcv_request_end_cap()`` — KST 현재 시각 기준."""
+    return ohlcv_request_end_cap()
+
+
+def trading_sessions_after_exclusive(start: date, end: date) -> int:
+    """
+    ``(start, end]`` 구간 거래일 수.
+
+    차트 최우측 봉이 ``end`` 일 때 ``start``(N) 봉이 우측에서 몇 칸 떨어져 있는지(0=최우측).
+    """
+    if end <= start:
+        return 0
+    return sum(1 for d in trading_sessions_in_range(start, end) if d > start)
 
 
 def is_before_krx_regular_open_kst(cal_day: date, *, now_kst: datetime | None = None) -> bool:
