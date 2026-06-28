@@ -305,8 +305,7 @@ def main() -> None:
         meta_compact["movers_data_note"] = po.movers_data_note
     if meta_compact.get("prediction_only"):
         meta_compact["cumulative_track_hint"] = (
-            "저장된 예측≥임계 이력이 있으면 누적 앞 숫자는 각 행 (실제%÷예측%) 합÷이력 개수(예측 0%·미확정·값 없음은 0). "
-            "이력이 없으면 min(|실제%|÷|예측%|,100%) 평균을 씁니다. "
+            "저장된 예측≥임계 이력이 있으면 누적 앞 숫자(A%)는 실제≥임계 적중 비율(맞춘 건수÷이력 개수). "
             f"{prediction_accuracy_cache.track_path_display()}. "
             "이번 T 확정 후 같은 종목이 다시 표에 오면 캐시가 갱신됩니다."
         )

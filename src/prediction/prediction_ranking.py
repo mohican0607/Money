@@ -272,7 +272,7 @@ def momentum_candidate_codes(
         mom = momentum_raw_from_row(r)
         vs = float(r.get("vol_surge_ratio") or 0.0)
         rl = max(0.0, float(r.get("ret_lag1") or 0.0))
-        if mom >= 0.20 or vs >= 1.35 or rl >= 0.055:
+        if mom >= 0.20 or vs >= 1.35 or rl >= 0.045:
             scored.append((mom, code))
     scored.sort(key=lambda x: (-x[0], x[1]))
     return [c for _, c in scored[: max(20, int(top_k))]]
@@ -542,11 +542,99 @@ def regime_output_scale(ks11_ret_lag1: float | None) -> float:
     return float(config.PRED_REGIME_OUTPUT_SCALE)
 
 
+def _forward_conviction_score(row: PredictionRow) -> float:
+    """장 전 관측일: 뉴스 단독보다 시세·섹터·ML 합의를 우선하는 확신 점수."""
+    ks11 = getattr(row, "ks11_ret_lag1", None)
+    pillars = compute_pillar_scores(row, ks11_ret_lag1=ks11)
+    return (
+        0.32 * pillars["momentum"]
+        + 0.28 * pillars["sector"]
+        + 0.22 * pillars["ml"]
+        + 0.10 * pillars["flow"]
+        + 0.08 * pillars["relative_strength"]
+        + 0.05 * min(pillars["news"], 0.65)
+    )
+
+
+def assign_forward_confidence_tiers(
+    pool: list[PredictionRow],
+    *,
+    regime_scale: float = 1.0,
+) -> None:
+    """
+    예측 전용(장 시작 전) 관측일: 과거 종목 적중 이력 게이트 없이
+    시세·섹터·ML 합의 상위만 고·중 확신 슬롯에 배정합니다.
+    """
+    rs = max(0.45, float(regime_scale))
+    max_high = max(2, int(round(int(config.PRED_OUTPUT_MAX) * rs)))
+    max_mid = max(2, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
+
+    for row in pool:
+        row.confidence_tier = "none"
+    if not pool:
+        return
+
+    ranked = sorted(pool, key=_forward_conviction_score, reverse=True)
+    top_hybrid = hybrid_rank_score(ranked[0])
+    high_n = 0
+    for pos, row in enumerate(ranked, start=1):
+        if high_n >= max_high:
+            break
+        pillars = compute_pillar_scores(row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None))
+        non_news = count_non_news_strong_pillars(pillars, threshold=0.40)
+        mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
+        sec = max(
+            float(getattr(row, "industry_momentum", 0.0) or 0.0),
+            float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0),
+        )
+        h = hybrid_rank_score(row)
+        if non_news < 2:
+            continue
+        if mom + 1e-12 < 0.30 and sec + 1e-12 < 0.28:
+            continue
+        if pillars["news"] + 1e-12 >= 0.55 and non_news < 2:
+            continue
+        if not passes_dual_factor_gate(
+            row,
+            hybrid=h,
+            top_hybrid=top_hybrid,
+            ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None),
+        ):
+            if non_news < 3 and mom + 1e-12 < 0.38:
+                continue
+        row.confidence_tier = "high"
+        high_n += 1
+
+    mid_n = 0
+    for row in ranked:
+        if row.confidence_tier == "high":
+            continue
+        if mid_n >= max_mid:
+            break
+        if _forward_conviction_score(row) + 1e-12 >= 0.20:
+            row.confidence_tier = "mid"
+            mid_n += 1
+
+    if high_n == 0 and ranked:
+        for row in ranked[:max_high]:
+            pillars = compute_pillar_scores(
+                row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
+            )
+            if count_non_news_strong_pillars(pillars, threshold=0.35) >= 1:
+                row.confidence_tier = "high"
+                high_n += 1
+
+    for pos, row in enumerate(ranked, start=1):
+        row.rank_position = pos
+        row.rank_score = hybrid_rank_score(row)
+
+
 def finalize_ranked_predictions(
     rows: list[PredictionRow],
     *,
     target_day: date,
     ks11_ret_lag1: float | None = None,
+    forward_observation: bool = False,
 ) -> list[PredictionRow]:
     """
     순위·확신 구간·표시 % 를 일괄 확정합니다.
@@ -579,13 +667,16 @@ def finalize_ranked_predictions(
             row.ml_prob = prob if config.PRED_RANKING_MODE else None
 
     if config.PRED_RANKING_MODE:
-        assign_hybrid_confidence_tiers(pool, regime_scale=r_scale)
-        # 1차 하이브리드 tier → 정밀 게이트로 high 재필터(뉴스 단독·저적중 종목 제거)
-        refine_confidence_tiers(
-            pool,
-            feedback_ctx=prediction_accuracy_cache.build_feedback_context(),
-            regime_scale=r_scale,
-        )
+        if forward_observation:
+            assign_forward_confidence_tiers(pool, regime_scale=r_scale)
+        else:
+            assign_hybrid_confidence_tiers(pool, regime_scale=r_scale)
+            # 1차 하이브리드 tier → 정밀 게이트로 high 재필터(뉴스 단독·저적중 종목 제거)
+            refine_confidence_tiers(
+                pool,
+                feedback_ctx=prediction_accuracy_cache.build_feedback_context(),
+                regime_scale=r_scale,
+            )
         pool = sorted(pool, key=rank_score_for_row, reverse=True)
     else:
         for pos, row in enumerate(pool, start=1):
@@ -771,6 +862,28 @@ def refine_confidence_tiers(
             row.confidence_tier = "high"
         elif str(getattr(row, "confidence_tier", "")) == "high":
             row.confidence_tier = "mid"
+
+    if promoted:
+        return
+
+    # 정밀 게이트가 전원 탈락 시: 전일·섹터 모멘텀 상위 1~2종만 고확신 승격(리콜 구제).
+    rescue_n = max(1, min(2, max_high))
+    rescue_ranked = sorted(
+        pool,
+        key=lambda r: (
+            float(getattr(r, "industry_limit_up_heat", 0.0) or 0.0)
+            + float(getattr(r, "momentum_score", 0.0) or 0.0)
+            + float(getattr(r, "industry_momentum", 0.0) or 0.0),
+            hybrid_rank_score(r),
+        ),
+        reverse=True,
+    )
+    for row in rescue_ranked[:rescue_n]:
+        if float(getattr(row, "momentum_score", 0.0) or 0.0) + 1e-12 < 0.28:
+            continue
+        if float(getattr(row, "industry_momentum", 0.0) or 0.0) + 1e-12 < 0.22:
+            continue
+        row.confidence_tier = "high"
 
 
 def compute_hit_at_k_metrics(

@@ -33,11 +33,13 @@ from src import (
 
 from .rows import (
     _append_compare_row_from_prediction,
+    _compute_day_pred_accuracy_summary,
     _enrich_cumulative_accuracy_avg,
     _enrich_cumulative_actual_over_pred_from_history,
     _enrich_cumulative_actual_over_pred_from_history_for_field,
     _enrich_cumulative_hit_rate,
     _enrich_rows_prediction_signal,
+    _enrich_forward_pred_rationale,
     _gap_analysis_html_for_row,
     _pred_reason_fields,
     _prediction_row_strict_or_loose,
@@ -465,6 +467,7 @@ def _run_pipeline(
                 returns_ml=returns_ml,
                 theme_weights=theme_w or None,
                 feedback_ctx=pipeline_feedback_ctx,
+                forward_observation=day_forward,
             )
             if config.PREDICTION_FREEZE_ENABLED and (
                 ignore_freeze_for_t
@@ -478,6 +481,14 @@ def _run_pipeline(
         kospi_hint = None
         if kospi_r is not None:
             kospi_hint = f"당일 KOSPI 지수 전일대비 약 {kospi_r*100:.2f}%였습니다."
+
+        if day_forward and use_frozen and preds:
+            preds = prediction_ranking.finalize_ranked_predictions(
+                preds,
+                target_day=T,
+                ks11_ret_lag1=kospi_r,
+                forward_observation=True,
+            )
 
         now_kst_td = datetime.now(trading_calendar.KST)
         is_today_t = T == now_kst_td.date()
@@ -844,12 +855,19 @@ def _run_pipeline(
             if pr_row is not None:
                 r.update(_pred_reason_fields(pr_row, r.get("reasons_html") or ""))
         _enrich_rows_prediction_signal(rows_compare)
-
-        print(
-            f"관측일 T={t_key}: 처리 완료 ({time.perf_counter() - t_loop0:.1f}s, "
-            f"비교표 {len(rows_compare)}행)",
-            flush=True,
-        )
+        forward_pred_rationale_html = ""
+        if day_forward:
+            forward_pred_rationale_html = _enrich_forward_pred_rationale(
+                rows_compare,
+                code_pr_map,
+                t_trading_day=T,
+                kospi_return=kospi_r,
+                early_rows=early_rows,
+                actual_ctx_rows=actual_ctx_rows if include_target_calendar_news else None,
+                returns_by_code=returns_by_code,
+                returns_ml_by_code=returns_ml_by_code,
+            )
+        rows_by_code = {str(r.get("code", "")).zfill(6): r for r in rows_compare}
 
         for pr in preds:
             act = None if day_forward else _actual_ret_for_code(pr.code)
@@ -866,11 +884,9 @@ def _run_pipeline(
                 if late_hit:
                     late_below_kw += 1
 
-            if (
-                not day_forward
-                and act is not None
-                and act < 0
-            ):
+            if not day_forward and act is not None and act < 0:
+                code6 = str(pr.code).zfill(6)
+                row = rows_by_code.get(code6, {})
                 false_negatives.append(
                     {
                         "code": pr.code,
@@ -879,8 +895,34 @@ def _run_pipeline(
                         "actual_ret": act,
                         "keywords": list(pr.matched_keywords),
                         "analysis": predict.explain_miss(pr, act, blob, kospi_hint),
+                        "analysis_html": predict.explain_miss_html(
+                            pr,
+                            act,
+                            news_blob_early=blob,
+                            kospi_change_hint=kospi_hint,
+                            late_keywords_matched=row.get("late_news_hit"),
+                            disclosure_hits=list(row.get("disclosure_hits") or []),
+                            pred_news_hits=list(row.get("pred_news_hits") or []),
+                            actual_news_hits=list(row.get("actual_news_hits") or []),
+                            t_trading_day=T,
+                            gap_analysis_html=str(row.get("gap_analysis_html") or ""),
+                        ),
                     }
                 )
+
+        pred_accuracy_summary = (
+            None
+            if day_forward
+            else _compute_day_pred_accuracy_summary(
+                rows_compare, threshold=config.BIG_MOVE_THRESHOLD
+            )
+        )
+
+        print(
+            f"관측일 T={t_key}: 처리 완료 ({time.perf_counter() - t_loop0:.1f}s, "
+            f"비교표 {len(rows_compare)}행)",
+            flush=True,
+        )
 
         _enrich_rows_actual_ret_prev_day(rows_compare, returns, T)
         _enrich_rows_stock_ret_tooltip(
@@ -923,6 +965,8 @@ def _run_pipeline(
                 actual_big_movers=actual_big_movers,
                 forward_observation=day_forward,
                 hit_at_k_metrics=hit_at_k_metrics,
+                pred_accuracy_summary=pred_accuracy_summary,
+                forward_pred_rationale_html=forward_pred_rationale_html,
             )
         )
 

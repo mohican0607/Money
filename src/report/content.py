@@ -5,7 +5,7 @@ import html
 import math
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1350,6 +1350,294 @@ def _market_bullet(kospi_return: float | None, t_day: date) -> str | None:
     return f"같은 날 KOSPI 지수 전일 대비 약 <strong>{pct:+.2f}%</strong> ({tone}) — 시장 흐름 참고."
 
 
+_GLOBAL_INDEX_SYMBOLS: tuple[tuple[str, str], ...] = (
+    ("KS11", "KOSPI"),
+    ("IXIC", "나스닥"),
+    ("DJI", "다우"),
+    ("US500", "S&P500"),
+)
+
+_GLOBAL_NEWS_KW: tuple[str, ...] = (
+    "나스닥",
+    "다우",
+    "S&P",
+    "미국증시",
+    "뉴욕증시",
+    "연준",
+    "FOMC",
+    "글로벌",
+    "유가",
+    "WTI",
+    "금값",
+    "환율",
+    "달러",
+    "중국증시",
+    "일본증시",
+    "반도체",
+    "엔비디아",
+    "테슬라",
+    "애플",
+)
+
+_UNUSUAL_NEWS_KW: tuple[str, ...] = (
+    "상한가",
+    "급등",
+    "수주",
+    "계약",
+    "유상증자",
+    "무상증자",
+    "FDA",
+    "임상",
+    "승인",
+    "인수",
+    "합병",
+    "실적",
+    "흑자",
+    "적자",
+    "공급",
+    "수출",
+    "관세",
+    "제재",
+    "소송",
+    "거래정지",
+    "상장",
+)
+
+
+def _last_index_return_bullet(symbol: str, label: str, asof: date) -> str | None:
+    """``asof`` 이전 마지막 거래일 지수 등락률 한 줄."""
+    try:
+        start = asof - timedelta(days=21)
+        df = stocks.load_index_frame(symbol, start, asof)
+        if df.empty:
+            return None
+        s = df.sort_values("Date").reset_index(drop=True)
+        s = s[s["Date"] <= pd.Timestamp(asof)]
+        if s.empty:
+            return None
+        last_row = s.iloc[-1]
+        last_d = last_row["Date"].date() if hasattr(last_row["Date"], "date") else asof
+        r = stocks.index_daily_return_pct(s, last_d)
+        if r is None or not math.isfinite(float(r)):
+            return None
+        pct = float(r) * 100.0
+        tone = "상승" if pct > 0.15 else ("하락" if pct < -0.15 else "보합")
+        return (
+            f"{_esc_nq(label)} ({last_d.isoformat()}) 전일 대비 "
+            f"<strong>{pct:+.2f}%</strong> ({tone})"
+        )
+    except (KeyError, TypeError, ValueError, OSError):
+        return None
+
+
+def _global_headlines_from_rows(
+    rows: list[tuple[date, dict[str, str]]] | None,
+    *,
+    limit: int = 5,
+) -> list[str]:
+    """예측 입력 구간 뉴스에서 글로벌·거시 이슈 헤드라인."""
+    if not rows:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for cal_d, row in reversed(rows):
+        title = str(row.get("title") or "").strip()
+        if not title or title in seen:
+            continue
+        blob = f"{title} {row.get('description') or ''}"
+        if not any(k in blob for k in _GLOBAL_NEWS_KW):
+            continue
+        seen.add(title)
+        link = str(row.get("link") or "").strip()
+        te = _esc_nq(title[:120])
+        if link:
+            le = html.escape(link, quote=True)
+            out.append(
+                f'<span class="pill" style="font-size:0.68rem">{cal_d.isoformat()}</span> '
+                f'<a href="{le}" target="_blank" rel="noopener">{te}</a>'
+            )
+        else:
+            out.append(
+                f'<span class="pill" style="font-size:0.68rem">{cal_d.isoformat()}</span> {te}'
+            )
+        if len(out) >= limit:
+            break
+    return out
+
+
+def build_forward_day_market_context_html(
+    t_trading_day: date,
+    *,
+    kospi_return: float | None = None,
+    early_rows: list[tuple[date, dict[str, str]]] | None = None,
+) -> str:
+    """
+    예측 전용 관측일: 장 시작 전 시장·글로벌 흐름 요약(일자 패널 상단).
+    """
+    asof = trading_calendar.last_trading_day_before(t_trading_day)
+    bullets: list[str] = []
+    if kospi_return is not None and math.isfinite(float(kospi_return)):
+        pct = float(kospi_return) * 100.0
+        tone = "상승" if pct > 0.15 else ("하락" if pct < -0.15 else "보합")
+        bullets.append(
+            f"예측 입력 기준 직전 거래일({asof.isoformat()}) KOSPI 전일 대비 "
+            f"<strong>{pct:+.2f}%</strong> ({tone})"
+        )
+    for sym, lbl in _GLOBAL_INDEX_SYMBOLS:
+        if sym == "KS11":
+            continue
+        b = _last_index_return_bullet(sym, lbl, asof)
+        if b:
+            bullets.append(b)
+    chunks: list[str] = []
+    if bullets:
+        chunks.append(_section("시장·세계 지수 (예측 입력 시점)", bullets))
+    gnews = _global_headlines_from_rows(early_rows, limit=5)
+    if gnews:
+        chunks.append(
+            "<p><strong>글로벌·거시 뉴스 흐름</strong> "
+            "(예측 입력 구간 헤드라인)</p>"
+            f'<ul class="nl">{"".join(f"<li>{x}</li>" for x in gnews)}</ul>'
+        )
+    if not chunks:
+        return ""
+    return (
+        '<div class="forward-day-market-ctx" style="margin:0 0 14px;padding:10px 12px;'
+        'background:#152232;border:1px solid #2a4a6a;border-radius:8px;font-size:0.86rem">'
+        + "".join(chunks)
+        + "</div>"
+    )
+
+
+def build_forward_pred_context_html(
+    *,
+    code: str,
+    name: str,
+    t_trading_day: date,
+    kospi_return: float | None = None,
+    pred_news_hits: list[dict] | None = None,
+    actual_ctx_rows: list[tuple[date, dict[str, str]]] | None = None,
+    early_rows: list[tuple[date, dict[str, str]]] | None = None,
+    disclosure_hits: list[dict] | None = None,
+    keywords: list[str] | None = None,
+    returns_sub: pd.DataFrame | None = None,
+    returns_ml_sub: pd.DataFrame | None = None,
+    market_theme_sectors: list[str] | None = None,
+    market_segment: str | None = None,
+) -> str:
+    """
+    장 시작 전 예측 후보: 종목 시세·업종·수급 뉴스·특이 이슈·공시 맥락 HTML.
+    """
+    code = str(code).zfill(6)
+    asof = trading_calendar.last_trading_day_before(t_trading_day)
+    chunks: list[str] = []
+
+    trait_bits: list[str] = []
+    if market_segment and market_segment not in ("other", ""):
+        seg = "KOSPI" if market_segment == "kospi" else (
+            "KOSDAQ" if market_segment == "kosdaq" else market_segment.upper()
+        )
+        trait_bits.append(f"시장 구분: <strong>{_esc_nq(seg)}</strong>")
+    try:
+        ind = stocks.industry_name_for_code(code)
+        if ind:
+            trait_bits.append(f"업종: <strong>{_esc_nq(ind)}</strong>")
+    except (OSError, ValueError, TypeError):
+        pass
+    sectors = [str(s).strip() for s in (market_theme_sectors or []) if str(s).strip()]
+    if sectors:
+        trait_bits.append(
+            "당일 early 뉴스 테마 연관: "
+            + " · ".join(f'<span class="pill" style="font-size:0.72rem">{_esc_nq(s)}</span>' for s in sectors[:4])
+        )
+    if trait_bits:
+        chunks.append(_section("종목·섹터 특성", trait_bits))
+
+    tech = _technical_bullets(
+        code,
+        asof,
+        None,
+        None,
+        returns_sub=returns_sub,
+        returns_ml_sub=returns_ml_sub,
+    )
+    if tech and tech[0].startswith(f"{asof.isoformat()}"):
+        tech[0] = (
+            f"예측 기준 마지막 거래일({asof.isoformat()}) 종가 기준 "
+            + tech[0].split("종가 기준 ", 1)[-1]
+            if "종가 기준" in tech[0]
+            else tech[0]
+        )
+    chunks.append(_section(f"종목 시세·추세 (마지막 확정 일봉 {asof.isoformat()})", tech))
+
+    mkt = _market_bullet(kospi_return, asof)
+    if mkt:
+        mkt = mkt.replace("같은 날", f"직전 거래일({asof.isoformat()})")
+        chunks.append(_section("국내 시장", [mkt]))
+
+    merged_hits = _merge_rise_news_hits(pred_news_hits, None, limit=12)
+    ctx_rows = list(actual_ctx_rows or []) or list(early_rows or [])
+    clips = _news_clips_from_hits(merged_hits, limit=10)
+    extra = _scan_context_news(
+        ctx_rows,
+        stock_name=name,
+        keywords=list(keywords or []),
+        limit=8,
+    )
+    seen_t = {c.title for c in clips}
+    for c in extra:
+        if c.title not in seen_t:
+            clips.append(c)
+            seen_t.add(c.title)
+    unusual: list[str] = []
+    for c in clips:
+        blob = f"{c.title} {c.description}"
+        if any(k in blob for k in _UNUSUAL_NEWS_KW) or (name and name in blob):
+            unusual.append(_clip_li(c))
+    if unusual:
+        chunks.append(
+            "<p><strong>종목 특이 뉴스·이슈</strong></p>"
+            f'<ul class="nl">{"".join(unusual[:6])}</ul>'
+        )
+    if clips:
+        chunks.append(
+            _section_news(
+                "종목 관련 뉴스 (예측 입력 구간)",
+                clips[:8],
+                empty="종목명·키워드가 겹친 기사를 찾지 못했습니다.",
+            )
+        )
+
+    dh = list(disclosure_hits or [])
+    if dh:
+        disc_parts = ["<p><strong>공시·IR</strong></p><ul class=\"nl\">"]
+        for d in dh[:5]:
+            kind = _esc_nq(str(d.get("kind") or ""))
+            title = _esc_nq(str(d.get("title") or ""))
+            link = (d.get("link") or "").strip()
+            if link:
+                le = html.escape(link, quote=True)
+                disc_parts.append(
+                    f'<li><code style="font-size:0.72rem;color:#9fd3ff">{kind}</code> '
+                    f'<a href="{le}" target="_blank" rel="noopener">{title}</a></li>'
+                )
+            else:
+                disc_parts.append(
+                    f'<li><code style="font-size:0.72rem;color:#9fd3ff">{kind}</code> {title}</li>'
+                )
+        disc_parts.append("</ul>")
+        chunks.append("".join(disc_parts))
+
+    if not chunks:
+        return ""
+    return (
+        '<div class="forward-pred-context" style="margin-top:10px;padding-top:10px;'
+        'border-top:1px solid #2a3f5c;font-size:0.84rem;line-height:1.5">'
+        + "".join(chunks)
+        + "</div>"
+    )
+
+
 def _section(title: str, bullets: list[str]) -> str:
     """제목 + bullet ``<ul>`` HTML 섹션."""
     if not bullets:
@@ -1427,6 +1715,28 @@ def build_move_reference_html(
                 "<p><strong>참고</strong> — "
                 f"{tlabel} <strong>장중·실시간 등락률 약 {ip:+.2f}%</strong> (종가 확정 전). "
                 "아래 시세·뉴스 해석은 장 마감 후 갱신될 수 있습니다.</p>"
+            )
+        elif t_trading_day is not None and trading_calendar.is_trading_day(t_trading_day):
+            asof = trading_calendar.last_trading_day_before(t_trading_day)
+            chunks.append(
+                "<p><strong>예측 전용</strong> — "
+                f"{tlabel} 장 시작 전·실적 미확정. "
+                f"시세·뉴스는 <strong>{asof.isoformat()}</strong>까지 확정된 일봉·"
+                "예측 입력 뉴스 구간 기준입니다.</p>"
+            )
+            chunks.append(
+                build_forward_pred_context_html(
+                    code=code,
+                    name=name,
+                    t_trading_day=t_trading_day,
+                    kospi_return=kospi_return,
+                    pred_news_hits=pred_news_hits,
+                    actual_ctx_rows=actual_ctx_rows,
+                    disclosure_hits=disclosure_hits,
+                    keywords=keywords,
+                    returns_sub=returns_sub,
+                    returns_ml_sub=returns_ml_sub,
+                )
             )
         else:
             chunks.append(

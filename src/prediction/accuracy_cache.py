@@ -27,17 +27,22 @@ def track_path_display() -> str:
 
 
 def _ratio(pred_ret: float | None, actual_ret: float | None) -> float | None:
-    """``main._actual_over_pred_ratio`` 와 동일: 일별 달성률 ``min(|실제%|/|예측%|,1)``."""
+    """``pipeline.rows._actual_over_pred_ratio`` 와 동일: min(|실제%|,|예측%|)/max(|실제%|,|예측%|). 음수 실적은 0."""
     if pred_ret is None or actual_ret is None:
         return None
     p = abs(float(pred_ret))
     a = float(actual_ret)
     if not math.isfinite(p) or not math.isfinite(a):
         return None
+    if a < 0:
+        return 0.0
     if abs(p) < 1e-9:
         return None
-    raw = abs(a * 100.0) / p
-    return min(raw, 1.0)
+    a_pct = abs(a * 100.0)
+    den = max(a_pct, p)
+    if den < 1e-9:
+        return None
+    return min(a_pct, p) / den
 
 
 def _default_payload() -> dict:

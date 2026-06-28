@@ -36,7 +36,9 @@ class DayReport:
     forward_observation: bool = False
     market_theme_html: str = ""
     mover_rationale_html: str = ""
+    forward_pred_rationale_html: str = ""
     hit_at_k_metrics: dict | None = None
+    pred_accuracy_summary: dict | None = None
 
 
 def format_prediction_signal_cell(row: dict[str, Any]) -> str:

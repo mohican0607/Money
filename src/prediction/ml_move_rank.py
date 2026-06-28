@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import math
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -79,7 +79,7 @@ FEATURE_NAMES = (
     "industry_limit_up_heat",
 )
 
-ML_MODEL_VERSION = 16
+ML_MODEL_VERSION = 17
 MAX_NEG_PER_DAY = 120
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
@@ -141,6 +141,82 @@ def calibrate_ml_probability(
     return max(br, min(0.35, p))
 
 
+def _prior_day_hot_peer_codes(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+    listing_codes: list[str],
+    *,
+    min_prev_ret: float = 0.10,
+    max_codes: int = 140,
+) -> list[str]:
+    """
+    T 직전 거래일 급등·강한 전일 모멘텀 종목과 동업종 peer를 후보에 넣습니다.
+
+    6/26처럼 전일·연속 급등 테마가 이어지는 날, 뉴스 키워드만으로는 풀에 안 잡히는
+    실제 20%↑ 종목(금호계열 등)을 ML 랭킹 대상에 포함시키기 위함.
+    """
+    from .. import stocks as stocks_mod
+
+    allowed = {str(c).zfill(6) for c in listing_codes}
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(code: str) -> None:
+        c6 = str(code).zfill(6)
+        if c6 in allowed and c6 not in seen:
+            seen.add(c6)
+            out.append(c6)
+
+    try:
+        prev_td = trading_calendar.last_trading_day_before(target_day)
+    except ValueError:
+        prev_td = None
+
+    if prev_td is not None:
+        sl_prev = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(prev_td)]
+        hot: list[tuple[float, str]] = []
+        for _, r in sl_prev.iterrows():
+            code = str(r["Code"]).zfill(6)
+            if code not in allowed:
+                continue
+            try:
+                ret = float(r.get("return_pct") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if ret + 1e-12 >= min_prev_ret:
+                hot.append((ret, code))
+        hot.sort(key=lambda x: (-x[0], x[1]))
+        for _, code in hot[:45]:
+            _add(code)
+            ic = stocks_mod.industry_code_for_stock(code)
+            if ic:
+                for peer in stocks_mod.peers_for_industry(ic)[:12]:
+                    _add(peer)
+
+    sl_t = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
+    lag_hot: list[tuple[float, str]] = []
+    for _, r in sl_t.iterrows():
+        code = str(r["Code"]).zfill(6)
+        if code not in allowed:
+            continue
+        try:
+            rl = float(r.get("ret_lag1") or 0.0)
+            vs = float(r.get("vol_surge_ratio") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if rl + 1e-12 >= 0.045 or vs + 1e-12 >= 1.25:
+            lag_hot.append((rl + 0.15 * min(vs, 3.0), code))
+    lag_hot.sort(key=lambda x: (-x[0], x[1]))
+    for _, code in lag_hot[:70]:
+        _add(code)
+        ic = stocks_mod.industry_code_for_stock(code)
+        if ic:
+            for peer in stocks_mod.peers_for_industry(ic)[:8]:
+                _add(peer)
+
+    return out[:max_codes]
+
+
 def _day_candidate_codes(
     listing_codes: list[str],
     listing_names: dict[str, str],
@@ -180,7 +256,8 @@ def _day_candidate_codes(
             dict(news_ctx_bundle.get("profiles") or {}),
             today_v,
         )
-    return list(dict.fromkeys(news + mom + news_ctx_codes + flow_codes))
+    hot_peers = _prior_day_hot_peer_codes(returns_ml, target_day, listing_codes)
+    return list(dict.fromkeys(news + mom + news_ctx_codes + flow_codes + hot_peers))
 
 
 def _momentum_for_code(
@@ -404,20 +481,16 @@ def _industry_feats(
     kw_news: frozenset[str],
 ) -> tuple[float, float, float]:
     """동종 업종 모멘텀·당일 뉴스-업종 겹침·전일 동종 상한가 열기."""
-    from ..stock_listing_sector import (
-        industry_code_for_stock,
-        industry_theme_overlap,
-        peers_for_industry,
-    )
+    from .. import stocks as stocks_mod
 
-    ind_ov = float(industry_theme_overlap(code, kw_news))
+    ind_ov = float(stocks_mod.industry_theme_overlap(code, kw_news))
     ind_lim = 0.0
     if ohlcv_idx is None:
         return 0.0, ind_ov, ind_lim
-    ic = industry_code_for_stock(code)
+    ic = stocks_mod.industry_code_for_stock(code)
     if not ic:
         return 0.0, ind_ov, ind_lim
-    peer_set = peers_for_industry(ic)
+    peer_set = stocks_mod.peers_for_industry(ic)
     rets: list[float] = []
     lim_n = 0
     peer_n = 0
@@ -670,12 +743,17 @@ def _build_training_arrays(
         d_iso = d.isoformat()
         for _, r in pos_df.iterrows():
             code = str(r["Code"]).zfill(6)
-            if cand_set and code not in cand_set:
-                continue
+            in_pool = not cand_set or code in cand_set
+            if not in_pool:
+                # 풀 밖 급등도 학습 — 실제 적중률(리콜) 개선. 풀 내 급등보다 1회 추가 가중.
+                pass
             name = str(names.get(code, r.get("Name", "")))
             fv = _train_feat(code, name, blob, kw_news, d, tw, today_v)
             rows_x.append(fv)
             rows_y.append(1)
+            if not in_pool:
+                rows_x.append(fv)
+                rows_y.append(1)
             if boost_dup > 0 and (d_iso, code) in pos_boost:
                 for _ in range(boost_dup):
                     rows_x.append(fv)
@@ -881,6 +959,7 @@ def rank_predictions_ml(
     theme_weights: dict[str, float] | None = None,
     feedback_ctx: dict[str, object] | None = None,
     ml_bundle: dict[str, Any] | None = None,
+    forward_observation: bool = False,
 ) -> list[predict.PredictionRow]:
     """종목 관련 신호가 있는 후보만 급등 확률을 매기고 상위 ``top_n`` ``PredictionRow`` 를 만듭니다."""
     ctx = predict.build_scoring_context(news_text_blob, train_events)
@@ -1018,6 +1097,7 @@ def rank_predictions_ml(
         out,
         target_day=target_day,
         ks11_ret_lag1=ks11_ret,
+        forward_observation=forward_observation,
     )
     if config.PRED_USE_DISPLAY_RANK_MAPPING and config.PRED_ERROR_FEEDBACK_ENABLED:
         for pr in out:

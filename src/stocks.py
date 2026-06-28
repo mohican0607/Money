@@ -456,6 +456,8 @@ def daily_returns_table(ohlcv: pd.DataFrame) -> pd.DataFrame:
     if "Change" in df.columns:
         ch = pd.to_numeric(df["Change"], errors="coerce")
         trust_change = ch.notna() & (vol > 0)
+        # 거래정지 재개일: pykrx Change는 정지 중 종가(예: 391) 기준이라 +169% 등 오류 → 시가 기준 유지
+        trust_change = trust_change & ~halt_resume
         df.loc[trust_change, "return_pct"] = ch.loc[trust_change]
     return df
 
@@ -909,10 +911,26 @@ def load_index_frame(symbol: str, start: date, end: date) -> pd.DataFrame:
 
     실패·빈 데이터면 빈 DataFrame.
     """
-    df = fdr.DataReader(symbol, start, end)
+    try:
+        df = fdr.DataReader(symbol, start, end)
+    except (OSError, ValueError, TypeError, KeyError):
+        return pd.DataFrame()
     if df is None or df.empty:
         return pd.DataFrame()
     df = df.reset_index()
+    date_col: str | None = None
+    for c in ("Date", "date", "index", "Index", "datetime"):
+        if c in df.columns:
+            date_col = c
+            break
+    if date_col is None and len(df.columns) > 0:
+        first = df.columns[0]
+        if pd.api.types.is_datetime64_any_dtype(df[first]):
+            date_col = str(first)
+    if date_col is None:
+        return pd.DataFrame()
+    if date_col != "Date":
+        df = df.rename(columns={date_col: "Date"})
     df["Date"] = pd.to_datetime(df["Date"]).dt.normalize()
     return df
 

@@ -1,6 +1,7 @@
 """비교 표·DayReport 행 보강 (compare + enrich)."""
 from __future__ import annotations
 
+import html
 import math
 import re
 from collections import Counter, defaultdict
@@ -11,6 +12,7 @@ from src import (
     config,
     disclosure,
     features,
+    move_reference,
     news,
     predict,
     prediction_accuracy_cache,
@@ -183,6 +185,102 @@ def _enrich_rows_prediction_signal(rows_compare: list[dict]) -> None:
     """비교 행마다 ``prediction_signal_html`` (ML·키워드·확신 요약) 채움."""
     for r in rows_compare:
         r["prediction_signal_html"] = _prediction_signal_html(r)
+
+
+def _enrich_forward_pred_rationale(
+    rows_compare: list[dict],
+    code_pr_map: dict[str, predict.PredictionRow],
+    *,
+    t_trading_day: date,
+    kospi_return: float | None = None,
+    early_rows: list[tuple[date, dict[str, str]]] | None = None,
+    actual_ctx_rows: list[tuple[date, dict[str, str]]] | None = None,
+    returns_by_code: dict[str, Any] | None = None,
+    returns_ml_by_code: dict[str, Any] | None = None,
+) -> str:
+    """
+    예측 전용 관측일: 행마다 ``pred_forward_rationale_html`` 을 채우고
+    일자 패널용 ``forward_pred_rationale_html`` HTML 을 반환합니다.
+    """
+    day_market_html = move_reference.build_forward_day_market_context_html(
+        t_trading_day,
+        kospi_return=kospi_return,
+        early_rows=early_rows,
+    )
+    items: list[dict] = []
+    for r in rows_compare:
+        if r.get("pred_ret") is None:
+            continue
+        if not (r.get("pred_high") or r.get("pred_mid")):
+            continue
+        code = str(r.get("code", "")).zfill(6)
+        pr = code_pr_map.get(code)
+        if pr is None:
+            continue
+        model_html = predict.format_forward_pred_rationale_html(pr, r)
+        context_html = move_reference.build_forward_pred_context_html(
+            code=code,
+            name=str(r.get("name") or ""),
+            t_trading_day=t_trading_day,
+            kospi_return=kospi_return,
+            pred_news_hits=list(r.get("pred_news_hits") or []),
+            actual_ctx_rows=actual_ctx_rows,
+            early_rows=early_rows,
+            disclosure_hits=list(r.get("disclosure_hits") or []),
+            keywords=list(r.get("keywords") or []),
+            returns_sub=(returns_by_code or {}).get(code),
+            returns_ml_sub=(returns_ml_by_code or {}).get(code),
+            market_theme_sectors=list(r.get("market_theme_sectors") or []),
+            market_segment=str(r.get("market_segment") or ""),
+        )
+        rationale = model_html + context_html
+        r["pred_forward_rationale_html"] = rationale
+        r["pred_reason_detail_html"] = rationale
+        r["pred_reason_use_tooltip"] = False
+        summary_bits: list[str] = []
+        mp = r.get("ml_prob")
+        if mp is not None and math.isfinite(float(mp)):
+            summary_bits.append(f"P {float(mp) * 100:.0f}%")
+        nh = int(r.get("keyword_hits") or 0)
+        if nh > 0:
+            summary_bits.append(f"교집합 {nh}")
+        mom = float(getattr(pr, "momentum_score", 0.0) or 0.0)
+        if mom >= 0.28:
+            summary_bits.append(f"모멘텀 {mom * 100:.0f}%")
+        sec = max(
+            float(getattr(pr, "industry_momentum", 0.0) or 0.0),
+            float(getattr(pr, "industry_limit_up_heat", 0.0) or 0.0),
+        )
+        if sec >= 0.22:
+            summary_bits.append(f"섹터 {sec * 100:.0f}%")
+        r["pred_reason_forward_summary"] = (
+            " · ".join(summary_bits) if summary_bits else (r.get("pred_reason_summary") or "—")
+        )
+        items.append(r)
+
+    if not items:
+        return ""
+
+    items.sort(key=lambda x: -(float(x.get("pred_ret") or 0.0)))
+    blocks: list[str] = [
+        '<div class="forward-pred-rationale-list" style="display:flex;flex-direction:column;gap:14px">'
+    ]
+    for r in items:
+        name = html.escape(str(r.get("name") or ""))
+        code = html.escape(str(r.get("code") or ""))
+        pred = float(r.get("pred_ret") or 0.0)
+        tier = "고확신" if r.get("pred_high") else "중확신"
+        blocks.append(
+            f'<article class="forward-pred-item" id="forward-pred-{code}" '
+            f'style="padding:10px 12px;background:#1a2433;border:1px solid #3a4a5c;border-radius:8px">'
+            f'<h4 style="margin:0 0 6px;font-size:0.92rem">'
+            f'<strong>{name}</strong> <span class="muted" style="font-weight:400">({code})</span> '
+            f'· 예측 <span class="warn">{pred:.2f}%</span> · {html.escape(tier)}</h4>'
+            f'{r.get("pred_forward_rationale_html") or ""}'
+            f"</article>"
+        )
+    blocks.append("</div>")
+    return day_market_html + "".join(blocks)
 def _rise_band_for_row(
     pred_ret_pct: float | None,
     actual_ret_ratio: float | None,
@@ -338,6 +436,52 @@ def _actual_over_pred_ratio(pred_ret: float | None, actual_ret: float | None) ->
     return min(a_pct, p) / den
 
 
+def _compute_day_pred_accuracy_summary(
+    rows_compare: list[dict],
+    *,
+    threshold: float,
+) -> dict[str, Any]:
+    """당일 ``pred_high`` 행만 집계 — 적중·음수·평균 달성률."""
+    thr_pct = float(threshold) * 100.0
+    high = [
+        r
+        for r in rows_compare
+        if bool(r.get("pred_high")) and r.get("pred_ret") is not None
+    ]
+    with_actual = [
+        r for r in high if r.get("actual_ret") is not None and math.isfinite(float(r["actual_ret"]))
+    ]
+    if not high:
+        return {
+            "n_pred_high": 0,
+            "n_with_actual": 0,
+            "n_hit_threshold": 0,
+            "n_negative": 0,
+            "mean_accuracy_ratio": None,
+            "hit_rate_pct": None,
+        }
+    hits = sum(
+        1
+        for r in with_actual
+        if float(r["actual_ret"]) * 100.0 + 1e-9 >= thr_pct
+    )
+    neg = sum(1 for r in with_actual if float(r["actual_ret"]) < -1e-9)
+    ratios: list[float] = []
+    for r in with_actual:
+        cur = _actual_over_pred_ratio(r.get("pred_ret"), r.get("actual_ret"))
+        if cur is not None:
+            ratios.append(float(cur))
+    mean_ratio = (sum(ratios) / len(ratios)) if ratios else None
+    return {
+        "n_pred_high": len(high),
+        "n_with_actual": len(with_actual),
+        "n_hit_threshold": hits,
+        "n_negative": neg,
+        "mean_accuracy_ratio": mean_ratio,
+        "hit_rate_pct": (100.0 * hits / len(with_actual)) if with_actual else None,
+    }
+
+
 def _prediction_row_strict_or_loose(
     code: str,
     names: dict[str, str],
@@ -360,13 +504,57 @@ def _prediction_row_strict_or_loose(
     )
 
 
+def _history_item_accuracy_ratio(
+    pred_pct: object,
+    actual_pct: object,
+    *,
+    threshold_pct: float | None = None,
+) -> float | None:
+    """이력 한 건의 적중(0~1). 실제%가 ``threshold_pct`` 이상이면 1, 아니면 0."""
+    if pred_pct is None or actual_pct is None:
+        return None
+    try:
+        apv = float(actual_pct)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(apv):
+        return None
+    thr = (
+        float(threshold_pct)
+        if threshold_pct is not None
+        else float(config.BIG_MOVE_THRESHOLD) * 100.0
+    )
+    if apv + 1e-9 >= thr:
+        return 1.0
+    return 0.0
+
+
+def _actual_over_pred_hit(
+    pred_ret: float | None,
+    actual_ret: float | None,
+    *,
+    threshold: float | None = None,
+) -> float | None:
+    """일별 적중(0~1). ``actual_ret``(소수)가 ``threshold``(0.2=20%) 이상이면 1."""
+    if pred_ret is None or actual_ret is None:
+        return None
+    try:
+        ar = float(actual_ret)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(ar):
+        return None
+    thr = float(threshold if threshold is not None else config.BIG_MOVE_THRESHOLD)
+    if ar * 100.0 + 1e-9 >= thr * 100.0:
+        return 1.0
+    return 0.0
+
+
 def _enrich_cumulative_actual_over_pred_from_history(day_reports: list) -> None:
     """
     ``pred_high_history`` 가 있으면 ``cumulative_accuracy_avg`` 를 이력만으로 다시 씁니다.
 
-    각 이력 행에 대해 ``min(|실제%|,|예측%|)/max(|실제%|,|예측%|)``(0~1)을 더합니다.
-    예측이 ``0`` 에 가깝거나 실적·예측 값이 없으면 그 항목은 ``0``을 더합니다.
-    평균은 **이력 행 개수**로 나눕니다.
+    실적·예측이 모두 확정된 이력만 분모에 넣습니다. 각 건은 실제≥20% 적중 시 1, 아니면 0.
     """
     for dr in day_reports:
         for r in dr.rows_compare:
@@ -377,27 +565,21 @@ def _enrich_cumulative_actual_over_pred_from_history(day_reports: list) -> None:
                 (h for h in hist if isinstance(h, dict)),
                 key=lambda h: str(h.get("t", "")),
             )
-            n = len(items)
+            acc = 0.0
+            n = 0
+            thr_pct = float(config.BIG_MOVE_THRESHOLD) * 100.0
+            for h in items:
+                ratio = _history_item_accuracy_ratio(
+                    h.get("pred_pct"),
+                    h.get("actual_pct"),
+                    threshold_pct=thr_pct,
+                )
+                if ratio is None:
+                    continue
+                acc += ratio
+                n += 1
             if n == 0:
                 continue
-            acc = 0.0
-            for h in items:
-                pr = h.get("pred_pct")
-                ap = h.get("actual_pct")
-                if ap is None or pr is None:
-                    acc += 0.0
-                    continue
-                prf = abs(float(pr))
-                apv = float(ap)
-                if apv < 0:
-                    acc += 0.0
-                    continue
-                apf = abs(apv)
-                den = max(prf, apf)
-                if den < 1e-9:
-                    acc += 0.0
-                else:
-                    acc += min(prf, apf) / den
             r["cumulative_accuracy_avg"] = acc / n
             r["cumulative_accuracy_from_hist"] = True
 
@@ -407,8 +589,9 @@ def _enrich_cumulative_actual_over_pred_from_history_for_field(
     *,
     history_field: str,
     out_field: str,
+    threshold_pct: float | None = None,
 ) -> None:
-    """지정 이력 필드 기준 누적 달성률 평균(0~1)을 ``out_field`` 에 씁니다."""
+    """지정 이력 필드 기준 누적 적중률 평균(0~1)을 ``out_field`` 에 씁니다."""
     for dr in day_reports:
         for r in dr.rows_compare:
             hist = r.get(history_field) or []
@@ -416,25 +599,24 @@ def _enrich_cumulative_actual_over_pred_from_history_for_field(
                 (h for h in hist if isinstance(h, dict)),
                 key=lambda h: str(h.get("t", "")),
             )
-            n = len(items)
-            if n == 0:
-                r[out_field] = None
-                continue
+            thr = (
+                float(threshold_pct)
+                if threshold_pct is not None
+                else float(config.BIG_MOVE_THRESHOLD) * 100.0
+            )
             acc = 0.0
+            n = 0
             for h in items:
-                pr = h.get("pred_pct")
-                ap = h.get("actual_pct")
-                if ap is None or pr is None:
+                ratio = _history_item_accuracy_ratio(
+                    h.get("pred_pct"),
+                    h.get("actual_pct"),
+                    threshold_pct=thr,
+                )
+                if ratio is None:
                     continue
-                prf = abs(float(pr))
-                apv = float(ap)
-                if apv < 0:
-                    continue
-                apf = abs(apv)
-                den = max(prf, apf)
-                if den >= 1e-9:
-                    acc += min(prf, apf) / den
-            r[out_field] = acc / n
+                acc += ratio
+                n += 1
+            r[out_field] = (acc / n) if n else None
 
 
 def _enrich_rows_actual_ret_prev_day(
@@ -785,8 +967,8 @@ def _enrich_cumulative_accuracy_avg(day_reports: list[report.DayReport]) -> None
     각 ``rows_compare`` 행에 ``cumulative_accuracy_avg`` 를 넣습니다.
 
     같은 종목코드에 대해, **이번 파이프라인 실행의 관측 거래일 T를 시간순**으로 보며
-    일별 달성률 ``min(|실제%|/|예측%|,1)`` 를 쌓고, 해당 행 시점까지의 **산술 평균**(0~1)을 기록합니다.
-    당일 비율을 계산할 수 없으면(예측·실제 중 하나 없음, 예측 0) 직전까지 평균만 씁니다.
+    일별 적중(실제≥20% → 1, 아니면 0)을 쌓고, 해당 행 시점까지의 **산술 평균**(0~1)을 기록합니다.
+    당일 적중을 계산할 수 없으면(예측·실제 중 하나 없음) 직전까지 평균만 씁니다.
     """
     history: dict[str, list[float]] = defaultdict(list)
     for dr in sorted(day_reports, key=lambda d: d.trading_day):
@@ -796,7 +978,7 @@ def _enrich_cumulative_accuracy_avg(day_reports: list[report.DayReport]) -> None
                 r["cumulative_accuracy_avg"] = None
                 continue
             code = str(r["code"])
-            cur = _actual_over_pred_ratio(r.get("pred_ret"), r.get("actual_ret"))
+            cur = _actual_over_pred_hit(r.get("pred_ret"), r.get("actual_ret"))
             past = history[code]
             if cur is not None:
                 r["cumulative_accuracy_avg"] = (sum(past) + cur) / (len(past) + 1)

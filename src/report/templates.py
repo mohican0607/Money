@@ -681,7 +681,7 @@ __ACTUAL_RET_CELL_MACRO__
         {% else %}
         <p class="combo-tip-empty" style="margin:8px 0 0 0">저장된 {{ meta.threshold }} 이상 예측 이력이 없습니다.</p>
         {% endif %}
-        <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 관측일별 min(|실제%|,|예측%|) / max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%).{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제가 0% 이상인 비율.{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
+        <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제≥{{ meta.threshold }} 적중 비율(맞춘 건수÷전체, a/d와 동일).{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제가 0% 이상인 비율.{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
       </div>
     </div>
   </span>
@@ -749,6 +749,15 @@ __ACTUAL_RET_CELL_MACRO__
 </div>
 {% endif %}
 {%- endmacro %}
+{% macro forward_pred_rationale_panel(d, meta) -%}
+{% if d.forward_observation | default(false) and d.forward_pred_rationale_html %}
+<div class="forward-pred-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;background:#1e2838;border:1px solid #4a3a2a;border-radius:8px">
+  <h3 style="font-size:0.95rem;color:var(--warn);margin:0 0 8px">예측 상승률 근거 (장 시작 전)</h3>
+  <p class="sub" style="margin:0 0 10px;font-size:0.84rem;line-height:1.45">관측일 <strong>{{ d.trading_day.isoformat() }}</strong>은 아직 장이 시작되지 않았거나 실적이 확정되지 않았습니다. 아래 <strong>예측≥{{ meta.threshold }}</strong> 후보별로 <em>모델 점수</em>와 함께 <em>국내·글로벌 시장</em>, <em>종목 시세·업종</em>, <em>특이 뉴스·공시</em> 맥락을 정리했습니다.</p>
+  {{ d.forward_pred_rationale_html | safe }}
+</div>
+{% endif %}
+{%- endmacro %}
 {% macro hit_at_k_panel(d, meta) -%}
 {% if d.hit_at_k_metrics %}
 <div class="hit-at-k-panel" style="margin:8px 0 14px;padding:10px 12px;background:#1a2433;border:1px solid #334;border-radius:8px;font-size:0.88rem">
@@ -766,14 +775,29 @@ __ACTUAL_RET_CELL_MACRO__
 </div>
 {% endif %}
 {%- endmacro %}
+{% macro day_pred_accuracy_banner(d, meta) -%}
+{% set s = d.pred_accuracy_summary | default(none) %}
+{% if s and (s.n_pred_high | default(0)) > 0 and (s.n_with_actual | default(0)) > 0 %}
+<p class="sub" style="margin:6px 0 10px;padding:8px 10px;background:#1a2230;border:1px solid #3a4a5c;border-radius:6px;font-size:0.88rem;line-height:1.45">
+  <strong>당일 예측≥{{ meta.threshold }}</strong> {{ s.n_pred_high }}건 · 실적 확정 {{ s.n_with_actual }}건 ·
+  임계 적중 <strong class="{% if (s.n_hit_threshold | default(0)) == 0 %}bad{% else %}ok{% endif %}">{{ s.n_hit_threshold }}</strong>/{{ s.n_with_actual }}
+  {% if s.mean_accuracy_ratio is not none %}
+  · 당일 달성률 <strong class="{% if s.mean_accuracy_ratio < 0.01 %}bad{% endif %}">{{ "%.2f"|format(s.mean_accuracy_ratio * 100) }}%</strong>
+  {% endif %}
+  {% if s.n_negative | default(0) > 0 %} · <span class="bad">음수 {{ s.n_negative }}건</span>{% endif %}
+</p>
+{% endif %}
+{%- endmacro %}
 {% macro day_panel(d, meta) -%}
   <section id="day-{{ d.trading_day.isoformat() }}" class="day-market-block">
     <div class="day-heading-row">
       <h2>{{ d.trading_day.isoformat() }} (거래일)</h2>
       {{ market_filter_radios(d.trading_day.isoformat(), d.forward_observation | default(false)) }}
     </div>
+    {{ day_pred_accuracy_banner(d, meta) }}
     {{ market_theme_panel(d) }}
     {{ mover_rationale_panel(d) }}
+    {{ forward_pred_rationale_panel(d, meta) }}
     {{ hit_at_k_panel(d, meta) }}
     <p class="sub">{% if meta.use_decision_cutoff %}N-1 거래일 {{ meta.cutoff_kst }}(KST)까지 반영한 {% endif %}예측 입력 뉴스 하이라이트 키워드 예시:
       {% for t in d.news_highlight_terms[:20] %}
@@ -792,7 +816,7 @@ __ACTUAL_RET_CELL_MACRO__
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 일봉 확정 전이므로 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
           <th>보정(%)</th>
-          <th scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="달성% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
+          <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
           <th>누적정확도(10~20)</th>
           <th>누적정확도(전체)</th>
           <th>이유/차이</th>
@@ -855,7 +879,7 @@ __ACTUAL_RET_CELL_MACRO__
               </div>
             </span>
             <span style="margin-left:10px">{{ disclosure_tip(r, d.trading_day) }}</span>
-            <span class="pred-reason-plain" style="margin-left:10px">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}</span>
+            <span class="pred-reason-plain" style="margin-left:10px">{% if d.forward_observation | default(false) %}{{ r.pred_reason_forward_summary | default(r.pred_reason_hit_line) | default(r.pred_reason_summary) | default('—') | safe }}{% else %}{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}{% endif %}</span>
           </td>
           <td>{{ prediction_signal_cell(r) }}</td>
         </tr>
@@ -874,7 +898,7 @@ __ACTUAL_RET_CELL_MACRO__
       {# ({{ fn.code }}) · #}
       예측 {{ "%.2f"|format(fn.pred_ret) }}% · 실제
       <span class="bad">{{ "%.2f"|format(fn.actual_ret * 100) }}%</span>
-      <p class="reasons" style="margin:8px 0;">{{ fn.analysis }}</p>
+      <p class="reasons" style="margin:8px 0;">{{ fn.analysis_html | default(fn.analysis) | safe }}</p>
       <p class="reasons"><em>예측 시 참고한 키워드:</em>
         {% for k in fn.keywords[:15] %}<span class="pill">{{ k }}</span>{% endfor %}
       </p>
@@ -1269,7 +1293,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
         {% else %}
         <p class="combo-tip-empty" style="margin:8px 0 0 0">저장된 {{ meta.threshold }} 이상 예측 이력이 없습니다.</p>
         {% endif %}
-        <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 관측일별 min(|실제%|,|예측%|) / max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%).{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제가 0% 이상인 비율.{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
+        <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제≥{{ meta.threshold }} 적중 비율(맞춘 건수÷전체, a/d와 동일).{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제가 0% 이상인 비율.{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
       </div>
     </div>
   </span>
@@ -1337,6 +1361,15 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 </div>
 {% endif %}
 {%- endmacro %}
+{% macro forward_pred_rationale_panel(d, meta) -%}
+{% if d.forward_observation | default(false) and d.forward_pred_rationale_html %}
+<div class="forward-pred-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;background:#1e2838;border:1px solid #4a3a2a;border-radius:8px">
+  <h3 style="font-size:0.95rem;color:var(--warn);margin:0 0 8px">예측 상승률 근거 (장 시작 전)</h3>
+  <p class="sub" style="margin:0 0 10px;font-size:0.84rem;line-height:1.45">관측일 <strong>{{ d.trading_day.isoformat() }}</strong>은 아직 장이 시작되지 않았거나 실적이 확정되지 않았습니다. 아래 <strong>예측≥{{ meta.threshold }}</strong> 후보별로 <em>모델 점수</em>와 함께 <em>국내·글로벌 시장</em>, <em>종목 시세·업종</em>, <em>특이 뉴스·공시</em> 맥락을 정리했습니다.</p>
+  {{ d.forward_pred_rationale_html | safe }}
+</div>
+{% endif %}
+{%- endmacro %}
 {% macro hit_at_k_panel(d, meta) -%}
 {% if d.hit_at_k_metrics %}
 <div class="hit-at-k-panel" style="margin:8px 0 14px;padding:10px 12px;background:#1a2433;border:1px solid #334;border-radius:8px;font-size:0.88rem">
@@ -1362,6 +1395,19 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
   {% endfor %}
 </div>
 {%- endmacro %}
+{% macro day_pred_accuracy_banner(d, meta) -%}
+{% set s = d.pred_accuracy_summary | default(none) %}
+{% if s and (s.n_pred_high | default(0)) > 0 and (s.n_with_actual | default(0)) > 0 %}
+<p class="sub" style="margin:6px 0 10px;padding:8px 10px;background:#1a2230;border:1px solid #3a4a5c;border-radius:6px;font-size:0.88rem;line-height:1.45">
+  <strong>당일 예측≥{{ meta.threshold }}</strong> {{ s.n_pred_high }}건 · 실적 확정 {{ s.n_with_actual }}건 ·
+  임계 적중 <strong class="{% if (s.n_hit_threshold | default(0)) == 0 %}bad{% else %}ok{% endif %}">{{ s.n_hit_threshold }}</strong>/{{ s.n_with_actual }}
+  {% if s.mean_accuracy_ratio is not none %}
+  · 당일 달성률 <strong class="{% if s.mean_accuracy_ratio < 0.01 %}bad{% endif %}">{{ "%.2f"|format(s.mean_accuracy_ratio * 100) }}%</strong>
+  {% endif %}
+  {% if s.n_negative | default(0) > 0 %} · <span class="bad">음수 {{ s.n_negative }}건</span>{% endif %}
+</p>
+{% endif %}
+{%- endmacro %}
 {% macro compact_day_table(d, meta, empty_extra='') -%}
 {% if d.rows_compare %}
 <table class="rows-compare">
@@ -1372,7 +1418,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
       <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
       <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
       <th>보정(%)</th>
-      <th scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="달성% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
+      <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
       <th>누적정확도(10~20)</th>
       <th>누적정확도(전체)</th>
       <th>이유/차이</th>
@@ -1435,7 +1481,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
           </div>
         </span>
         <span style="margin-left:10px">{{ disclosure_tip(r, d.trading_day) }}</span>
-        <span class="pred-reason-plain" style="margin-left:10px">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}</span>
+        <span class="pred-reason-plain" style="margin-left:10px">{% if d.forward_observation | default(false) %}{{ r.pred_reason_forward_summary | default(r.pred_reason_hit_line) | default(r.pred_reason_summary) | default('—') | safe }}{% else %}{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}{% endif %}</span>
       </td>
       <td>{{ prediction_signal_cell(r) }}</td>
     </tr>
@@ -1479,8 +1525,10 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
           <h2>{{ d.trading_day.isoformat() }}{% if d.forward_observation | default(false) %} <span class="pill" style="font-size:0.72rem;font-weight:500;color:var(--warn)">예측 전용</span>{% endif %}</h2>
           {{ market_filter_radios(d.trading_day.isoformat() ~ "-" ~ w.monday.isoformat(), d.forward_observation | default(false)) }}
         </div>
+        {{ day_pred_accuracy_banner(d, meta) }}
         {{ market_theme_panel(d) }}
         {{ mover_rationale_panel(d) }}
+        {{ forward_pred_rationale_panel(d, meta) }}
         {{ hit_at_k_panel(d, meta) }}
         {{ compact_day_table(d, meta) }}
       </section>
@@ -1522,6 +1570,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
     </div>
     {{ market_theme_panel(d) }}
     {{ mover_rationale_panel(d) }}
+    {{ forward_pred_rationale_panel(d, meta) }}
     {{ hit_at_k_panel(d, meta) }}
     {{ compact_day_table(d, meta) }}
   </section>
@@ -1545,6 +1594,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
         </div>
         {{ market_theme_panel(d) }}
         {{ mover_rationale_panel(d) }}
+        {{ forward_pred_rationale_panel(d, meta) }}
         {{ hit_at_k_panel(d, meta) }}
         {{ compact_day_table(d, meta) }}
       </div>
@@ -1577,6 +1627,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
     </div>
     {{ market_theme_panel(d) }}
     {{ mover_rationale_panel(d) }}
+    {{ forward_pred_rationale_panel(d, meta) }}
     {{ hit_at_k_panel(d, meta) }}
     {{ compact_day_table(d, meta, '장 전 실행 시 데이터 없음') }}
   </section>
@@ -1899,6 +1950,28 @@ _DATED_N_TEMPLATE = r"""
   </div>
 </span>
 {%- endmacro %}
+{% macro day_pred_accuracy_banner(d, meta) -%}
+{% set s = d.pred_accuracy_summary | default(none) %}
+{% if s and (s.n_pred_high | default(0)) > 0 and (s.n_with_actual | default(0)) > 0 %}
+<p class="sub" style="margin:6px 0 10px;padding:8px 10px;background:#1a2230;border:1px solid #3a4a5c;border-radius:6px;font-size:0.88rem;line-height:1.45">
+  <strong>당일 예측≥{{ meta.threshold }}</strong> {{ s.n_pred_high }}건 · 실적 확정 {{ s.n_with_actual }}건 ·
+  임계 적중 <strong class="{% if (s.n_hit_threshold | default(0)) == 0 %}bad{% else %}ok{% endif %}">{{ s.n_hit_threshold }}</strong>/{{ s.n_with_actual }}
+  {% if s.mean_accuracy_ratio is not none %}
+  · 당일 달성률 <strong class="{% if s.mean_accuracy_ratio < 0.01 %}bad{% endif %}">{{ "%.2f"|format(s.mean_accuracy_ratio * 100) }}%</strong>
+  {% endif %}
+  {% if s.n_negative | default(0) > 0 %} · <span class="bad">음수 {{ s.n_negative }}건</span>{% endif %}
+</p>
+{% endif %}
+{%- endmacro %}
+{% macro forward_pred_rationale_panel(d, meta) -%}
+{% if d.forward_observation | default(false) and d.forward_pred_rationale_html %}
+<div class="forward-pred-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;background:#1e2838;border:1px solid #4a3a2a;border-radius:8px">
+  <h3 style="font-size:0.95rem;color:var(--warn);margin:0 0 8px">예측 상승률 근거 (장 시작 전)</h3>
+  <p class="sub" style="margin:0 0 10px;font-size:0.84rem;line-height:1.45">관측일 <strong>{{ d.trading_day.isoformat() }}</strong>은 아직 장이 시작되지 않았거나 실적이 확정되지 않았습니다. 아래 <strong>예측≥{{ meta.threshold }}</strong> 후보별로 <em>모델 점수</em>와 함께 <em>국내·글로벌 시장</em>, <em>종목 시세·업종</em>, <em>특이 뉴스·공시</em> 맥락을 정리했습니다.</p>
+  {{ d.forward_pred_rationale_html | safe }}
+</div>
+{% endif %}
+{%- endmacro %}
 {% macro stock_name_link(code, name, r=none) -%}
 <span class="stock-chart-tip" tabindex="0">
   <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}"{# title="클릭: 네이버 차트 · 호버: 일봉·최근 등락률" #}>{{ name }}</a>
@@ -1950,6 +2023,9 @@ __ACTUAL_RET_CELL_MACRO_DATED__
   </div>
   {% endif %}
 
+  {{ day_pred_accuracy_banner(day, meta) }}
+  {{ forward_pred_rationale_panel(day, meta) }}
+
   <section class="day-market-block">
     <div class="day-heading-row">
       <h2>종목별 상세 <span style="font-size:0.82rem;font-weight:500;color:var(--muted)">(관측일 {{ t_day.isoformat() }})</span></h2>
@@ -1966,7 +2042,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
           <th>보정(%)</th>
-          <th scope="col" title="예측≥임계 후보만. 앞: 관측일별 min(|실제%|,|예측%|)/max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="달성% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
+          <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
           <th>누적정확도(10~20)</th>
           <th>누적정확도(전체)</th>
           <th>통합 보기</th>
@@ -2022,7 +2098,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
                   {% else %}
                   <p class="combo-tip-empty" style="margin:8px 0 0 0">저장된 {{ meta.threshold }} 이상 예측 이력이 없습니다.</p>
                   {% endif %}
-                  <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 관측일별 min(|실제%|,|예측%|) / max(|실제%|,|예측%|) 평균(정확히 일치할 때만 100%).{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제가 0% 이상인 비율.{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
+                  <p style="font-size:0.76rem;color:var(--muted);margin:8px 0 0 0;line-height:1.35">앞 {{ "%.2f"|format(r.cumulative_accuracy_avg * 100) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제≥{{ meta.threshold }} 적중 비율(맞춘 건수÷전체, a/d와 동일).{% if r.cumulative_nonneg_rate_pct is defined and r.cumulative_nonneg_rate_pct is not none %} vs {{ "%.2f"|format(r.cumulative_nonneg_rate_pct) }}%: 예측≥{{ meta.threshold }}·실적 확정 건 중 실제가 0% 이상인 비율.{% endif %}{% if r.cumulative_hit_x is defined and r.cumulative_hit_x is not none and r.cumulative_hit_y is defined and r.cumulative_hit_y is not none %} 괄호 (a b c / d): 예측≥{{ meta.threshold }}·실적 확정 건 중 a=실제≥{{ meta.threshold }}, b=0&lt;실제&lt;{{ meta.threshold }}, c=실제&lt;0(빨간색), d=전체.{% endif %}</p>
                 </div>
               </div>
             </span>
@@ -2064,7 +2140,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
           <td class="td-center">
             {{ disclosure_tip(r, t_day) }}
           </td>
-          <td class="pred-reason-cell">{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}</td>
+          <td class="pred-reason-cell">{% if day.forward_observation | default(false) %}{{ r.pred_reason_forward_summary | default(r.pred_reason_hit_line) | default(r.pred_reason_summary) | default('—') | safe }}{% else %}{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}{% endif %}</td>
           <td class="td-center">
             <span class="gap-tip combo-tip">
               <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 입력 구간 뉴스와 참고 뉴스를 함께 보기">뉴스</span>
@@ -2128,7 +2204,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
       {# ({{ fn.code }}) · #}
       예측 {{ "%.2f"|format(fn.pred_ret) }}% · 실제
       <span class="bad">{{ "%.2f"|format(fn.actual_ret * 100) }}%</span>
-      <p style="margin:8px 0 0 0;color:var(--muted);">{{ fn.analysis }}</p>
+      <p style="margin:8px 0 0 0;color:var(--muted);">{{ fn.analysis_html | default(fn.analysis) | safe }}</p>
     </div>
     {% endfor %}
   </section>

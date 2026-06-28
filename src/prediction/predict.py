@@ -65,6 +65,104 @@ def format_prediction_reason_detail_html(pr: PredictionRow) -> str:
     return "<br/>".join(lines)
 
 
+def format_forward_pred_rationale_html(
+    pr: PredictionRow,
+    row: dict[str, Any] | None = None,
+) -> str:
+    """
+    장 시작 전·예측 전용 관측일: 예측 상승률이 높게 나온 근거를 표·패널용 HTML로 정리합니다.
+    """
+    from . import prediction_ranking as prk
+
+    row = row or {}
+    ks11 = getattr(pr, "ks11_ret_lag1", None)
+    pillars = prk.compute_pillar_scores(pr, ks11_ret_lag1=ks11)
+    pred_pct = float(getattr(pr, "predicted_return_pct", 0.0) or 0.0)
+    rank_pos = getattr(pr, "rank_position", None)
+    tier = str(getattr(pr, "confidence_tier", "none") or "none")
+    tier_ko = {"high": "고확신", "mid": "중확신", "none": "후보"}.get(tier, tier)
+
+    bullets: list[str] = []
+    ml = getattr(pr, "ml_prob", None)
+    if ml is not None and math.isfinite(float(ml)):
+        bullets.append(
+            f"ML 급등(≥{config.BIG_MOVE_THRESHOLD:.0%}) 추정 확률 "
+            f"<strong>{float(ml) * 100:.1f}%</strong>"
+            + (f" · 당일 예측 순위 <strong>#{int(rank_pos)}</strong>" if rank_pos else "")
+            + f" · 확신 <strong>{html.escape(tier_ko)}</strong>"
+        )
+    elif rank_pos:
+        bullets.append(
+            f"다요인 랭킹 순위 <strong>#{int(rank_pos)}</strong> · 확신 <strong>{html.escape(tier_ko)}</strong>"
+        )
+
+    factor_line = prk.format_factor_summary(pr, ks11_ret_lag1=ks11)
+    bullets.append(f"요인 강도: {html.escape(factor_line)}")
+
+    nh = int(getattr(pr, "keyword_hits", 0) or 0)
+    mention = float(getattr(pr, "mention_score", 0.0) or 0.0)
+    if nh > 0:
+        bullets.append(
+            f"당일 예측 입력 뉴스와 과거 급등 프로필 <strong>키워드 교집합 {nh}개</strong>"
+            + (f" · 종목명 언급 {mention:.2f}" if mention >= 0.12 else "")
+        )
+    elif mention >= 0.15:
+        bullets.append(f"뉴스 제목·본문 <strong>종목명 직접 언급</strong> (점수 {mention:.2f})")
+
+    mom = float(getattr(pr, "momentum_score", 0.0) or 0.0)
+    ind_m = float(getattr(pr, "industry_momentum", 0.0) or 0.0)
+    ind_h = float(getattr(pr, "industry_limit_up_heat", 0.0) or 0.0)
+    if mom + 1e-12 >= 0.28:
+        bullets.append(f"전일·최근 <strong>가격·거래량 모멘텀</strong> ({mom * 100:.0f}%)")
+    if ind_m + 1e-12 >= 0.22 or ind_h + 1e-12 >= 0.22:
+        bullets.append(
+            f"동일 업종·테마 <strong>섹터 열기</strong> "
+            f"(업종 {ind_m * 100:.0f}% · 상한가 근접 {ind_h * 100:.0f}%)"
+        )
+    flow = float(getattr(pr, "investor_flow_score", 0.0) or 0.0)
+    if flow + 1e-12 >= 0.35:
+        bullets.append(f"외국인·기관 <strong>수급</strong> 신호 ({flow * 100:.0f}%)")
+    rs = float(getattr(pr, "relative_strength_score", 0.0) or 0.0)
+    if rs + 1e-12 >= 0.38:
+        bullets.append(f"시장 대비 <strong>상대강도</strong> ({rs * 100:.0f}%)")
+
+    strong_non_news = prk.count_non_news_strong_pillars(pillars, threshold=0.42)
+    if strong_non_news >= 2:
+        bullets.append(
+            f"뉴스 외 다요인 <strong>{strong_non_news}개</strong>가 동시에 강함 "
+            f"(뉴스 단독 후보가 아님)"
+        )
+    elif pillars["news"] + 1e-12 >= 0.50 and strong_non_news < 1:
+        bullets.append(
+            '<span class="muted">뉴스 키워드는 강하나 시세·섹터 확인 신호는 약함 — 보수적 해석 권장</span>'
+        )
+
+    if ks11 is not None and math.isfinite(float(ks11)):
+        bullets.append(f"전일 KOSPI {float(ks11):+.2f}% 반영(시장 레짐)")
+
+    bullets.append(
+        f"표시 예측 상승률 <strong>{pred_pct:.2f}%</strong> — "
+        f"순위·ML·모멘텀·섹터를 합친 익일 {config.BIG_MOVE_THRESHOLD:.0%}↑ 후보 점수입니다."
+    )
+
+    parts: list[str] = ['<ul class="nl forward-pred-rationale" style="margin:6px 0 0 0">']
+    for b in bullets:
+        parts.append(f"<li>{b}</li>")
+    parts.append("</ul>")
+
+    kws = filter_keywords(list(pr.matched_keywords or []))
+    if kws:
+        pills = "".join(
+            f'<span class="pill" style="margin:2px 4px 2px 0;font-size:0.72rem">{html.escape(k)}</span>'
+            for k in kws[:24]
+        )
+        if len(kws) > 24:
+            pills += f'<span class="pill" style="font-size:0.72rem">+{len(kws) - 24}</span>'
+        parts.append(f'<div class="kw-pills" style="margin-top:8px;line-height:1.7">{pills}</div>')
+
+    return "".join(parts)
+
+
 @dataclass
 class PredictionRow:
     """한 종목에 대한 스코어링 결과(리포트 테이블·갭 분석에 전달)."""
@@ -379,9 +477,9 @@ def prediction_row_for_code(
     if config.THEME_CARRYOVER_ENABLED:
         score += float(config.THEME_CARRYOVER_SCORE_SCALE) * theme_hit
     try:
-        from ..stock_listing_sector import industry_theme_overlap
+        from .. import stocks as stocks_mod
 
-        ind_ov = industry_theme_overlap(code, kw_news)
+        ind_ov = stocks_mod.industry_theme_overlap(code, kw_news)
         if ind_ov + 1e-12 >= 0.55:
             score += 1.8 * ind_ov
     except Exception:
@@ -464,6 +562,7 @@ def predict_for_trading_day(
     returns_ml: Any = None,
     theme_weights: dict[str, float] | None = None,
     feedback_ctx: dict[str, object] | None = None,
+    forward_observation: bool = False,
 ) -> list[PredictionRow]:
     """
     상장 전 종목(또는 리스트)에 대해 스코어를 매기고 상위 ``top_n`` 만 반환합니다.
@@ -498,6 +597,7 @@ def predict_for_trading_day(
             theme_weights=theme_weights,
             feedback_ctx=feedback_ctx,
             ml_bundle=ml_bundle,
+            forward_observation=forward_observation,
         )
     if ml_bundle is not None and ml_bundle.get("pipeline") is not None and returns_ml is None:
         print(
@@ -539,6 +639,7 @@ def predict_for_trading_day(
         top,
         target_day=target_day,
         ks11_ret_lag1=ks11_ret,
+        forward_observation=forward_observation,
     )
 
 
@@ -815,25 +916,200 @@ def explain_miss(
     news_blob: str,
     kospi_change_hint: str | None = None,
 ) -> str:
-    """
-    예측은 높았는데 실제 수익이 음수인 경우 리포트용 짧은 설명 문자열(plain text).
+    """레거시 plain text — ``explain_miss_html`` 스트립 버전."""
+    import re as _re
 
-    ``false_negatives`` 블록에 들어갑니다.
+    html_out = explain_miss_html(
+        pred,
+        actual_ret,
+        news_blob_early=news_blob,
+        kospi_change_hint=kospi_change_hint,
+    )
+    plain = _re.sub(r"<[^>]+>", " ", html_out)
+    return _re.sub(r"\s+", " ", plain).strip()
+
+
+def explain_miss_html(
+    pred: PredictionRow,
+    actual_ret: float | None,
+    *,
+    news_blob_early: str = "",
+    kospi_change_hint: str | None = None,
+    late_keywords_matched: bool | None = None,
+    disclosure_hits: list[dict] | None = None,
+    pred_news_hits: list[dict] | None = None,
+    actual_news_hits: list[dict] | None = None,
+    t_trading_day: date | None = None,
+    gap_analysis_html: str | None = None,
+) -> str:
     """
-    bits = []
+    예측 대비 실제 하락(또는 큰 미스)에 대한 종목별 HTML 분석.
+
+    ``false_negatives`` 블록·집중 점검용. 뉴스·공시·키워드·갭 분석을 종목마다 다르게 채웁니다.
+    """
     if actual_ret is None:
-        bits.append("해당 일자에 거래 데이터가 없거나 휴장·신규상장 등으로 상승률을 계산하지 못했습니다.")
-        return " ".join(bits)
-    if actual_ret >= 0:
-        return "음수 구간이 아니므로 오판 집중 분석 대상에서 제외됩니다."
-    bits.append(f"실제 상승률은 약 {actual_ret*100:.2f}%였습니다.")
-    if pred.matched_keywords:
-        bits.append(
-            "뉴스 키워드는 과거 급등 사례와 겹쳤으나, 당일에는 테마 확산·거래량 부족· 시장 전체 조정 등으로 가격이 뒤집혔을 수 있습니다."
+        return (
+            "<p>해당 일자에 거래 데이터가 없거나 휴장·신규상장 등으로 "
+            "상승률을 계산하지 못했습니다.</p>"
         )
-    if pred.name in news_blob:
-        bits.append("종목명이 뉴스에 있었더라도 부정적 이슈·단기 차익 실현만 있었을 가능성이 있습니다.")
+    if actual_ret >= 0:
+        return "<p>음수 구간이 아니므로 오판 집중 분석 대상에서 제외됩니다.</p>"
+
+    act_pct = float(actual_ret) * 100.0
+    pred_pct = float(pred.predicted_return_pct)
+    diff = pred_pct - act_pct
+    tlabel = t_trading_day.isoformat() if t_trading_day is not None else "관측일"
+
+    parts: list[str] = [
+        f"<p><strong>오판 요약</strong> — 예측 <strong>{pred_pct:.2f}%</strong> · "
+        f"실제 <strong class=\"bad\">{act_pct:.2f}%</strong> · "
+        f"편차 <strong>{diff:+.2f}</strong>pp "
+        f"({tlabel})</p>"
+    ]
+
+    if pred.reasons:
+        reason_bits = [
+            html.escape(str(x).strip(), quote=False)
+            for x in pred.reasons[:4]
+            if str(x).strip()
+        ]
+        if reason_bits:
+            parts.append(
+                "<p><strong>예측 근거(모델)</strong></p><ul class=\"nl\">"
+                + "".join(f"<li>{b}</li>" for b in reason_bits)
+                + "</ul>"
+            )
+
+    if pred.matched_keywords:
+        kw_show = ", ".join(
+            html.escape(str(k), quote=False) for k in pred.matched_keywords[:12]
+        )
+        parts.append(
+            f"<p><strong>매칭 키워드 {len(pred.matched_keywords)}개</strong> — "
+            f"<code style=\"font-size:0.8rem;color:var(--warn)\">{kw_show}</code></p>"
+        )
+
+    pred_hits = list(pred_news_hits or [])
+    if pred_hits:
+        parts.append(
+            "<p><strong>예측 입력(early) 뉴스</strong> — 아래 기사가 신호를 키웠을 수 있습니다.</p>"
+            "<ul class=\"nl\">"
+        )
+        for h in pred_hits[:6]:
+            title = html.escape(str(h.get("title") or ""), quote=False)
+            matched = html.escape(str(h.get("matched") or ""), quote=False)
+            day_o = h.get("day")
+            day_s = (
+                day_o.isoformat()
+                if isinstance(day_o, date)
+                else html.escape(str(day_o or ""), quote=False)
+            )
+            link = (h.get("link") or "").strip()
+            if link:
+                le = html.escape(link, quote=True)
+                parts.append(
+                    f'<li><span class="pill">{day_s}</span> '
+                    f'<code style="font-size:0.75rem;color:var(--warn)">{matched}</code> '
+                    f'<a href="{le}" target="_blank" rel="noopener">{title}</a></li>'
+                )
+            else:
+                parts.append(
+                    f'<li><span class="pill">{day_s}</span> '
+                    f'<code style="font-size:0.75rem;color:var(--warn)">{matched}</code> {title}</li>'
+                )
+        parts.append("</ul>")
+
+    act_hits = list(actual_news_hits or [])
+    if act_hits:
+        parts.append(
+            f"<p><strong>{tlabel} 전후 실제 뉴스</strong> — 당일 흐름·악재 단서.</p>"
+            "<ul class=\"nl\">"
+        )
+        for h in act_hits[:8]:
+            title = html.escape(str(h.get("title") or ""), quote=False)
+            matched = html.escape(str(h.get("matched") or ""), quote=False)
+            day_o = h.get("day")
+            day_s = (
+                day_o.isoformat()
+                if isinstance(day_o, date)
+                else html.escape(str(day_o or ""), quote=False)
+            )
+            link = (h.get("link") or "").strip()
+            if link:
+                le = html.escape(link, quote=True)
+                parts.append(
+                    f'<li><span class="pill">{day_s}</span> '
+                    f'<code style="font-size:0.75rem;color:var(--muted)">{matched}</code> '
+                    f'<a href="{le}" target="_blank" rel="noopener">{title}</a></li>'
+                )
+            else:
+                parts.append(
+                    f'<li><span class="pill">{day_s}</span> '
+                    f'<code style="font-size:0.75rem;color:var(--muted)">{matched}</code> {title}</li>'
+                )
+        parts.append("</ul>")
+    elif pred.name and pred.name not in news_blob_early:
+        parts.append(
+            f"<p><strong>{tlabel} 뉴스</strong> — 예측 입력·당일 구간 모두에서 "
+            f"「{html.escape(pred.name, quote=False)}」 직접 언급 기사를 찾지 못했습니다. "
+            "테마만 겹친 뒤 개별 종목 수급이 붙지 않았을 수 있습니다.</p>"
+        )
+
+    miss_bullets: list[str] = []
+    if diff > 15:
+        miss_bullets.append(
+            "예측치는 과거 급등일 평균·클램프 기반이라 실제 하락일과 크게 어긋났습니다. "
+            "당일 시장·업종 약세·차익 실현·거래량 부족을 우선 의심합니다."
+        )
+    if late_keywords_matched is True:
+        cut = f"{config.NEWS_CUTOFF_KST_HOUR:02d}:{config.NEWS_CUTOFF_KST_MINUTE:02d}"
+        miss_bullets.append(
+            f"<strong>N-1일 {cut} 이후</strong> 뉴스에 예측 키워드가 있었습니다. "
+            "장 마감 후 악재·실망 매물이 나왔거나, 호재가 이미 선반영됐을 수 있습니다."
+        )
+    elif late_keywords_matched is False:
+        miss_bullets.append(
+            "지연 구간 뉴스에서 예측 키워드가 뚜렷하지 않습니다. "
+            "테마 확산 실패·수급 이탈·기술적 조정 가능성이 큽니다."
+        )
+    if pred.name in news_blob_early and not pred_hits:
+        miss_bullets.append(
+            "종목명은 early 뉴스에 있었으나 제목 매칭 히트가 적습니다. "
+            "단순 거론·부정 헤드라인·동명이인 여부를 기사별로 확인하세요."
+        )
     if kospi_change_hint:
-        bits.append(kospi_change_hint)
-    bits.append("추가로 공시·대주주 매매·거래정지 여부는 이 리포트 범위 밖이므로 네이버 증권 종목 공시에서 확인하는 것이 좋습니다.")
-    return " ".join(bits)
+        miss_bullets.append(kospi_change_hint)
+
+    dh = list(disclosure_hits or [])
+    if dh:
+        kinds: list[str] = []
+        for x in dh:
+            k = str(x.get("kind", "")).strip()
+            if k and k not in kinds:
+                kinds.append(html.escape(k, quote=False))
+        miss_bullets.append(
+            f"당일 공시 <strong>{len(dh)}건</strong>"
+            + (f" (유형: {', '.join(kinds[:5])})" if kinds else "")
+            + " — 유상증자·감자·소송·거래정지 등 악재 공시 여부를 확인하세요."
+        )
+
+    if not miss_bullets:
+        miss_bullets.append(
+            "뉴스 키워드는 과거 급등 패턴과 겹쳤으나 당일 가격은 반대로 움직였습니다. "
+            "동일 테마 내 다른 종목 대비 수급·시총·공매도 비중을 비교해 보세요."
+        )
+
+    parts.append(
+        "<p><strong>왜 틀렸나 (가설)</strong></p><ul class=\"nl\">"
+        + "".join(f"<li>{b}</li>" for b in miss_bullets[:7])
+        + "</ul>"
+    )
+
+    if gap_analysis_html and str(gap_analysis_html).strip():
+        parts.append(
+            "<details style=\"margin-top:8px\"><summary style=\"cursor:pointer;color:var(--muted)\">"
+            "예측 vs 실제 갭 상세</summary>"
+            f"<div style=\"margin-top:6px\">{gap_analysis_html}</div></details>"
+        )
+
+    return "".join(parts)
