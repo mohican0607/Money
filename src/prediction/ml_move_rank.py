@@ -146,8 +146,8 @@ def _prior_day_hot_peer_codes(
     target_day: date,
     listing_codes: list[str],
     *,
-    min_prev_ret: float = 0.10,
-    max_codes: int = 140,
+    min_prev_ret: float = 0.08,
+    max_codes: int = 160,
 ) -> list[str]:
     """
     T 직전 거래일 급등·강한 전일 모멘텀 종목과 동업종 peer를 후보에 넣습니다.
@@ -186,12 +186,40 @@ def _prior_day_hot_peer_codes(
             if ret + 1e-12 >= min_prev_ret:
                 hot.append((ret, code))
         hot.sort(key=lambda x: (-x[0], x[1]))
-        for _, code in hot[:45]:
+        for _, code in hot[:50]:
             _add(code)
             ic = stocks_mod.industry_code_for_stock(code)
             if ic:
-                for peer in stocks_mod.peers_for_industry(ic)[:12]:
+                for peer in stocks_mod.peers_for_industry(ic)[:14]:
                     _add(peer)
+
+    lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
+    session_days: list[date] = []
+    d = prev_td
+    for _ in range(lookback):
+        if d is None:
+            break
+        session_days.append(d)
+        try:
+            d = trading_calendar.last_trading_day_before(d)
+        except ValueError:
+            break
+    for sess in session_days:
+        sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(sess)]
+        for _, r in sl.iterrows():
+            code = str(r["Code"]).zfill(6)
+            if code not in allowed:
+                continue
+            try:
+                ret = float(r.get("return_pct") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if ret + 1e-12 >= 0.12:
+                _add(code)
+                ic = stocks_mod.industry_code_for_stock(code)
+                if ic:
+                    for peer in stocks_mod.peers_for_industry(ic)[:10]:
+                        _add(peer)
 
     sl_t = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
     lag_hot: list[tuple[float, str]] = []
@@ -479,8 +507,9 @@ def _industry_feats(
     day: date,
     ohlcv_idx: pd.DataFrame | None,
     kw_news: frozenset[str],
+    returns_ml: pd.DataFrame | None = None,
 ) -> tuple[float, float, float]:
-    """동종 업종 모멘텀·당일 뉴스-업종 겹침·전일 동종 상한가 열기."""
+    """동종 업종 모멘텀·당일 뉴스-업종 겹침·최근 동종 급등 열기."""
     from .. import stocks as stocks_mod
 
     ind_ov = float(stocks_mod.industry_theme_overlap(code, kw_news))
@@ -510,6 +539,44 @@ def _industry_feats(
     mom = max(0.0, min(1.0, (sum(rets) / len(rets)) / 0.12)) if rets else 0.0
     if peer_n > 0:
         ind_lim = min(1.0, lim_n / max(1, min(peer_n, 8)))
+
+    if returns_ml is not None and not returns_ml.empty:
+        session_days: list[date] = []
+        try:
+            d = trading_calendar.last_trading_day_before(day)
+        except ValueError:
+            d = None
+        lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
+        for _ in range(lookback):
+            if d is None:
+                break
+            session_days.append(d)
+            try:
+                d = trading_calendar.last_trading_day_before(d)
+            except ValueError:
+                break
+        hot_peer_rets: list[float] = []
+        hot_n = 0
+        for sess in session_days:
+            sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(sess)]
+            for p in peer_set[:24]:
+                sub = sl[sl["Code"].astype(str).str.zfill(6) == str(p).zfill(6)]
+                if sub.empty:
+                    continue
+                try:
+                    rp = float(sub.iloc[0].get("return_pct") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(rp):
+                    continue
+                hot_peer_rets.append(rp)
+                if rp + 1e-12 >= 0.15:
+                    hot_n += 1
+        if hot_peer_rets:
+            avg_hot = sum(hot_peer_rets) / len(hot_peer_rets)
+            mom = max(mom, min(1.0, max(0.0, avg_hot) / 0.10))
+            ind_lim = max(ind_lim, min(1.0, hot_n / max(1, min(len(peer_set), 10))))
+
     return mom, ind_ov, ind_lim
 
 
@@ -1076,7 +1143,7 @@ def rank_predictions_ml(
         except (KeyError, TypeError, ValueError):
             pr.investor_flow_score = 0.0
             pr.foreign_net_vol_ratio = 0.0
-        ind_mom, ind_ov, ind_lim = _industry_feats(code, target_day, ohlcv_idx, kw_news)
+        ind_mom, ind_ov, ind_lim = _industry_feats(code, target_day, ohlcv_idx, kw_news, returns_ml=returns_ml)
         pr.industry_momentum = ind_mom
         pr.industry_theme_overlap = ind_ov
         pr.industry_limit_up_heat = ind_lim

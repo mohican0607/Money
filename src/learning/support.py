@@ -359,6 +359,18 @@ def synthesize_weights_for_day(
                 hist |= set(e.news_keywords)
         for k in filter_specific_keywords(hist & set(kw_news)):
             c[k] += w
+        ind_name = ""
+        try:
+            from .. import stocks as stocks_mod
+
+            ind_name = (stocks_mod.industry_name_for_code(code) or "").strip()
+        except Exception:
+            ind_name = ""
+        if len(ind_name) >= 2:
+            c[ind_name] += w * 0.55
+            for tok in ind_name.replace("·", " ").split():
+                if len(tok) >= 2:
+                    c[tok] += w * 0.35
     return _normalize_weights(c)
 
 

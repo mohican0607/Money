@@ -128,6 +128,25 @@ def multi_factor_rank_score(
         )
     if ks11_ret_lag1 is not None and float(ks11_ret_lag1) < float(config.PRED_REGIME_KS11_SOFT_MIN):
         s *= float(config.PRED_REGIME_OUTPUT_SCALE)
+    if p["sector"] + 1e-12 >= 0.40 and p["momentum"] + 1e-12 >= 0.30:
+        s = min(1.0, s * 1.07)
+    ind_lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    if ind_lim + 1e-12 >= 0.22:
+        s = min(1.0, s + 0.05 * ind_lim)
+    try:
+        from .. import stocks as stocks_mod
+
+        ind_name = stocks_mod.industry_name_for_code(str(row.code)) or ""
+    except Exception:
+        ind_name = ""
+    if (
+        "반도체" in ind_name
+        and ks11_ret_lag1 is not None
+        and float(ks11_ret_lag1) < float(config.PRED_REGIME_KS11_SOFT_MIN)
+        and p["sector"] + 1e-12 < 0.36
+        and p["momentum"] + 1e-12 < 0.34
+    ):
+        s *= 0.72
     return _clamp01(s)
 
 
@@ -353,6 +372,46 @@ if TYPE_CHECKING:
 def rank_score_for_row(row: PredictionRow) -> float:
     """행의 하이브리드 랭킹 점수."""
     return hybrid_rank_score(row)
+
+
+def _industry_key(code: str) -> str:
+    """업종 코드(없으면 종목 단위 키)."""
+    try:
+        from .. import stocks as stocks_mod
+
+        ic = stocks_mod.industry_code_for_stock(code)
+        if ic:
+            return str(ic)
+    except Exception:
+        pass
+    return f"__{str(code).zfill(6)}"
+
+
+def _rerank_sector_diversity(pool: list[PredictionRow]) -> list[PredictionRow]:
+    """상위 구간 동일 업종 쏠림을 줄여 테마 전환일 리콜을 높입니다."""
+    top_k = int(config.PRED_SECTOR_DIVERSITY_TOP_K)
+    max_per = int(config.PRED_SECTOR_DIVERSITY_MAX_PER_INDUSTRY)
+    if len(pool) <= 1 or top_k <= 0 or max_per <= 0:
+        return pool
+    ranked = sorted(pool, key=rank_score_for_row, reverse=True)
+    head: list[PredictionRow] = []
+    counts: dict[str, int] = {}
+    for row in ranked:
+        ik = _industry_key(str(row.code))
+        if len(head) < top_k and counts.get(ik, 0) < max_per:
+            head.append(row)
+            counts[ik] = counts.get(ik, 0) + 1
+    if len(head) < top_k:
+        seen = {id(r) for r in head}
+        for row in ranked:
+            if len(head) >= top_k:
+                break
+            if id(row) in seen:
+                continue
+            head.append(row)
+            seen.add(id(row))
+    seen = {id(r) for r in head}
+    return head + [r for r in ranked if id(r) not in seen]
 
 
 def _heuristic_pseudo_prob(rank_position: int, pool_size: int) -> float:
@@ -646,7 +705,8 @@ def finalize_ranked_predictions(
 
     from . import predict
 
-    pool = sorted(rows, key=rank_score_for_row, reverse=True)
+    pool = _rerank_sector_diversity(rows)
+    pool = sorted(pool, key=rank_score_for_row, reverse=True)
     pool_size = len(pool)
     r_scale = regime_output_scale(ks11_ret_lag1)
 
@@ -866,22 +926,24 @@ def refine_confidence_tiers(
     if promoted:
         return
 
-    # 정밀 게이트가 전원 탈락 시: 전일·섹터 모멘텀 상위 1~2종만 고확신 승격(리콜 구제).
-    rescue_n = max(1, min(2, max_high))
+    # 정밀 게이트가 전원 탈락 시: 전일·섹터 모멘텀 상위 1~3종만 고확신 승격(리콜 구제).
+    rescue_n = max(1, min(3, max_high))
     rescue_ranked = sorted(
         pool,
         key=lambda r: (
             float(getattr(r, "industry_limit_up_heat", 0.0) or 0.0)
             + float(getattr(r, "momentum_score", 0.0) or 0.0)
-            + float(getattr(r, "industry_momentum", 0.0) or 0.0),
+            + float(getattr(r, "industry_momentum", 0.0) or 0.0)
+            + 0.5 * float(getattr(r, "industry_theme_overlap", 0.0) or 0.0),
             hybrid_rank_score(r),
         ),
         reverse=True,
     )
     for row in rescue_ranked[:rescue_n]:
-        if float(getattr(row, "momentum_score", 0.0) or 0.0) + 1e-12 < 0.28:
-            continue
-        if float(getattr(row, "industry_momentum", 0.0) or 0.0) + 1e-12 < 0.22:
+        mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
+        sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
+        lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+        if mom + 1e-12 < 0.22 and sec + 1e-12 < 0.18 and lim + 1e-12 < 0.15:
             continue
         row.confidence_tier = "high"
 
