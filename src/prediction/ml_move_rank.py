@@ -77,10 +77,11 @@ FEATURE_NAMES = (
     "industry_momentum",
     "industry_theme_overlap",
     "industry_limit_up_heat",
+    "prior_industry_hot",
 )
 
-ML_MODEL_VERSION = 18
-MAX_NEG_PER_DAY = 120
+ML_MODEL_VERSION = 19
+MAX_NEG_PER_DAY = 150
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
 
@@ -146,8 +147,8 @@ def _prior_day_hot_peer_codes(
     target_day: date,
     listing_codes: list[str],
     *,
-    min_prev_ret: float = 0.08,
-    max_codes: int = 160,
+    min_prev_ret: float = 0.05,
+    max_codes: int = 320,
 ) -> list[str]:
     """
     T 직전 거래일 급등·강한 전일 모멘텀 종목과 동업종 peer를 후보에 넣습니다.
@@ -186,11 +187,11 @@ def _prior_day_hot_peer_codes(
             if ret + 1e-12 >= min_prev_ret:
                 hot.append((ret, code))
         hot.sort(key=lambda x: (-x[0], x[1]))
-        for _, code in hot[:50]:
+        for _, code in hot[:85]:
             _add(code)
             ic = stocks_mod.industry_code_for_stock(code)
             if ic:
-                for peer in stocks_mod.peers_for_industry(ic)[:14]:
+                for peer in stocks_mod.peers_for_industry(ic)[:16]:
                     _add(peer)
 
     lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
@@ -214,11 +215,11 @@ def _prior_day_hot_peer_codes(
                 ret = float(r.get("return_pct") or 0.0)
             except (TypeError, ValueError):
                 continue
-            if ret + 1e-12 >= 0.12:
+            if ret + 1e-12 >= 0.08:
                 _add(code)
                 ic = stocks_mod.industry_code_for_stock(code)
                 if ic:
-                    for peer in stocks_mod.peers_for_industry(ic)[:10]:
+                    for peer in stocks_mod.peers_for_industry(ic)[:14]:
                         _add(peer)
 
     sl_t = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
@@ -232,17 +233,83 @@ def _prior_day_hot_peer_codes(
             vs = float(r.get("vol_surge_ratio") or 0.0)
         except (TypeError, ValueError):
             continue
-        if rl + 1e-12 >= 0.045 or vs + 1e-12 >= 1.25:
+        if rl + 1e-12 >= 0.035 or vs + 1e-12 >= 1.15:
             lag_hot.append((rl + 0.15 * min(vs, 3.0), code))
     lag_hot.sort(key=lambda x: (-x[0], x[1]))
-    for _, code in lag_hot[:70]:
+    for _, code in lag_hot[:100]:
         _add(code)
         ic = stocks_mod.industry_code_for_stock(code)
         if ic:
-            for peer in stocks_mod.peers_for_industry(ic)[:8]:
+            for peer in stocks_mod.peers_for_industry(ic)[:10]:
                 _add(peer)
 
     return out[:max_codes]
+
+
+def _burst_industry_peer_codes(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+    listing_codes: list[str],
+    *,
+    min_ret: float = 0.12,
+    min_count: int = 2,
+    max_industries: int = 18,
+    peers_per_industry: int = 28,
+) -> list[str]:
+    """최근 거래일 업종 내 다수 급등 시 동업종 전체를 후보에 넣습니다."""
+    from .. import stocks as stocks_mod
+
+    allowed = {str(c).zfill(6) for c in listing_codes}
+    out: list[str] = []
+    seen: set[str] = set()
+    lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
+    session_days: list[date] = []
+    d: date | None = target_day
+    for _ in range(lookback + 1):
+        if d is None:
+            break
+        try:
+            d = trading_calendar.last_trading_day_before(d)
+        except ValueError:
+            break
+        session_days.append(d)
+
+    industry_hits: dict[str, int] = defaultdict(int)
+    industry_best: dict[str, float] = defaultdict(float)
+    for sess in session_days:
+        sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(sess)]
+        for _, r in sl.iterrows():
+            try:
+                rp = float(r.get("return_pct") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if rp + 1e-12 < min_ret:
+                continue
+            ic = stocks_mod.industry_code_for_stock(str(r["Code"]))
+            if not ic:
+                continue
+            k = str(ic)
+            industry_hits[k] += 1
+            industry_best[k] = max(industry_best[k], rp)
+
+    hot_inds = sorted(
+        industry_hits.keys(),
+        key=lambda k: (industry_hits[k], industry_best[k]),
+        reverse=True,
+    )
+    added_inds = 0
+    for ic in hot_inds:
+        if added_inds >= max_industries:
+            break
+        if industry_hits[ic] < min_count and industry_best[ic] + 1e-12 < 0.18:
+            continue
+        for peer in stocks_mod.peers_for_industry(ic)[:peers_per_industry]:
+            c6 = str(peer).zfill(6)
+            if c6 in allowed and c6 not in seen:
+                seen.add(c6)
+                out.append(c6)
+        added_inds += 1
+    return out
 
 
 def _day_candidate_codes(
@@ -285,7 +352,15 @@ def _day_candidate_codes(
             today_v,
         )
     hot_peers = _prior_day_hot_peer_codes(returns_ml, target_day, listing_codes)
-    return list(dict.fromkeys(news + mom + news_ctx_codes + flow_codes + hot_peers))
+    burst_peers = _burst_industry_peer_codes(returns_ml, target_day, listing_codes)
+    rs_codes = pred_hybrid.relative_strength_candidate_codes(
+        returns_ml, target_day, listing_codes
+    )
+    return list(
+        dict.fromkeys(
+            news + mom + news_ctx_codes + flow_codes + hot_peers + burst_peers + rs_codes
+        )
+    )
 
 
 def _momentum_for_code(
@@ -580,6 +655,45 @@ def _industry_feats(
     return mom, ind_ov, ind_lim
 
 
+def _prior_industry_hot_score(
+    code: str,
+    target_day: date,
+    returns_ml: pd.DataFrame | None,
+) -> float:
+    """직전 거래일 동업종 15%+ 급등 밀도 → 0~1."""
+    if returns_ml is None or returns_ml.empty:
+        return 0.0
+    from .. import stocks as stocks_mod
+
+    try:
+        prev = trading_calendar.last_trading_day_before(target_day)
+    except ValueError:
+        return 0.0
+    ic = stocks_mod.industry_code_for_stock(code)
+    if not ic:
+        return 0.0
+    peers = stocks_mod.peers_for_industry(ic)
+    sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(prev)]
+    hot = 0.0
+    n = 0
+    for p in peers[:32]:
+        sub = sl[sl["Code"].astype(str).str.zfill(6) == str(p).zfill(6)]
+        if sub.empty:
+            continue
+        try:
+            rp = float(sub.iloc[0].get("return_pct") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(rp):
+            continue
+        n += 1
+        if rp + 1e-12 >= 0.12:
+            hot += min(1.0, rp / 0.30)
+    if n == 0:
+        return 0.0
+    return min(1.0, hot / max(1, min(n, 8)))
+
+
 def _feat_vector(
     train_events: list[BreakoutEvent],
     code: str,
@@ -668,10 +782,12 @@ def _feat_vector(
         code, before_exclusive, ohlcv_idx, kw_news, returns_ml=returns_ml
     )
     investor = _investor_flow_feats_row(ohlcv_idx, code, before_exclusive)
+    prior_hot = _prior_industry_hot_score(code, before_exclusive, returns_ml)
     return base + price + investor + [float(ret_vs_ks11), float(risk_off)] + ctx_part + [
         float(ind_mom),
         float(ind_ov),
         float(ind_lim),
+        float(prior_hot),
     ]
 
 
@@ -977,14 +1093,14 @@ def fit_or_load_classifier(
         X_cal, y_cal = X[:0], y[:0]
 
     clf = HistGradientBoostingClassifier(
-        max_depth=6,
-        max_iter=130,
-        learning_rate=0.07,
+        max_depth=7,
+        max_iter=175,
+        learning_rate=0.065,
         random_state=42,
         class_weight="balanced",
         early_stopping=True,
         validation_fraction=0.12,
-        n_iter_no_change=10,
+        n_iter_no_change=12,
     )
     pipe: Pipeline = Pipeline(
         [
@@ -1139,6 +1255,8 @@ def rank_predictions_ml(
             pr.relative_strength_score = pred_hybrid.relative_strength_from_row(
                 ohlcv_row, ks11_ret_lag1=ks11_ret
             )
+            pr.vol_surge_ratio = float(ohlcv_row.get("vol_surge_ratio") or 0.0)
+            pr.ret_lag1 = max(0.0, float(ohlcv_row.get("ret_lag1") or 0.0))
         try:
             row = ohlcv_row if ohlcv_row is not None else ohlcv_idx.loc[(target_day, code)]
             if isinstance(row, pd.DataFrame):
@@ -1152,6 +1270,7 @@ def rank_predictions_ml(
         pr.industry_momentum = ind_mom
         pr.industry_theme_overlap = ind_ov
         pr.industry_limit_up_heat = ind_lim
+        pr.prior_industry_hot = _prior_industry_hot_score(code, target_day, returns_ml)
         if news_ctx:
             _, nctx = feats_for_code(news_ctx, news_text_blob, code)
             pr.news_context_score = nctx
@@ -1162,15 +1281,23 @@ def rank_predictions_ml(
         ] + list(pr.reasons)
         buf.append(pr)
 
-    buf.sort(key=lambda r: -pred_hybrid.hybrid_rank_score(r))
-    out = buf[:top_n]
+    buf.sort(key=lambda r: -pred_hybrid.recall_presort_score(r))
+    eval_k = max(config.PRED_EVAL_HIT_AT_K) if config.PRED_EVAL_HIT_AT_K else 40
+    finalize_n = max(
+        int(top_n),
+        int(config.PRED_ML_FINALIZE_POOL_N),
+        int(eval_k),
+    )
+    pre_pool = buf[: min(len(buf), finalize_n)]
 
     out = prediction_ranking.finalize_ranked_predictions(
-        out,
+        pre_pool,
         target_day=target_day,
         ks11_ret_lag1=ks11_ret,
         forward_observation=forward_observation,
+        returns_ml=returns_ml,
     )
+    out = out[:top_n]
     if config.PRED_USE_DISPLAY_RANK_MAPPING and config.PRED_ERROR_FEEDBACK_ENABLED:
         for pr in out:
             n_hit = int(getattr(pr, "keyword_hits", 0) or 0)

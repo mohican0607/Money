@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from .. import config
+from .. import config, trading_calendar
 from ..prediction import accuracy_cache as prediction_accuracy_cache
 # --- hybrid / multi-factor (from pred_hybrid) ---
 
@@ -133,6 +133,11 @@ def multi_factor_rank_score(
     ind_lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
     if ind_lim + 1e-12 >= 0.22:
         s = min(1.0, s + 0.05 * ind_lim)
+    prior_hot = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+    if prior_hot + 1e-12 >= 0.28:
+        s = min(1.0, s + 0.06 * prior_hot + 0.04 * p["sector"])
+    if prior_hot + 1e-12 >= 0.18:
+        s = min(1.0, s + 0.04 * prior_hot)
     try:
         from .. import stocks as stocks_mod
 
@@ -276,7 +281,7 @@ def momentum_candidate_codes(
     target_day: date,
     listing_codes: list[str],
     *,
-    top_k: int = 110,
+    top_k: int = 220,
 ) -> list[str]:
     """당일 관측 시점 시세로 모멘텀 상위 종목(뉴스 없어도 후보)."""
     allowed = {str(c).zfill(6) for c in listing_codes}
@@ -284,6 +289,7 @@ def momentum_candidate_codes(
     if sl.empty:
         return []
     scored: list[tuple[float, str]] = []
+    surge_extra: list[tuple[float, str]] = []
     for _, r in sl.iterrows():
         code = str(r["Code"]).zfill(6)
         if code not in allowed:
@@ -291,16 +297,74 @@ def momentum_candidate_codes(
         mom = momentum_raw_from_row(r)
         vs = float(r.get("vol_surge_ratio") or 0.0)
         rl = max(0.0, float(r.get("ret_lag1") or 0.0))
-        if mom >= 0.20 or vs >= 1.35 or rl >= 0.045:
+        if mom >= 0.18 or vs >= 1.22 or rl >= 0.038:
             scored.append((mom, code))
+        elif vs + 1e-12 >= 0.52 or (mom + 1e-12 >= 0.14 and vs + 1e-12 >= 0.38):
+            surge_extra.append((vs + 0.35 * mom, code))
     scored.sort(key=lambda x: (-x[0], x[1]))
-    return [c for _, c in scored[: max(20, int(top_k))]]
+    surge_extra.sort(key=lambda x: (-x[0], x[1]))
+    cap = max(40, int(top_k))
+    out: list[str] = []
+    seen: set[str] = set()
+    for _, code in scored[:cap]:
+        if code not in seen:
+            seen.add(code)
+            out.append(code)
+    for _, code in surge_extra[: max(30, cap // 4)]:
+        if code not in seen:
+            seen.add(code)
+            out.append(code)
+    return out
+
+
+def relative_strength_candidate_codes(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+    listing_codes: list[str],
+    *,
+    top_k: int = 120,
+) -> list[str]:
+    """KOSPI 대비 전일 상대강도 상위 종목(뉴스 없이도 후보)."""
+    allowed = {str(c).zfill(6) for c in listing_codes}
+    sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
+    if sl.empty:
+        return []
+    try:
+        from . import ml_move_rank
+
+        ks11_ret, _ = ml_move_rank._ks11_market_feats(target_day)
+    except Exception:
+        ks11_ret = None
+    scored: list[tuple[float, str]] = []
+    for _, r in sl.iterrows():
+        code = str(r["Code"]).zfill(6)
+        if code not in allowed:
+            continue
+        rs = relative_strength_from_row(r, ks11_ret_lag1=ks11_ret)
+        rl = max(0.0, float(r.get("ret_lag1") or 0.0))
+        if rs + 1e-12 >= 0.38 or rl + 1e-12 >= 0.05:
+            scored.append((rs + 0.12 * min(rl / 0.10, 1.0), code))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [c for _, c in scored[: max(15, int(top_k))]]
 
 
 def hybrid_rank_score(row: PredictionRow) -> float:
     """ML·모멘텀·수급·상대강도·섹터·시장 다요인 점수(뉴스 보조)."""
     ks11 = getattr(row, "ks11_ret_lag1", None)
     return multi_factor_rank_score(row, ks11_ret_lag1=ks11)
+
+
+def recall_presort_score(row: PredictionRow) -> float:
+    """finalize 풀 선정용 — 하이브리드·모멘텀·섹터열기 중 강한 신호를 반영."""
+    h = hybrid_rank_score(row)
+    mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
+    sec = max(
+        float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0),
+        float(getattr(row, "industry_momentum", 0.0) or 0.0),
+        float(getattr(row, "prior_industry_hot", 0.0) or 0.0),
+    )
+    blend = 0.52 * h + 0.28 * mom + 0.20 * sec
+    return max(h, blend)
 
 
 def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> bool:
@@ -337,7 +401,7 @@ def assign_hybrid_confidence_tiers(
         h = hybrid_rank_score(row)
         ml = float(row.ml_prob or 0.0)
         # 고확신: 상위 8위 이내 + 하이브리드·이중신호(비뉴스 기둥) 통과
-        if high_n < max_high and pos <= 8 and h + 1e-12 >= high_floor and _dual_signal_ok(
+        if high_n < max_high and pos <= 12 and h + 1e-12 >= high_floor and _dual_signal_ok(
             row, hybrid=h, top_hybrid=top_hybrid
         ):
             row.confidence_tier = "high"
@@ -411,6 +475,75 @@ def _industry_key(code: str) -> str:
     except Exception:
         pass
     return f"__{str(code).zfill(6)}"
+
+
+def _hot_industry_heat_map(
+    returns_ml: pd.DataFrame,
+    session_day: date,
+    *,
+    min_ret: float = 0.15,
+) -> dict[str, float]:
+    """거래일 ``session_day`` 15%+ 급등 업종별 열기(0~1)."""
+    from .. import stocks as stocks_mod
+
+    sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(session_day)]
+    if sl.empty:
+        return {}
+    heat: dict[str, float] = {}
+    for _, r in sl.iterrows():
+        try:
+            rp = float(r.get("return_pct") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if rp + 1e-12 < min_ret:
+            continue
+        ic = stocks_mod.industry_code_for_stock(str(r["Code"]))
+        if not ic:
+            continue
+        k = str(ic)
+        heat[k] = max(heat.get(k, 0.0), min(1.0, rp / 0.35))
+    return heat
+
+
+def _rerank_carryover_industry_leaders(
+    pool: list[PredictionRow],
+    *,
+    target_day: date,
+    returns_ml: pd.DataFrame | None,
+) -> list[PredictionRow]:
+    """전일·전전일 급등 업종 리더를 상위로 끌어올려 테마 이어짐일 Hit@K 를 높입니다."""
+    if not pool or returns_ml is None or returns_ml.empty:
+        return pool
+    try:
+        prev = trading_calendar.last_trading_day_before(target_day)
+    except ValueError:
+        return pool
+    heat_map = _hot_industry_heat_map(returns_ml, prev, min_ret=0.12)
+    if not heat_map:
+        return pool
+    try:
+        prev2 = trading_calendar.last_trading_day_before(prev)
+        heat2 = _hot_industry_heat_map(returns_ml, prev2, min_ret=0.12)
+        for k, v in heat2.items():
+            heat_map[k] = max(heat_map.get(k, 0.0), 0.55 * v)
+    except ValueError:
+        pass
+
+    def _boosted(row: PredictionRow) -> float:
+        base = rank_score_for_row(row)
+        h = heat_map.get(_industry_key(str(row.code)), 0.0)
+        if h <= 0:
+            return base
+        lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+        sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
+        mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
+        boost = 0.08 + 0.18 * h + 0.06 * max(lim, sec) + 0.05 * mom
+        prior_hot = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+        if prior_hot + 1e-12 >= 0.15:
+            boost += 0.05 * prior_hot
+        return min(1.0, base + boost)
+
+    return sorted(pool, key=_boosted, reverse=True)
 
 
 def _rerank_sector_diversity(pool: list[PredictionRow]) -> list[PredictionRow]:
@@ -757,6 +890,7 @@ def finalize_ranked_predictions(
     target_day: date,
     ks11_ret_lag1: float | None = None,
     forward_observation: bool = False,
+    returns_ml: pd.DataFrame | None = None,
 ) -> list[PredictionRow]:
     """
     순위·확신 구간·표시 % 를 일괄 확정합니다.
@@ -770,6 +904,10 @@ def finalize_ranked_predictions(
 
     pool = _rerank_sector_diversity(rows)
     pool = _inject_hot_sector_leaders(pool)
+    if returns_ml is not None and not forward_observation:
+        pool = _rerank_carryover_industry_leaders(
+            pool, target_day=target_day, returns_ml=returns_ml
+        )
     pool = sorted(pool, key=rank_score_for_row, reverse=True)
     pool_size = len(pool)
     r_scale = regime_output_scale(ks11_ret_lag1)
@@ -988,6 +1126,33 @@ def refine_confidence_tiers(
             row.confidence_tier = "mid"
 
     if promoted:
+        # 섹터 열기 상위 1~2종 추가 승격(정밀 게이트 통과분 외 리콜 보강).
+        extra_n = max(0, min(2, max_high - len(promoted)))
+        if extra_n:
+            rescue_ranked = sorted(
+                pool,
+                key=lambda r: (
+                    float(getattr(r, "industry_limit_up_heat", 0.0) or 0.0)
+                    + float(getattr(r, "industry_momentum", 0.0) or 0.0)
+                    + float(getattr(r, "momentum_score", 0.0) or 0.0),
+                    hybrid_rank_score(r),
+                ),
+                reverse=True,
+            )
+            added = 0
+            for row in rescue_ranked:
+                if added >= extra_n:
+                    break
+                code = str(row.code).zfill(6)
+                if code in promoted_set:
+                    continue
+                lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+                sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
+                if lim + 1e-12 < 0.14 and sec + 1e-12 < 0.20:
+                    continue
+                row.confidence_tier = "high"
+                promoted_set.add(code)
+                added += 1
         return
 
     # 정밀 게이트가 전원 탈락 시: 전일·섹터 모멘텀 상위 1~3종만 고확신 승격(리콜 구제).

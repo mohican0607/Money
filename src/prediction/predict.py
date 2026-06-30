@@ -181,6 +181,9 @@ class PredictionRow:
     industry_momentum: float = 0.0
     industry_theme_overlap: float = 0.0
     industry_limit_up_heat: float = 0.0
+    prior_industry_hot: float = 0.0
+    vol_surge_ratio: float = 0.0
+    ret_lag1: float = 0.0
     investor_flow_score: float = 0.0
     foreign_net_vol_ratio: float = 0.0
     relative_strength_score: float = 0.0
@@ -640,6 +643,7 @@ def predict_for_trading_day(
         target_day=target_day,
         ks11_ret_lag1=ks11_ret,
         forward_observation=forward_observation,
+        returns_ml=returns_ml,
     )
 
 
