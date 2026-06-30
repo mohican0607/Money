@@ -757,6 +757,187 @@ def _format_bullet_line(name: str, reason: str, *, is_limit_up: bool) -> str:
     )
 
 
+def _korean_conjunction(word: str) -> str:
+    """앞 구절 뒤에 붙일 '과/와' 선택."""
+    if not word:
+        return "와"
+    last = word.rstrip()[-1]
+    if ord(last) < 0xAC00 or ord(last) > 0xD7A3:
+        return "와"
+    jong = (ord(last) - 0xAC00) % 28
+    return "과" if jong != 0 else "와"
+
+
+def _theme_catalyst_for_forward_pred(
+    row: dict[str, Any],
+    pr: Any,
+    *,
+    flow_row: dict[str, Any] | None = None,
+) -> str:
+    """예측 근거 tooltip용 테마·업종 촉매 문구."""
+    code = str(row.get("code", "")).zfill(6)
+    sectors = [str(s).strip() for s in (row.get("market_theme_sectors") or []) if str(s).strip()]
+    theme_label = sectors[0] if sectors else ""
+    if not theme_label and flow_row:
+        stock_map = flow_row.get("theme_stock_sectors") or {}
+        if isinstance(stock_map, dict):
+            theme_label = srl._compact_sector_label(str(stock_map.get(code) or ""))
+
+    _, catalyst, _aliases = _sector_context(flow_row, code=code, theme_label=theme_label)
+    if catalyst:
+        return _shorten(catalyst, max_len=56)
+    if len(sectors) >= 2:
+        return _shorten(f"{sectors[0]}·{sectors[1]}", max_len=56)
+    if sectors:
+        return _shorten(sectors[0], max_len=56)
+    if theme_label:
+        return _shorten(theme_label, max_len=56)
+
+    kws = features.filter_keywords(
+        list(getattr(pr, "matched_keywords", None) or row.get("keywords") or [])
+    )
+    thematic = [k for k in kws if len(k) >= 2 and k not in _GENERIC_MATCH_KW][:3]
+    if len(thematic) >= 2:
+        return _shorten(f"{thematic[0]}·{thematic[1]}", max_len=56)
+    if thematic:
+        return thematic[0]
+    return ""
+
+
+def _strip_forward_news_tail(phrase: str, *, pred_pct: float) -> str:
+    """예측 전용 문구에서 과거형·등락 꼬리표 제거."""
+    t = _shorten(_clean_phrase(phrase), max_len=80)
+    for tail in (
+        "에 상한가",
+        " 상한가",
+        " 급등",
+        "에 강세",
+        " 강세",
+        f" 당일 +{pred_pct:.1f}% 급등",
+        " 동반 급등",
+    ):
+        if t.endswith(tail):
+            t = t[: -len(tail)].rstrip(" ,·")
+    return t
+
+
+def _forward_news_clause(
+    name: str,
+    row: dict[str, Any],
+    pick: _ReasonPick,
+    *,
+    pred_pct: float,
+) -> str:
+    """예측 입력 뉴스에서 '○○○ 소식' 형태 절 추출."""
+    hits = list(row.get("pred_news_hits") or [])
+    phrase = ""
+    if hits:
+        kws = list(row.get("keywords") or [])
+        best_hit = hits[0]
+        best_score = -1
+        for h in hits:
+            sc = _score_news_hit(h, name=name, keywords=kws)
+            if sc > best_score:
+                best_score = sc
+                best_hit = h
+        title = str(best_hit.get("title") or "").strip()
+        phrase = _extract_issue_from_title(title, name) or _clean_phrase(title)
+    if len(phrase) < 3:
+        phrase = pick.text
+    phrase = _strip_forward_news_tail(phrase, pred_pct=pred_pct)
+    phrase = re.sub(r"\(주\)", "", phrase).strip()
+    phrase = re.sub(r"\s*소식\s*$", "", phrase).strip()
+    if not phrase:
+        return ""
+    return f"{phrase} 소식"
+
+
+def format_forward_pred_reason_narrative_html(
+    pr: Any,
+    row: dict[str, Any],
+    *,
+    early_rows: list[tuple[date, dict[str, str]]] | None = None,
+    actual_ctx_rows: list[tuple[date, dict[str, str]]] | None = None,
+    flow_row: dict[str, Any] | None = None,
+) -> str:
+    """
+    장 미개장 예측 후보 ``예측 근거`` tooltip.
+
+    ``금호전기: ○○○ 소식과, AI인프라·전력수급에 따른 효과로 인한 상승 예상`` 형식.
+    급등 확정일 ``_reason_for_stock`` 과 동일한 뉴스·공시 탐색을 재사용합니다.
+    """
+    name = str(row.get("name") or getattr(pr, "name", "") or "").strip()
+    code = str(row.get("code") or getattr(pr, "code", "")).zfill(6)
+    sectors = [str(s).strip() for s in (row.get("market_theme_sectors") or []) if str(s).strip()]
+    theme_label = sectors[0] if sectors else ""
+
+    pred_pct = float(
+        getattr(pr, "predicted_return_pct", 0.0) or row.get("pred_ret") or 0.0
+    )
+    pick = _reason_for_stock(
+        row,
+        code=code,
+        name=name,
+        early_rows=list(early_rows or []),
+        actual_ctx_rows=list(actual_ctx_rows or []),
+        flow_row=flow_row,
+        theme_label=theme_label,
+        return_pct=pred_pct,
+        is_limit_up=False,
+    )
+    news_phrase = _forward_news_clause(name, row, pick, pred_pct=pred_pct)
+    theme_phrase = _theme_catalyst_for_forward_pred(row, pr, flow_row=flow_row)
+
+    if news_phrase and theme_phrase:
+        if theme_phrase in news_phrase or news_phrase in theme_phrase:
+            main = (
+                f"<strong>{_esc(name)}</strong>: {_esc(news_phrase)}에 따른 상승 예상"
+            )
+        else:
+            conj = _korean_conjunction(news_phrase)
+            main = (
+                f"<strong>{_esc(name)}</strong>: {_esc(news_phrase)}{conj}, "
+                f"{_esc(theme_phrase)}에 따른 효과로 인한 상승 예상"
+            )
+    elif news_phrase:
+        main = f"<strong>{_esc(name)}</strong>: {_esc(news_phrase)}에 따른 상승 예상"
+    elif theme_phrase:
+        main = (
+            f"<strong>{_esc(name)}</strong>: "
+            f"{_esc(theme_phrase)} 테마·업종 흐름에 따른 상승 예상"
+        )
+    else:
+        main = (
+            f"<strong>{_esc(name)}</strong>: "
+            "예측 입력 뉴스·시세에서 뚜렷한 단서는 적으나 모델이 익일 급등 후보로 선정"
+        )
+
+    parts = [
+        '<div class="forward-pred-narrative" style="font-size:0.86rem;line-height:1.5">',
+        f"<p style=\"margin:0\">{main}</p>",
+    ]
+
+    hits = list(row.get("pred_news_hits") or [])
+    if hits:
+        best_hit = hits[0]
+        best_score = -1
+        kws = list(row.get("keywords") or [])
+        for h in hits:
+            sc = _score_news_hit(h, name=name, keywords=kws)
+            if sc > best_score:
+                best_score = sc
+                best_hit = h
+        title = str(best_hit.get("title") or "").strip()
+        if title and title not in news_phrase and _name_in_title(title, name):
+            parts.append(
+                f'<p class="muted" style="margin:6px 0 0;font-size:0.78rem;line-height:1.4">'
+                f"참고 기사: {_esc(_shorten(title, max_len=100))}</p>"
+            )
+
+    parts.append("</div>")
+    return "".join(parts)
+
+
 def _stock_reason_text(
     compare_row: dict[str, Any] | None,
     *,

@@ -12,7 +12,6 @@ from src import (
     config,
     disclosure,
     features,
-    move_reference,
     news,
     predict,
     prediction_accuracy_cache,
@@ -199,44 +198,27 @@ def _enrich_forward_pred_rationale(
     returns_ml_by_code: dict[str, Any] | None = None,
 ) -> str:
     """
-    예측 전용 관측일: 행마다 ``pred_forward_rationale_html`` 을 채우고
-    일자 패널용 ``forward_pred_rationale_html`` HTML 을 반환합니다.
+    장 미개장 관측일(``DayReport.forward_observation``): 행마다 ``pred_reason_tooltip_html`` 만 채웁니다.
+
+    상단 종목별 패널은 쓰지 않고, 월간 리포트 표 ``예측 근거`` 열 tooltip 으로만 노출합니다.
     """
-    day_market_html = move_reference.build_forward_day_market_context_html(
-        t_trading_day,
-        kospi_return=kospi_return,
-        early_rows=early_rows,
-    )
-    items: list[dict] = []
     for r in rows_compare:
         if r.get("pred_ret") is None:
-            continue
-        if not (r.get("pred_high") or r.get("pred_mid")):
             continue
         code = str(r.get("code", "")).zfill(6)
         pr = code_pr_map.get(code)
         if pr is None:
             continue
-        model_html = predict.format_forward_pred_rationale_html(pr, r)
-        context_html = move_reference.build_forward_pred_context_html(
-            code=code,
-            name=str(r.get("name") or ""),
-            t_trading_day=t_trading_day,
-            kospi_return=kospi_return,
-            pred_news_hits=list(r.get("pred_news_hits") or []),
-            actual_ctx_rows=actual_ctx_rows,
+        tooltip_html = predict.format_forward_pred_reason_tooltip_html(
+            pr,
+            r,
             early_rows=early_rows,
-            disclosure_hits=list(r.get("disclosure_hits") or []),
-            keywords=list(r.get("keywords") or []),
-            returns_sub=(returns_by_code or {}).get(code),
-            returns_ml_sub=(returns_ml_by_code or {}).get(code),
-            market_theme_sectors=list(r.get("market_theme_sectors") or []),
-            market_segment=str(r.get("market_segment") or ""),
+            actual_ctx_rows=actual_ctx_rows,
         )
-        rationale = model_html + context_html
-        r["pred_forward_rationale_html"] = rationale
-        r["pred_reason_detail_html"] = rationale
-        r["pred_reason_use_tooltip"] = False
+        r["pred_reason_tooltip_html"] = tooltip_html
+        r["pred_forward_rationale_html"] = tooltip_html
+        r["pred_reason_detail_html"] = tooltip_html
+        r["pred_reason_use_tooltip"] = True
         summary_bits: list[str] = []
         mp = r.get("ml_prob")
         if mp is not None and math.isfinite(float(mp)):
@@ -256,31 +238,8 @@ def _enrich_forward_pred_rationale(
         r["pred_reason_forward_summary"] = (
             " · ".join(summary_bits) if summary_bits else (r.get("pred_reason_summary") or "—")
         )
-        items.append(r)
 
-    if not items:
-        return ""
-
-    items.sort(key=lambda x: -(float(x.get("pred_ret") or 0.0)))
-    blocks: list[str] = [
-        '<div class="forward-pred-rationale-list" style="display:flex;flex-direction:column;gap:14px">'
-    ]
-    for r in items:
-        name = html.escape(str(r.get("name") or ""))
-        code = html.escape(str(r.get("code") or ""))
-        pred = float(r.get("pred_ret") or 0.0)
-        tier = "고확신" if r.get("pred_high") else "중확신"
-        blocks.append(
-            f'<article class="forward-pred-item" id="forward-pred-{code}" '
-            f'style="padding:10px 12px;background:#1a2433;border:1px solid #3a4a5c;border-radius:8px">'
-            f'<h4 style="margin:0 0 6px;font-size:0.92rem">'
-            f'<strong>{name}</strong> <span class="muted" style="font-weight:400">({code})</span> '
-            f'· 예측 <span class="warn">{pred:.2f}%</span> · {html.escape(tier)}</h4>'
-            f'{r.get("pred_forward_rationale_html") or ""}'
-            f"</article>"
-        )
-    blocks.append("</div>")
-    return day_market_html + "".join(blocks)
+    return ""
 def _rise_band_for_row(
     pred_ret_pct: float | None,
     actual_ret_ratio: float | None,
@@ -722,11 +681,13 @@ def _enrich_forward_day_actual_display_rows(
     now_kst: datetime | None = None,
 ) -> None:
     """
-    예측 전용일 ``T``: 실제 상승률 칸은 T 미확정 참고만 단일 표기.
+    장 미개장 관측일 ``T``: 실제 상승률 칸은 T 미확정 참고만 표기.
 
     - ``T`` 가 오늘이고 장중이면 ``— (장중%)`` 한 번만
-    - 그 외에는 기준일 N(=T 직전 거래일) 종가 ``N (xx%)`` 한 번만
+    - 그 외에는 기준일 N(=T 직전 거래일) ``N%, N-1%, N-2%`` 형식(한 줄)
     - ``actual_ret_prev_day`` 괄호 중복 표기는 쓰지 않음
+
+    ``DayReport.forward_observation`` 과 동일 조건(미래 거래일·당일 장 시작 전)에서만 적용됩니다.
     """
     if not rows:
         return

@@ -163,6 +163,26 @@ def format_forward_pred_rationale_html(
     return "".join(parts)
 
 
+def format_forward_pred_reason_tooltip_html(
+    pr: PredictionRow,
+    row: dict[str, Any] | None = None,
+    *,
+    early_rows: list[tuple[date, dict[str, str]]] | None = None,
+    actual_ctx_rows: list[tuple[date, dict[str, str]]] | None = None,
+    flow_row: dict[str, Any] | None = None,
+) -> str:
+    """장 미개장 관측일 ``예측 근거`` 열 tooltip — ``content.format_forward_pred_reason_narrative_html`` 위임."""
+    from ..report.content import format_forward_pred_reason_narrative_html
+
+    return format_forward_pred_reason_narrative_html(
+        pr,
+        row or {},
+        early_rows=early_rows,
+        actual_ctx_rows=actual_ctx_rows,
+        flow_row=flow_row,
+    )
+
+
 @dataclass
 class PredictionRow:
     """한 종목에 대한 스코어링 결과(리포트 테이블·갭 분석에 전달)."""

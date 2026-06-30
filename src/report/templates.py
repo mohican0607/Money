@@ -409,11 +409,14 @@ _ACTUAL_RET_FMT_MACROS = r"""{% macro fmt_ret_ratio_pct(ratio) -%}
 {% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %}N-1 ({{ fmt_ret_ratio_pct(r.actual_ret_prev_day) }}){% else %}—{% endif %}
 {%- endmacro %}"""
 
-_ACTUAL_RET_CELL_BODY = r"""{% if r.forward_observation | default(false) %}{% if r.actual_ret_forward_n_ref | default(false) and r.actual_ret_n_day_pct is defined and r.actual_ret_n_day_pct is not none %}N ({{ fmt_ret_pct_pts(r.actual_ret_n_day_pct) }}%){% elif r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){% else %}—{% endif %}{% elif r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ fmt_ret_ratio_pct(r.actual_ret) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ fmt_ret_ratio_pct(r.actual_ret) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}"""
+_ACTUAL_RET_CELL_BODY = r"""{% if day_forward | default(false) %}{{ format_forward_actual_ret_cell(r) | safe }}{% elif r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ fmt_ret_ratio_pct(r.actual_ret) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ fmt_ret_ratio_pct(r.actual_ret) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}"""
 
 
 def _actual_ret_cell_macro(name: str) -> str:
-    return _ACTUAL_RET_FMT_MACROS + f"{{% macro {name}(r) -%}}{_ACTUAL_RET_CELL_BODY}{{%- endmacro %}}\n"
+    return (
+        _ACTUAL_RET_FMT_MACROS
+        + f"{{% macro {name}(r, day_forward=false) -%}}{_ACTUAL_RET_CELL_BODY}{{%- endmacro %}}\n"
+    )
 
 
 _TEMPLATE = r"""
@@ -583,6 +586,8 @@ _TEMPLATE = r"""
     table.rows-compare th .sortable-col:hover { text-decoration: underline; }
     table.rows-compare th .sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
     table.rows-compare th .sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
+    td.forward-actual-ret { white-space: nowrap; }
+    .forward-ret-chain { white-space: nowrap; }
     .cumulative-accuracy-td { position: relative; }
     .cumulative-accuracy-td .cumulative-sort-keys { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; overflow: hidden; }
     .gap-tip.cumulative-hist-tip { margin-top: 0; vertical-align: middle; }
@@ -750,13 +755,7 @@ __ACTUAL_RET_CELL_MACRO__
 {% endif %}
 {%- endmacro %}
 {% macro forward_pred_rationale_panel(d, meta) -%}
-{% if d.forward_observation | default(false) and d.forward_pred_rationale_html %}
-<div class="forward-pred-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;background:#1e2838;border:1px solid #4a3a2a;border-radius:8px">
-  <h3 style="font-size:0.95rem;color:var(--warn);margin:0 0 8px">예측 상승률 근거 (장 시작 전)</h3>
-  <p class="sub" style="margin:0 0 10px;font-size:0.84rem;line-height:1.45">관측일 <strong>{{ d.trading_day.isoformat() }}</strong>은 아직 장이 시작되지 않았거나 실적이 확정되지 않았습니다. 아래 <strong>예측≥{{ meta.threshold }}</strong> 후보별로 <em>모델 점수</em>와 함께 <em>국내·글로벌 시장</em>, <em>종목 시세·업종</em>, <em>특이 뉴스·공시</em> 맥락을 정리했습니다.</p>
-  {{ d.forward_pred_rationale_html | safe }}
-</div>
-{% endif %}
+{# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 에만 표시 #}
 {%- endmacro %}
 {% macro hit_at_k_panel(d, meta) -%}
 {% if d.hit_at_k_metrics %}
@@ -813,6 +812,7 @@ __ACTUAL_RET_CELL_MACRO__
           <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 일봉 확정 전이므로 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
+          {% if d.forward_observation | default(false) %}<th scope="col" title="모델·키워드·모멘텀·섹터 요약 tooltip">예측 근거</th>{% endif %}
           <th>보정(%)</th>
           <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
           <th>누적정확도(10~20)</th>
@@ -832,12 +832,24 @@ __ACTUAL_RET_CELL_MACRO__
             {{ stock_name_link(r.code, r.name, r) }}
             {# <div class="pill">{{ r.code }}</div> #}
           </td>
-          <td class="{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
-            {{ actual_ret_cell(r) }}
+          <td class="{% if d.forward_observation | default(false) %}forward-actual-ret {% endif %}{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
+            {{ actual_ret_cell(r, d.forward_observation | default(false)) }}
           </td>
           <td class="{% if r.pred_high | default(false) %}warn{% endif %}" style="vertical-align:top;{% if r.pred_high | default(false) %}color:var(--warn);font-weight:600{% endif %}" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
             {% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}
           </td>
+          {% if d.forward_observation | default(false) %}
+          <td class="pred-reason-forward" style="vertical-align:top;white-space:nowrap">
+            {% if r.pred_ret is not none and r.pred_reason_tooltip_html %}
+            <span class="gap-tip pred-reason-tip">
+              <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+              <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+                <div class="combo-tip-body">{{ r.pred_reason_tooltip_html | safe }}</div>
+              </div>
+            </span>
+            {% else %}—{% endif %}
+          </td>
+          {% endif %}
           <td style="vertical-align:top">
             {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
             {% if r.cumulative_accuracy_from_hist | default(false) %}—{% else %}{{ "%.2f"|format(r.pred_ret * r.cumulative_accuracy_avg) }}{% endif %}
@@ -877,7 +889,7 @@ __ACTUAL_RET_CELL_MACRO__
               </div>
             </span>
             <span style="margin-left:10px">{{ disclosure_tip(r, d.trading_day) }}</span>
-            <span class="pred-reason-plain" style="margin-left:10px">{% if d.forward_observation | default(false) %}{{ r.pred_reason_forward_summary | default(r.pred_reason_hit_line) | default(r.pred_reason_summary) | default('—') | safe }}{% else %}{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}{% endif %}</span>
+            <span class="pred-reason-plain" style="margin-left:10px">{% if not (d.forward_observation | default(false)) %}{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}{% endif %}</span>
           </td>
           <td>{{ prediction_signal_cell(r) }}</td>
         </tr>
@@ -1193,6 +1205,8 @@ _COMPACT_TEMPLATE = r"""
     table.rows-compare th .sortable-col:hover { text-decoration: underline; }
     table.rows-compare th .sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
     table.rows-compare th .sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
+    td.forward-actual-ret { white-space: nowrap; }
+    .forward-ret-chain { white-space: nowrap; }
     .cumulative-accuracy-td { position: relative; }
     .cumulative-accuracy-td .cumulative-sort-keys { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; overflow: hidden; }
     .gap-tip.cumulative-hist-tip { margin-top: 0; vertical-align: middle; }
@@ -1360,13 +1374,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 {% endif %}
 {%- endmacro %}
 {% macro forward_pred_rationale_panel(d, meta) -%}
-{% if d.forward_observation | default(false) and d.forward_pred_rationale_html %}
-<div class="forward-pred-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;background:#1e2838;border:1px solid #4a3a2a;border-radius:8px">
-  <h3 style="font-size:0.95rem;color:var(--warn);margin:0 0 8px">예측 상승률 근거 (장 시작 전)</h3>
-  <p class="sub" style="margin:0 0 10px;font-size:0.84rem;line-height:1.45">관측일 <strong>{{ d.trading_day.isoformat() }}</strong>은 아직 장이 시작되지 않았거나 실적이 확정되지 않았습니다. 아래 <strong>예측≥{{ meta.threshold }}</strong> 후보별로 <em>모델 점수</em>와 함께 <em>국내·글로벌 시장</em>, <em>종목 시세·업종</em>, <em>특이 뉴스·공시</em> 맥락을 정리했습니다.</p>
-  {{ d.forward_pred_rationale_html | safe }}
-</div>
-{% endif %}
+{# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 에만 표시 #}
 {%- endmacro %}
 {% macro hit_at_k_panel(d, meta) -%}
 {% if d.hit_at_k_metrics %}
@@ -1415,6 +1423,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
       <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
       <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
       <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
+      {% if d.forward_observation | default(false) %}<th scope="col" title="모델·키워드·모멘텀·섹터 요약 tooltip">예측 근거</th>{% endif %}
       <th>보정(%)</th>
       <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
       <th>누적정확도(10~20)</th>
@@ -1434,12 +1443,24 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
         {{ stock_name_link(r.code, r.name, r) }}
         {# <div class="pill">{{ r.code }}</div> #}
       </td>
-      <td class="{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
-        {{ actual_ret_cell_monthly(r) }}
+      <td class="{% if d.forward_observation | default(false) %}forward-actual-ret {% endif %}{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
+        {{ actual_ret_cell_monthly(r, d.forward_observation | default(false)) }}
       </td>
       <td class="{% if r.pred_high | default(false) %}warn{% endif %}" style="vertical-align:top" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
         {% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}
       </td>
+      {% if d.forward_observation | default(false) %}
+      <td class="pred-reason-forward" style="vertical-align:top;white-space:nowrap">
+        {% if r.pred_ret is not none and r.pred_reason_tooltip_html %}
+        <span class="gap-tip pred-reason-tip">
+          <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+          <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+            <div class="combo-tip-body">{{ r.pred_reason_tooltip_html | safe }}</div>
+          </div>
+        </span>
+        {% else %}—{% endif %}
+      </td>
+      {% endif %}
       <td style="vertical-align:top">
         {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
         {% if r.cumulative_accuracy_from_hist | default(false) %}—{% else %}{{ "%.2f"|format(r.pred_ret * r.cumulative_accuracy_avg) }}{% endif %}
@@ -1479,7 +1500,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
           </div>
         </span>
         <span style="margin-left:10px">{{ disclosure_tip(r, d.trading_day) }}</span>
-        <span class="pred-reason-plain" style="margin-left:10px">{% if d.forward_observation | default(false) %}{{ r.pred_reason_forward_summary | default(r.pred_reason_hit_line) | default(r.pred_reason_summary) | default('—') | safe }}{% else %}{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}{% endif %}</span>
+        <span class="pred-reason-plain" style="margin-left:10px">{% if not (d.forward_observation | default(false)) %}{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}{% endif %}</span>
       </td>
       <td>{{ prediction_signal_cell(r) }}</td>
     </tr>
@@ -1839,6 +1860,8 @@ _DATED_N_TEMPLATE = r"""
     table.rows-compare th .sortable-col:hover { text-decoration: underline; }
     table.rows-compare th .sortable-col.sort-asc::after { content: " ▲"; font-size: 0.65em; opacity: 0.85; }
     table.rows-compare th .sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
+    td.forward-actual-ret { white-space: nowrap; }
+    .forward-ret-chain { white-space: nowrap; }
     .cumulative-accuracy-td { position: relative; }
     .cumulative-accuracy-td .cumulative-sort-keys { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; overflow: hidden; }
     .gap-tip.cumulative-hist-tip { margin-top: 0; vertical-align: middle; }
@@ -1954,13 +1977,7 @@ _DATED_N_TEMPLATE = r"""
 {% endif %}
 {%- endmacro %}
 {% macro forward_pred_rationale_panel(d, meta) -%}
-{% if d.forward_observation | default(false) and d.forward_pred_rationale_html %}
-<div class="forward-pred-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;background:#1e2838;border:1px solid #4a3a2a;border-radius:8px">
-  <h3 style="font-size:0.95rem;color:var(--warn);margin:0 0 8px">예측 상승률 근거 (장 시작 전)</h3>
-  <p class="sub" style="margin:0 0 10px;font-size:0.84rem;line-height:1.45">관측일 <strong>{{ d.trading_day.isoformat() }}</strong>은 아직 장이 시작되지 않았거나 실적이 확정되지 않았습니다. 아래 <strong>예측≥{{ meta.threshold }}</strong> 후보별로 <em>모델 점수</em>와 함께 <em>국내·글로벌 시장</em>, <em>종목 시세·업종</em>, <em>특이 뉴스·공시</em> 맥락을 정리했습니다.</p>
-  {{ d.forward_pred_rationale_html | safe }}
-</div>
-{% endif %}
+{# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 에만 표시 #}
 {%- endmacro %}
 {% macro stock_name_link(code, name, r=none) -%}
 <span class="stock-chart-tip" tabindex="0">
@@ -2031,6 +2048,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
           <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
+          {% if day.forward_observation | default(false) %}<th scope="col" title="모델·키워드·모멘텀·섹터 요약 tooltip">예측 근거</th>{% endif %}
           <th>보정(%)</th>
           <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
           <th>누적정확도(10~20)</th>
@@ -2053,12 +2071,24 @@ __ACTUAL_RET_CELL_MACRO_DATED__
             {{ stock_name_link(r.code, r.name, r) }}
             {# <div class="pill">{{ r.code }}</div> #}
           </td>
-          <td class="num {% if not meta.prediction_only and r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
-            {{ actual_ret_cell_dated(r) }}
+          <td class="num {% if day.forward_observation | default(false) %}forward-actual-ret {% endif %}{% if not meta.prediction_only and r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
+            {{ actual_ret_cell_dated(r, day.forward_observation | default(false)) }}
           </td>
           <td class="num {% if r.pred_high | default(false) %}warn{% endif %}" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
             {% if r.pred_ret is none %}—{% else %}{{ "%.2f"|format(r.pred_ret) }}{% endif %}
           </td>
+          {% if day.forward_observation | default(false) %}
+          <td class="pred-reason-forward" style="vertical-align:top;white-space:nowrap">
+            {% if r.pred_ret is not none and r.pred_reason_tooltip_html %}
+            <span class="gap-tip pred-reason-tip">
+              <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+              <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+                <div class="combo-tip-body">{{ r.pred_reason_tooltip_html | safe }}</div>
+              </div>
+            </span>
+            {% else %}—{% endif %}
+          </td>
+          {% endif %}
           <td class="num">
             {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
             {% if r.cumulative_accuracy_from_hist | default(false) %}—{% else %}{{ "%.2f"|format(r.pred_ret * r.cumulative_accuracy_avg) }}{% endif %}
@@ -2130,7 +2160,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
           <td class="td-center">
             {{ disclosure_tip(r, t_day) }}
           </td>
-          <td class="pred-reason-cell">{% if day.forward_observation | default(false) %}{{ r.pred_reason_forward_summary | default(r.pred_reason_hit_line) | default(r.pred_reason_summary) | default('—') | safe }}{% else %}{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}{% endif %}</td>
+          <td class="pred-reason-cell">{% if not (day.forward_observation | default(false)) %}{{ r.pred_reason_hit_line | default(r.pred_reason_summary) | default('—') | safe }}{% else %}—{% endif %}</td>
           <td class="td-center">
             <span class="gap-tip combo-tip">
               <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 입력 구간 뉴스와 참고 뉴스를 함께 보기">뉴스</span>

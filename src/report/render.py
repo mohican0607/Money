@@ -1,6 +1,7 @@
 """HTML 렌더·월간·dated rollup."""
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -56,6 +57,58 @@ def format_prediction_signal_cell(row: dict[str, Any]) -> str:
     if theme_bit and theme_bit not in base:
         return base + theme_bit
     return base
+
+
+def _fmt_pct_span_html(pct: float | None) -> str:
+    if pct is None:
+        return "—"
+    try:
+        pv = float(pct)
+        if not math.isfinite(pv):
+            return "—"
+        inner = f"{pv:.2f}"
+        if pv < 0:
+            return f'<span class="bad">{inner}</span>'
+        return inner
+    except (TypeError, ValueError):
+        return "—"
+
+
+def format_forward_actual_ret_cell(row: dict[str, Any] | None) -> str:
+    """
+    장 미개장 관측일 실제 상승률 칸: ``N%, N-1%, N-2%`` (한 줄, 줄바꿈 없음).
+    """
+    if not row:
+        return "—"
+    if (
+        row.get("actual_cell_pre_close_snapshot")
+        and row.get("actual_ret_intraday_pct") is not None
+    ):
+        inner = _fmt_pct_span_html(float(row["actual_ret_intraday_pct"]))
+        return f'<span class="forward-ret-chain" style="white-space:nowrap">— ({inner}%)</span>'
+
+    items = row.get("stock_ret_tooltip") or []
+    if items:
+        by_label = {str(it.get("label") or ""): it for it in items}
+        pcts: list[str] = []
+        for label in ("N", "N-1", "N-2"):
+            it = by_label.get(label)
+            if it is None or it.get("pct") is None:
+                pcts.append("—")
+            else:
+                pcts.append(f"{_fmt_pct_span_html(float(it['pct']))}%")
+        return (
+            f'<span class="forward-ret-chain" style="white-space:nowrap">'
+            f"{', '.join(pcts)}</span>"
+        )
+
+    if (
+        row.get("actual_ret_forward_n_ref")
+        and row.get("actual_ret_n_day_pct") is not None
+    ):
+        inner = _fmt_pct_span_html(float(row["actual_ret_n_day_pct"]))
+        return f'<span class="forward-ret-chain" style="white-space:nowrap">{inner}%</span>'
+    return "—"
 
 
 def format_stock_ret_tooltip_lines(row: dict[str, Any] | None) -> str:
@@ -294,6 +347,7 @@ def render_report(
         interaction_snippet=REPORT_TABLE_INTERACTION_SNIPPET,
         format_prediction_signal_cell=format_prediction_signal_cell,
         format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
+        format_forward_actual_ret_cell=format_forward_actual_ret_cell,
         stock_chart_n_day_iso=stock_chart_n_day_iso,
         stock_chart_n_bar_offset=stock_chart_n_bar_offset,
     )
@@ -500,6 +554,7 @@ def render_compact_tabbed_report(
         interaction_snippet=REPORT_TABLE_INTERACTION_SNIPPET,
         format_prediction_signal_cell=format_prediction_signal_cell,
         format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
+        format_forward_actual_ret_cell=format_forward_actual_ret_cell,
         stock_chart_n_day_iso=stock_chart_n_day_iso,
         stock_chart_n_bar_offset=stock_chart_n_bar_offset,
     )
@@ -698,6 +753,7 @@ def render_dated_n_report(
         naver_disclosure_url=naver_disclosure_url,
         format_prediction_signal_cell=format_prediction_signal_cell,
         format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
+        format_forward_actual_ret_cell=format_forward_actual_ret_cell,
         stock_chart_n_day_iso=stock_chart_n_day_iso,
         stock_chart_n_bar_offset=stock_chart_n_bar_offset,
     )
