@@ -714,6 +714,78 @@ def _enrich_rows_stock_ret_tooltip(
         r["stock_ret_tooltip"] = tips
 
 
+def _enrich_forward_day_actual_display_rows(
+    rows: list[dict],
+    returns,
+    t_day: date,
+    *,
+    now_kst: datetime | None = None,
+) -> None:
+    """
+    예측 전용일 ``T``: 실제 상승률 칸은 T 미확정 참고만 단일 표기.
+
+    - ``T`` 가 오늘이고 장중이면 ``— (장중%)`` 한 번만
+    - 그 외에는 기준일 N(=T 직전 거래일) 종가 ``N (xx%)`` 한 번만
+    - ``actual_ret_prev_day`` 괄호 중복 표기는 쓰지 않음
+    """
+    if not rows:
+        return
+    now = now_kst or datetime.now(trading_calendar.KST)
+    today = now.date()
+    try:
+        n_basis = trading_calendar.last_trading_day_before(t_day)
+    except ValueError:
+        n_basis = None
+    t_is_today_open = (
+        t_day == today
+        and trading_calendar.is_trading_day(t_day)
+        and not trading_calendar.is_krx_daily_bar_effective_closed(t_day, now_kst=now)
+    )
+    t_intraday: dict[str, float] = {}
+    if t_is_today_open:
+        codes = sorted({str(r.get("code", "")).zfill(6) for r in rows if r.get("code")})
+        if codes:
+            snap = stocks.best_effort_intraday_pct_by_code(t_day, codes, returns_df=returns)
+            if snap:
+                t_intraday = snap
+    n_intraday: dict[str, float] = {}
+    if (
+        n_basis is not None
+        and n_basis == today
+        and trading_calendar.is_trading_day(n_basis)
+        and not trading_calendar.is_krx_daily_bar_effective_closed(n_basis, now_kst=now)
+    ):
+        codes = sorted({str(r.get("code", "")).zfill(6) for r in rows if r.get("code")})
+        if codes:
+            snap = stocks.best_effort_intraday_pct_by_code(n_basis, codes, returns_df=returns)
+            if snap:
+                n_intraday = snap
+    for r in rows:
+        r["forward_observation"] = True
+        r["actual_ret_prev_day"] = None
+        r.pop("actual_ret_forward_n_ref", None)
+        r.pop("actual_ret_n_day_pct", None)
+        r.pop("actual_ret_intraday_pct", None)
+        r.pop("actual_cell_pre_close_snapshot", None)
+        code = str(r.get("code", "")).zfill(6)
+        if not code:
+            continue
+        if t_is_today_open and code in t_intraday:
+            r["actual_ret_intraday_pct"] = float(t_intraday[code])
+            r["actual_cell_pre_close_snapshot"] = True
+            continue
+        if n_basis is None:
+            continue
+        ret = stocks.actual_return_on_date(returns, code, n_basis)
+        if ret is not None and math.isfinite(float(ret)):
+            r["actual_ret_n_day_pct"] = float(ret) * 100.0
+            r["actual_ret_forward_n_ref"] = True
+            continue
+        if code in n_intraday:
+            r["actual_ret_n_day_pct"] = float(n_intraday[code])
+            r["actual_ret_forward_n_ref"] = True
+
+
 def _build_rebuild_learning_payload(
     day_reports: list[report.DayReport],
     s0: date,

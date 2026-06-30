@@ -409,7 +409,7 @@ _ACTUAL_RET_FMT_MACROS = r"""{% macro fmt_ret_ratio_pct(ratio) -%}
 {% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %}N-1 ({{ fmt_ret_ratio_pct(r.actual_ret_prev_day) }}){% else %}—{% endif %}
 {%- endmacro %}"""
 
-_ACTUAL_RET_CELL_BODY = r"""{% if r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ fmt_ret_ratio_pct(r.actual_ret) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ fmt_ret_ratio_pct(r.actual_ret) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}"""
+_ACTUAL_RET_CELL_BODY = r"""{% if r.forward_observation | default(false) %}{% if r.actual_ret_forward_n_ref | default(false) and r.actual_ret_n_day_pct is defined and r.actual_ret_n_day_pct is not none %}N ({{ fmt_ret_pct_pts(r.actual_ret_n_day_pct) }}%){% elif r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){% else %}—{% endif %}{% elif r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ fmt_ret_ratio_pct(r.actual_ret) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ fmt_ret_ratio_pct(r.actual_ret) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}"""
 
 
 def _actual_ret_cell_macro(name: str) -> str:
@@ -795,8 +795,6 @@ __ACTUAL_RET_CELL_MACRO__
       {{ market_filter_radios(d.trading_day.isoformat(), d.forward_observation | default(false)) }}
     </div>
     {{ day_pred_accuracy_banner(d, meta) }}
-    {{ market_theme_panel(d) }}
-    {{ mover_rationale_panel(d) }}
     {{ forward_pred_rationale_panel(d, meta) }}
     {{ hit_at_k_panel(d, meta) }}
     <p class="sub">{% if meta.use_decision_cutoff %}N-1 거래일 {{ meta.cutoff_kst }}(KST)까지 반영한 {% endif %}예측 입력 뉴스 하이라이트 키워드 예시:
@@ -1526,8 +1524,6 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
           {{ market_filter_radios(d.trading_day.isoformat() ~ "-" ~ w.monday.isoformat(), d.forward_observation | default(false)) }}
         </div>
         {{ day_pred_accuracy_banner(d, meta) }}
-        {{ market_theme_panel(d) }}
-        {{ mover_rationale_panel(d) }}
         {{ forward_pred_rationale_panel(d, meta) }}
         {{ hit_at_k_panel(d, meta) }}
         {{ compact_day_table(d, meta) }}
@@ -1568,8 +1564,6 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
       <h2>{{ d.trading_day.isoformat() }}</h2>
       {{ market_filter_radios(d.trading_day.isoformat()) }}
     </div>
-    {{ market_theme_panel(d) }}
-    {{ mover_rationale_panel(d) }}
     {{ forward_pred_rationale_panel(d, meta) }}
     {{ hit_at_k_panel(d, meta) }}
     {{ compact_day_table(d, meta) }}
@@ -1592,8 +1586,6 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
           <h2>{{ d.trading_day.isoformat() }}</h2>
           {{ market_filter_radios(d.trading_day.isoformat() ~ "-daytab-" ~ loop.index0|string) }}
         </div>
-        {{ market_theme_panel(d) }}
-        {{ mover_rationale_panel(d) }}
         {{ forward_pred_rationale_panel(d, meta) }}
         {{ hit_at_k_panel(d, meta) }}
         {{ compact_day_table(d, meta) }}
@@ -1625,8 +1617,6 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
       <h2>{{ d.trading_day.isoformat() }} · 실제·예측 {{ meta.threshold }} 이상</h2>
       {{ market_filter_radios(d.trading_day.isoformat() ~ "-single") }}
     </div>
-    {{ market_theme_panel(d) }}
-    {{ mover_rationale_panel(d) }}
     {{ forward_pred_rationale_panel(d, meta) }}
     {{ hit_at_k_panel(d, meta) }}
     {{ compact_day_table(d, meta, '장 전 실행 시 데이터 없음') }}

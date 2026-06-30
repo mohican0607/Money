@@ -39,6 +39,7 @@ from .rows import (
     _enrich_cumulative_actual_over_pred_from_history_for_field,
     _enrich_cumulative_hit_rate,
     _enrich_rows_prediction_signal,
+    _enrich_forward_day_actual_display_rows,
     _enrich_forward_pred_rationale,
     _gap_analysis_html_for_row,
     _pred_reason_fields,
@@ -408,7 +409,7 @@ def _run_pipeline(
                     T,
                     train_events=train_events_t,
                     news_by_calendar=news_by_calendar,
-                    returns_df=returns,
+                    returns_df=returns_ml,
                     threshold=config.BIG_MOVE_THRESHOLD,
                 )
             except (ValueError, TypeError, OSError):
@@ -787,7 +788,7 @@ def _run_pipeline(
         )
         if force_intraday_snapshot and T == today_td and trading_calendar.is_trading_day(T):
             pre_close_today = True
-        if pre_close_today and rows_compare:
+        if pre_close_today and rows_compare and not day_forward:
             # 장중: pykrx(재시도)·종목별·네이버 실시간 순으로 등락률을 채운 뒤 — (xx%) 표기.
             row_codes = sorted(
                 {str(r.get("code", "")).zfill(6) for r in rows_compare if r.get("code")}
@@ -932,6 +933,13 @@ def _run_pipeline(
             forward_observation=day_forward,
             now_kst=now_kst_td,
         )
+        if day_forward:
+            _enrich_forward_day_actual_display_rows(
+                rows_compare,
+                returns,
+                T,
+                now_kst=now_kst_td,
+            )
 
         if config.THEME_CARRYOVER_ENABLED and rows_compare and not day_forward:
             theme_carryover.persist_rich_snapshot(

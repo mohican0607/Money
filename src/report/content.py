@@ -2157,6 +2157,11 @@ def build_day_strong_mover_sections(
         news_by_calendar=news_by_calendar,
         trading_day=t_day,
     )
+    market_theme_html = srl.format_market_theme_flow_html(
+        flow_row,
+        news_cutoff_label=news_cutoff_label,
+        threshold_pct=float(config.BIG_MOVE_THRESHOLD) * 100.0,
+    )
     if dr.rows_compare:
         srl._patch_flow_row_strong_movers_from_compare(
             flow_row,
@@ -2304,6 +2309,7 @@ def build_day_strong_mover_sections(
         "news_cutoff_label": news_cutoff_label,
         "news_prev_day": trading_calendar.last_trading_day_before(t_day).isoformat(),
         "overview_html": _compact_day_overview(flow_row),
+        "market_theme_html": market_theme_html,
         "mover_rationale_html": mover_rationale_html,
         "sectors": sector_blocks,
     }
@@ -2339,11 +2345,87 @@ def build_strong_mover_report_days(
     return out
 
 
+_THEME_DAY_META_RE = re.compile(
+    r'(<p class="day-meta"[^>]*>.*?</p>)',
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def inject_market_theme_into_theme_day_section(
+    section_html: str, theme_inner_html: str
+) -> str:
+    """테마 25%↑ 일자 ``<section>`` 에 ``당일 테마 요약`` 블록을 삽입하거나 교체합니다."""
+    from . import render as report_render
+
+    block = report_render.build_market_theme_ref_block(theme_inner_html)
+    if not block:
+        return section_html
+    if report_render._MARKET_THEME_REF_RE.search(section_html):
+        return report_render._MARKET_THEME_REF_RE.sub(block, section_html, count=1)
+    m = _THEME_DAY_META_RE.search(section_html)
+    if m:
+        pos = m.end()
+        return section_html[:pos] + "\n    " + block + section_html[pos:]
+    m2 = re.search(r"</h2>", section_html, re.IGNORECASE)
+    if m2:
+        pos = m2.end()
+        return section_html[:pos] + "\n    " + block + section_html[pos:]
+    return section_html
+
+
+def backfill_preserved_theme_day_sections_market_theme(
+    preserved_day_html: dict[date, str],
+    *,
+    news_by_calendar: dict[date, list[dict[str, str]]],
+    returns_df: Any,
+    listing_names: dict[str, str],
+    news_cutoff_label: str,
+    now_kst: datetime | None = None,
+) -> dict[date, str]:
+    """병합 유지 테마 리포트 일자 HTML에 ``당일 테마 요약`` 을 채웁니다."""
+    from . import render as report_render
+
+    if not preserved_day_html or returns_df is None:
+        return preserved_day_html
+    now = now_kst or datetime.now(trading_calendar.KST)
+    out = dict(preserved_day_html)
+    patched = 0
+    for t_day in sorted(preserved_day_html.keys()):
+        html = preserved_day_html[t_day]
+        if not report_render.preserved_day_section_needs_market_theme_backfill(
+            html, t_day, now_kst=now
+        ):
+            continue
+        theme_inner = srl.market_theme_html_for_trading_day(
+            t_day,
+            news_by_calendar,
+            returns_df,
+            listing_names,
+            news_cutoff_label=news_cutoff_label,
+        )
+        if srl.market_theme_html_is_incomplete(theme_inner):
+            continue
+        out[t_day] = inject_market_theme_into_theme_day_section(html, theme_inner)
+        patched += 1
+    if patched:
+        print(
+            f"테마 리포트 병합: 장 마감 후 당일 테마 요약 보강 {patched}일(기존 HTML 유지 일자)",
+            flush=True,
+        )
+    return out
+
+
 _THEME_DAY_SECTION_TEMPLATE = r"""
   <section class="day" id="day-{{ day.trading_day.isoformat() }}">
     <h2>{{ day.trading_day.isoformat() }}</h2>
     <p class="day-meta">early {{ day.news_prev_day }} {{ day.news_cutoff_label }}</p>
     {% if day.overview_html %}{{ day.overview_html | safe }}{% endif %}
+    {% if day.market_theme_html %}
+    <div class="market-theme-ref" style="margin:12px 0 16px;padding:12px 14px;background:#152232;border:1px solid #2a4a6a;border-radius:8px">
+      <h3 class="market-theme-h" style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">당일 테마 요약</h3>
+      {{ day.market_theme_html | safe }}
+    </div>
+    {% endif %}
     {% if day.mover_rationale_html %}
     <div class="mover-rationale-block">
       <h3 class="mover-rationale-h">왜 올랐나 (상한가·급등)</h3>
@@ -2403,6 +2485,9 @@ _THEME_REPORT_SHELL_TEMPLATE = r"""
     .sector-why { margin: 0 0 6px; font-size: 0.8rem; color: #c8d8e8; }
     .mover-rationale-block { margin: 10px 0 14px; padding: 10px 12px;
       background: #1a2838; border: 1px solid #3a5a4a; border-radius: 8px; }
+    .market-theme-ref { margin: 12px 0 16px; padding: 12px 14px;
+      background: #152232; border: 1px solid #2a4a6a; border-radius: 8px; }
+    .market-theme-h { font-size: 0.95rem; color: var(--ok); margin: 0 0 8px; }
     .mover-rationale-h { font-size: 0.92rem; color: var(--ok); margin: 0 0 8px; }
     .mover-rationale-block ul { margin: 0; padding-left: 18px; }
     .mover-rationale-block li { margin-bottom: 6px; line-height: 1.5; }

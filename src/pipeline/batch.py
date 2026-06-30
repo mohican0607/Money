@@ -105,38 +105,6 @@ def _render_monthly_batch(
                     f"(갱신 {n_update}, 추가 {n_append}), 기존 유지 {n_keep}일",
                     flush=True,
                 )
-        if preserved_day_html and po.returns_df is not None and po.listing_names:
-            news_map = dict(po.news_by_calendar or {})
-            need_news_days = [
-                d
-                for d in preserved_day_html
-                if report.preserved_day_section_needs_market_theme_backfill(
-                    preserved_day_html[d],
-                    d,
-                    now_kst=datetime.now(trading_calendar.KST),
-                )
-            ]
-            if need_news_days:
-                cal_for_news = _collect_calendar_days_for_trading_range(
-                    need_news_days,
-                    include_target_calendar_days=True,
-                    target_calendar_trading_days=frozenset(need_news_days),
-                )
-                missing_cal = [d for d in cal_for_news if d not in news_map]
-                if missing_cal:
-                    news_map.update(
-                        _fetch_news_for_calendar_days(missing_cal)
-                    )
-            preserved_day_html = report.backfill_preserved_day_sections_market_theme(
-                preserved_day_html,
-                news_by_calendar=news_map,
-                returns_df=po.returns_df,
-                listing_names=po.listing_names,
-                news_cutoff_label=(
-                    f"{config.NEWS_CUTOFF_KST_HOUR:02d}:"
-                    f"{config.NEWS_CUTOFF_KST_MINUTE:02d}"
-                ),
-            )
         all_days = sorted(
             set(preserved_day_html.keys()) | {dr.trading_day for dr in batch}
         )
@@ -217,6 +185,39 @@ def _render_monthly_batch(
                     f"(갱신 {n_update}, 추가 {n_append}), 기존 유지 {n_keep}일",
                     flush=True,
                 )
+        if (
+            theme_preserved
+            and po.returns_df is not None
+            and po.listing_names
+        ):
+            news_map = dict(po.news_by_calendar or {})
+            need_news_days = [
+                d
+                for d in theme_preserved
+                if report.preserved_day_section_needs_market_theme_backfill(
+                    theme_preserved[d],
+                    d,
+                    now_kst=datetime.now(trading_calendar.KST),
+                )
+            ]
+            if need_news_days:
+                cal_for_news = _collect_calendar_days_for_trading_range(
+                    need_news_days,
+                    include_target_calendar_days=True,
+                    target_calendar_trading_days=frozenset(need_news_days),
+                )
+                missing_cal = [d for d in cal_for_news if d not in news_map]
+                if missing_cal:
+                    news_map.update(
+                        _fetch_news_for_calendar_days(missing_cal)
+                    )
+            theme_preserved = theme_strong_mover_report.backfill_preserved_theme_day_sections_market_theme(
+                theme_preserved,
+                news_by_calendar=news_map,
+                returns_df=po.returns_df,
+                listing_names=po.listing_names,
+                news_cutoff_label=cutoff_kst,
+            )
         theme_days = sorted(
             dr.trading_day
             for dr in batch

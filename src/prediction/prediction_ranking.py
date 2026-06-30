@@ -361,6 +361,32 @@ def assign_hybrid_confidence_tiers(
             row.confidence_tier = "mid"
             mid_n += 1
 
+    if high_n < max_high:
+        sector_ranked = sorted(
+            ranked,
+            key=lambda r: (
+                float(getattr(r, "industry_limit_up_heat", 0.0) or 0.0)
+                + float(getattr(r, "industry_momentum", 0.0) or 0.0),
+                hybrid_rank_score(r),
+            ),
+            reverse=True,
+        )
+        for row in sector_ranked:
+            if high_n >= max_high:
+                break
+            if row.confidence_tier == "high":
+                continue
+            lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+            sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
+            if lim + 1e-12 < 0.12 and sec + 1e-12 < 0.26:
+                continue
+            pillars = compute_pillar_scores(
+                row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
+            )
+            if count_non_news_strong_pillars(pillars, threshold=0.36) >= 1:
+                row.confidence_tier = "high"
+                high_n += 1
+
     for pos, row in enumerate(ranked, start=1):
         row.rank_position = pos
         row.rank_score = hybrid_rank_score(row)
@@ -410,6 +436,43 @@ def _rerank_sector_diversity(pool: list[PredictionRow]) -> list[PredictionRow]:
                 continue
             head.append(row)
             seen.add(id(row))
+    seen = {id(r) for r in head}
+    return head + [r for r in ranked if id(r) not in seen]
+
+
+def _inject_hot_sector_leaders(pool: list[PredictionRow]) -> list[PredictionRow]:
+    """최근 급등 업종 리더를 상위 슬롯에 끼워 넣어 Hit@K 리콜을 올립니다."""
+    slots = int(config.PRED_INDUSTRY_LEADER_SLOTS)
+    top_k = min(int(config.PRED_SECTOR_DIVERSITY_TOP_K), len(pool))
+    if slots <= 0 or top_k <= 0 or not pool:
+        return pool
+    ranked = sorted(pool, key=rank_score_for_row, reverse=True)
+    head = list(ranked[:top_k])
+    head_ids = {id(r) for r in head}
+    leaders = sorted(
+        pool,
+        key=lambda r: (
+            float(getattr(r, "industry_limit_up_heat", 0.0) or 0.0)
+            + 0.75 * float(getattr(r, "industry_momentum", 0.0) or 0.0)
+            + 0.45 * float(getattr(r, "industry_theme_overlap", 0.0) or 0.0),
+            rank_score_for_row(r),
+        ),
+        reverse=True,
+    )
+    injected = 0
+    for row in leaders:
+        if injected >= slots:
+            break
+        if id(row) in head_ids:
+            continue
+        lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+        sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
+        if lim + 1e-12 < 0.10 and sec + 1e-12 < 0.20:
+            continue
+        head.append(row)
+        head_ids.add(id(row))
+        injected += 1
+    head = sorted(head, key=rank_score_for_row, reverse=True)[:top_k]
     seen = {id(r) for r in head}
     return head + [r for r in ranked if id(r) not in seen]
 
@@ -706,6 +769,7 @@ def finalize_ranked_predictions(
     from . import predict
 
     pool = _rerank_sector_diversity(rows)
+    pool = _inject_hot_sector_leaders(pool)
     pool = sorted(pool, key=rank_score_for_row, reverse=True)
     pool_size = len(pool)
     r_scale = regime_output_scale(ks11_ret_lag1)

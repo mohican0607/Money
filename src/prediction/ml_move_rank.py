@@ -79,7 +79,7 @@ FEATURE_NAMES = (
     "industry_limit_up_heat",
 )
 
-ML_MODEL_VERSION = 17
+ML_MODEL_VERSION = 18
 MAX_NEG_PER_DAY = 120
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
@@ -598,6 +598,7 @@ def _feat_vector(
     base_ret: float | None = None,
     code_event_count: int | None = None,
     today_tfidf: np.ndarray | None = None,
+    returns_ml: pd.DataFrame | None = None,
 ) -> list[float]:
     """뉴스·이력 피터 + (선택) 시세 피처. ``ohlcv_idx`` 가 있으면 ``before_exclusive`` 거래일 행을 붙입니다."""
     if hist_kw is None:
@@ -663,7 +664,9 @@ def _feat_vector(
         if lift is None:
             lift = np.zeros(len(vocab), dtype=np.float64)
         ctx_part = context_feature_vector(today_v, prof, global_c, lift)
-    ind_mom, ind_ov, ind_lim = _industry_feats(code, before_exclusive, ohlcv_idx, kw_news)
+    ind_mom, ind_ov, ind_lim = _industry_feats(
+        code, before_exclusive, ohlcv_idx, kw_news, returns_ml=returns_ml
+    )
     investor = _investor_flow_feats_row(ohlcv_idx, code, before_exclusive)
     return base + price + investor + [float(ret_vs_ks11), float(risk_off)] + ctx_part + [
         float(ind_mom),
@@ -760,6 +763,7 @@ def _build_training_arrays(
             base_ret=_blended_hist_return(all_returns, code_returns.get(c6)),
             code_event_count=len(code_returns.get(c6, [])),
             today_tfidf=today_v,
+            returns_ml=returns_ml,
         )
 
     for d in days:
@@ -1090,6 +1094,7 @@ def rank_predictions_ml(
                 ohlcv_idx=ohlcv_idx,
                 theme_weights=tw,
                 news_ctx=news_ctx,
+                returns_ml=returns_ml,
             )
         )
     X = np.asarray(feats, dtype=np.float64)

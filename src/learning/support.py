@@ -476,7 +476,7 @@ def weights_for_observation_day(
     threshold: float,
 ) -> dict[str, float]:
     """
-    관측일 ``target_day`` 예측에 쓸 테마 가중치 = **직전 영업일** 스냅샷(또는 합성).
+    관측일 ``target_day`` 예측에 쓸 테마 가중치 = 직전 1~2거래일 스냅샷·합성 블렌드.
     """
     if not config.THEME_CARRYOVER_ENABLED:
         return {}
@@ -484,16 +484,29 @@ def weights_for_observation_day(
         prev_td = trading_calendar.last_trading_day_before(target_day)
     except ValueError:
         return {}
-    snap = load_weights_for_calendar_day(prev_td)
-    if snap:
-        return snap
-    return synthesize_weights_for_day(
-        prev_td,
-        train_events=train_events,
-        news_by_calendar=news_by_calendar,
-        returns_df=returns_df,
-        threshold=threshold,
-    )
+
+    def _weights_for_session(sess: date) -> dict[str, float]:
+        snap = load_weights_for_calendar_day(sess)
+        if snap:
+            return snap
+        return synthesize_weights_for_day(
+            sess,
+            train_events=train_events,
+            news_by_calendar=news_by_calendar,
+            returns_df=returns_df,
+            threshold=threshold,
+        )
+
+    merged: Counter[str] = Counter()
+    for k, v in _weights_for_session(prev_td).items():
+        merged[k] += float(v)
+    try:
+        prev2 = trading_calendar.last_trading_day_before(prev_td)
+        for k, v in _weights_for_session(prev2).items():
+            merged[k] += 0.55 * float(v)
+    except ValueError:
+        pass
+    return _normalize_weights(merged)
 
 
 def theme_kw_overlap_score(kw_news: frozenset[str], theme_weights: dict[str, float] | None) -> float:
