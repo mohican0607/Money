@@ -633,9 +633,9 @@ def predict_for_trading_day(
 
     ks11_ret = None
     try:
-        from . import ml_move_rank
+        from .market_features import ks11_market_feats
 
-        ks11_ret, _ = ml_move_rank._ks11_market_feats(target_day)
+        ks11_ret, _ = ks11_market_feats(target_day)
     except Exception:
         ks11_ret = None
     return prediction_ranking.finalize_ranked_predictions(

@@ -330,9 +330,9 @@ def relative_strength_candidate_codes(
     if sl.empty:
         return []
     try:
-        from . import ml_move_rank
+        from .market_features import ks11_market_feats
 
-        ks11_ret, _ = ml_move_rank._ks11_market_feats(target_day)
+        ks11_ret, _ = ks11_market_feats(target_day)
     except Exception:
         ks11_ret = None
     scored: list[tuple[float, str]] = []

@@ -26,7 +26,7 @@ _LAZY: dict[str, str] = {
     "pred_precision_gate": "src.prediction.prediction_ranking",
     "prediction_ranking": "src.prediction.prediction_ranking",
     "ml_move_rank": "src.prediction.ml_move_rank",
-    "news_context_ml": "src.prediction.ml_move_rank",
+    "news_context_ml": "src.prediction.news_context",
     "train_snapshot": "src.learning.support",
     "theme_carryover": "src.learning.support",
     "snapshot_miss_diagnosis": "src.learning.support",

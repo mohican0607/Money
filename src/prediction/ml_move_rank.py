@@ -8,25 +8,38 @@
 from __future__ import annotations
 
 import math
-from collections import Counter, defaultdict
 from datetime import date
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from .. import config, trading_calendar
-from .. import news
-from .. import stocks as market_index
+from .. import config
 from ..learning import support as snapshot_miss_diagnosis
 from ..learning import support as theme_carryover
 from ..prediction import accuracy_cache as prediction_accuracy_cache
-from . import (
-    predict,
-)
 from ..features import BreakoutEvent, filter_specific_keywords, keyword_set, name_mention_score
+from . import predict
+from .candidate_pool import day_candidate_codes, ml_scoring_candidate_codes
+from .market_features import (
+    blended_hist_return,
+    industry_feats,
+    investor_flow_feats_row,
+    ks11_market_feats,
+    momentum_for_code,
+    ohlcv_lookup,
+    ohlcv_row_for_code,
+    price_feats_row,
+    prior_industry_hot_score,
+    early_blob_for_trading_day,
+)
+from .news_context import (
+    context_feature_vector,
+    feats_for_code,
+    make_news_ctx_bundle,
+    tfidf_vector,
+)
 
 try:
     import joblib
@@ -142,558 +155,6 @@ def calibrate_ml_probability(
     return max(br, min(0.35, p))
 
 
-def _prior_day_hot_peer_codes(
-    returns_ml: pd.DataFrame,
-    target_day: date,
-    listing_codes: list[str],
-    *,
-    min_prev_ret: float = 0.05,
-    max_codes: int = 320,
-) -> list[str]:
-    """
-    T 직전 거래일 급등·강한 전일 모멘텀 종목과 동업종 peer를 후보에 넣습니다.
-
-    6/26처럼 전일·연속 급등 테마가 이어지는 날, 뉴스 키워드만으로는 풀에 안 잡히는
-    실제 20%↑ 종목(금호계열 등)을 ML 랭킹 대상에 포함시키기 위함.
-    """
-    from .. import stocks as stocks_mod
-
-    allowed = {str(c).zfill(6) for c in listing_codes}
-    out: list[str] = []
-    seen: set[str] = set()
-
-    def _add(code: str) -> None:
-        c6 = str(code).zfill(6)
-        if c6 in allowed and c6 not in seen:
-            seen.add(c6)
-            out.append(c6)
-
-    try:
-        prev_td = trading_calendar.last_trading_day_before(target_day)
-    except ValueError:
-        prev_td = None
-
-    if prev_td is not None:
-        sl_prev = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(prev_td)]
-        hot: list[tuple[float, str]] = []
-        for _, r in sl_prev.iterrows():
-            code = str(r["Code"]).zfill(6)
-            if code not in allowed:
-                continue
-            try:
-                ret = float(r.get("return_pct") or 0.0)
-            except (TypeError, ValueError):
-                continue
-            if ret + 1e-12 >= min_prev_ret:
-                hot.append((ret, code))
-        hot.sort(key=lambda x: (-x[0], x[1]))
-        for _, code in hot[:85]:
-            _add(code)
-            ic = stocks_mod.industry_code_for_stock(code)
-            if ic:
-                for peer in stocks_mod.peers_for_industry(ic)[:16]:
-                    _add(peer)
-
-    lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
-    session_days: list[date] = []
-    d = prev_td
-    for _ in range(lookback):
-        if d is None:
-            break
-        session_days.append(d)
-        try:
-            d = trading_calendar.last_trading_day_before(d)
-        except ValueError:
-            break
-    for sess in session_days:
-        sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(sess)]
-        for _, r in sl.iterrows():
-            code = str(r["Code"]).zfill(6)
-            if code not in allowed:
-                continue
-            try:
-                ret = float(r.get("return_pct") or 0.0)
-            except (TypeError, ValueError):
-                continue
-            if ret + 1e-12 >= 0.08:
-                _add(code)
-                ic = stocks_mod.industry_code_for_stock(code)
-                if ic:
-                    for peer in stocks_mod.peers_for_industry(ic)[:14]:
-                        _add(peer)
-
-    sl_t = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
-    lag_hot: list[tuple[float, str]] = []
-    for _, r in sl_t.iterrows():
-        code = str(r["Code"]).zfill(6)
-        if code not in allowed:
-            continue
-        try:
-            rl = float(r.get("ret_lag1") or 0.0)
-            vs = float(r.get("vol_surge_ratio") or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if rl + 1e-12 >= 0.035 or vs + 1e-12 >= 1.15:
-            lag_hot.append((rl + 0.15 * min(vs, 3.0), code))
-    lag_hot.sort(key=lambda x: (-x[0], x[1]))
-    for _, code in lag_hot[:100]:
-        _add(code)
-        ic = stocks_mod.industry_code_for_stock(code)
-        if ic:
-            for peer in stocks_mod.peers_for_industry(ic)[:10]:
-                _add(peer)
-
-    return out[:max_codes]
-
-
-def _burst_industry_peer_codes(
-    returns_ml: pd.DataFrame,
-    target_day: date,
-    listing_codes: list[str],
-    *,
-    min_ret: float = 0.12,
-    min_count: int = 2,
-    max_industries: int = 18,
-    peers_per_industry: int = 28,
-) -> list[str]:
-    """최근 거래일 업종 내 다수 급등 시 동업종 전체를 후보에 넣습니다."""
-    from .. import stocks as stocks_mod
-
-    allowed = {str(c).zfill(6) for c in listing_codes}
-    out: list[str] = []
-    seen: set[str] = set()
-    lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
-    session_days: list[date] = []
-    d: date | None = target_day
-    for _ in range(lookback + 1):
-        if d is None:
-            break
-        try:
-            d = trading_calendar.last_trading_day_before(d)
-        except ValueError:
-            break
-        session_days.append(d)
-
-    industry_hits: dict[str, int] = defaultdict(int)
-    industry_best: dict[str, float] = defaultdict(float)
-    for sess in session_days:
-        sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(sess)]
-        for _, r in sl.iterrows():
-            try:
-                rp = float(r.get("return_pct") or 0.0)
-            except (TypeError, ValueError):
-                continue
-            if rp + 1e-12 < min_ret:
-                continue
-            ic = stocks_mod.industry_code_for_stock(str(r["Code"]))
-            if not ic:
-                continue
-            k = str(ic)
-            industry_hits[k] += 1
-            industry_best[k] = max(industry_best[k], rp)
-
-    hot_inds = sorted(
-        industry_hits.keys(),
-        key=lambda k: (industry_hits[k], industry_best[k]),
-        reverse=True,
-    )
-    added_inds = 0
-    for ic in hot_inds:
-        if added_inds >= max_industries:
-            break
-        if industry_hits[ic] < min_count and industry_best[ic] + 1e-12 < 0.18:
-            continue
-        for peer in stocks_mod.peers_for_industry(ic)[:peers_per_industry]:
-            c6 = str(peer).zfill(6)
-            if c6 in allowed and c6 not in seen:
-                seen.add(c6)
-                out.append(c6)
-        added_inds += 1
-    return out
-
-
-def _day_candidate_codes(
-    listing_codes: list[str],
-    listing_names: dict[str, str],
-    news_text_blob: str,
-    ctx: tuple[frozenset[str], dict[str, frozenset[str]]],
-    returns_ml: pd.DataFrame,
-    target_day: date,
-    news_ctx_bundle: dict[str, Any] | None = None,
-) -> list[str]:
-    """뉴스 프로필 ∪ 시세 모멘텀 후보(예측·학습 동일 유니버스)."""
-    from . import prediction_ranking as pred_hybrid
-
-    news = _ml_scoring_candidate_codes(
-        listing_codes,
-        listing_names,
-        news_text_blob,
-        ctx,
-        int(config.PRED_ML_POOL_MIN_KEYWORD_HITS),
-    )
-    mom = pred_hybrid.momentum_candidate_codes(
-        returns_ml, target_day, listing_codes
-    )
-    from .. import investor_flow
-
-    flow_codes = investor_flow.investor_flow_candidate_codes(
-        returns_ml, target_day, listing_codes
-    )
-    news_ctx_codes: list[str] = []
-    if news_ctx_bundle:
-        today_v = tfidf_vector(
-            news_text_blob,
-            list(news_ctx_bundle.get("vocab") or []),
-            news_ctx_bundle.get("idf"),
-        )
-        news_ctx_codes = affinity_candidate_codes(
-            listing_codes,
-            dict(news_ctx_bundle.get("profiles") or {}),
-            today_v,
-        )
-    hot_peers = _prior_day_hot_peer_codes(returns_ml, target_day, listing_codes)
-    burst_peers = _burst_industry_peer_codes(returns_ml, target_day, listing_codes)
-    rs_codes = pred_hybrid.relative_strength_candidate_codes(
-        returns_ml, target_day, listing_codes
-    )
-    return list(
-        dict.fromkeys(
-            news + mom + news_ctx_codes + flow_codes + hot_peers + burst_peers + rs_codes
-        )
-    )
-
-
-def _momentum_for_code(
-    ohlcv_idx: pd.DataFrame | None, code: str, trading_day: date
-) -> float:
-    """OHLCV 인덱스에서 당일 종목 모멘텀 점수(없으면 0)."""
-    from . import prediction_ranking as pred_hybrid
-
-    if ohlcv_idx is None:
-        return 0.0
-    try:
-        row = ohlcv_idx.loc[(trading_day, code)]
-    except KeyError:
-        return 0.0
-    if isinstance(row, pd.DataFrame):
-        row = row.iloc[-1]
-    return pred_hybrid.momentum_raw_from_row(row)
-
-
-def _ohlcv_row_for_code(
-    ohlcv_idx: pd.DataFrame | None, code: str, trading_day: date
-) -> pd.Series | None:
-    """``(trading_day, code)`` 멀티인덱스에서 일봉 행(없으면 ``None``)."""
-    if ohlcv_idx is None:
-        return None
-    try:
-        row = ohlcv_idx.loc[(trading_day, code)]
-    except KeyError:
-        return None
-    if isinstance(row, pd.DataFrame):
-        row = row.iloc[-1]
-    return row
-
-
-def _ml_scoring_candidate_codes(
-    listing_codes: list[str],
-    listing_names: dict[str, str],
-    news_text_blob: str,
-    ctx: tuple[frozenset[str], dict[str, frozenset[str]]],
-    min_keyword_hits: int,
-) -> list[str]:
-    """
-    ML ``predict_proba`` 대상 종목을 종목 관련 신호가 있는 코드로만 축소합니다.
-
-    후보가 적어도 전 종목 폴백은 하지 않습니다(저유동·범용 키워드 오탐 방지).
-    """
-    kw_news, profile = ctx
-    spec_news = filter_specific_keywords(kw_news)
-    mention_gate = float(config.PRED_MENTION_GATE_MIN)
-    need_hits = max(1, int(min_keyword_hits))
-    pool_hits = max(1, int(config.PRED_ML_POOL_MIN_KEYWORD_HITS))
-    need_hits = min(need_hits, pool_hits)
-    out: list[str] = []
-    for code in listing_codes:
-        name = listing_names.get(code, "") or ""
-        if name_mention_score(news_text_blob, name) >= mention_gate:
-            out.append(code)
-            continue
-        hist = profile.get(code)
-        if hist and len(filter_specific_keywords(hist & spec_news)) >= need_hits:
-            out.append(code)
-            continue
-    return out
-
-
-def _early_blob_for_trading_day(
-    news_by_calendar: dict[date, list[dict[str, str]]], d: date
-) -> str:
-    """거래일 ``d`` 의 early 뉴스 텍스트 blob."""
-    if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
-        blob, _ = news.aggregate_early_late_for_target(news_by_calendar, d)
-        return blob
-    ws, we = trading_calendar.news_window_for_target_trading_day(d)
-    return predict.aggregate_news_for_window(news_by_calendar, ws, we)
-
-
-def _ohlcv_lookup(returns_ml: pd.DataFrame) -> pd.DataFrame:
-    """(거래일 date, 6자리 Code) → 행 조회용 인덱스."""
-    t = returns_ml.copy()
-    t["_d"] = pd.to_datetime(t["Date"]).dt.normalize().dt.date
-    t["_c"] = t["Code"].astype(str).str.zfill(6)
-    return t.set_index(["_d", "_c"])
-
-
-@lru_cache(maxsize=512)
-def _ks11_market_feats(trading_day: date) -> tuple[float, float]:
-    """
-    시장흐름 피처(지수):
-    - ks11_ret_lag1: trading_day 직전 거래일의 KOSPI 수익률
-    - ks11_ret_std5: 최근 5개 값 표준편차(변동성)
-    """
-    try:
-        prev = trading_calendar.last_trading_day_before(trading_day)
-    except ValueError:
-        return 0.0, 0.0
-    # 충분한 과거를 확보하기 위해 넉넉히 60일 범위로 로드(캐시됨)
-    start_d = pd.Timestamp(prev - pd.Timedelta(days=90)).date()
-    end_d   = pd.Timestamp(prev + pd.Timedelta(days=2)).date()
-    df      = _load_ks11_cached(start_d, end_d)
-    if df is None or df.empty:
-        return 0.0, 0.0
-    r1 = market_index.index_daily_return_pct(df, prev)
-    if r1 is None:
-        r1v = 0.0
-    else:
-        r1v = float(r1)
-    # 최근 5개(전일 포함) 지수 수익률 표준편차
-    try:
-        s = df.sort_values("Date").reset_index(drop=True)
-        s["ret"] = s["Close"].pct_change()
-        ts = pd.Timestamp(prev)
-        hit = s.index[s["Date"] == ts]
-        if len(hit) == 0:
-            return r1v, 0.0
-        i = int(hit[0])
-        w = s.loc[max(0, i - 6) : i, "ret"].dropna().astype(float).tolist()
-        if len(w) < 2:
-            return r1v, 0.0
-        mean = sum(w) / len(w)
-        var = sum((x - mean) ** 2 for x in w) / max(1.0, float(len(w) - 1))
-        std = float(math.sqrt(var))
-        return r1v, std
-    except Exception:
-        return r1v, 0.0
-
-
-@lru_cache(maxsize=4)
-def _load_ks11_cached(start: date, end: date) -> pd.DataFrame:
-    """KOSPI(KS11) 지수 OHLCV를 구간별로 로드(``lru_cache``)."""
-    try:
-        return market_index.load_index_frame("KS11", start, end)
-    except Exception:
-        return pd.DataFrame()
-
-def _investor_flow_feats_row(
-    idx: pd.DataFrame | None, code: str, trading_day: date
-) -> list[float]:
-    """``returns_ml`` 인덱스에서 수급 lag 피처 5종(없으면 0 패딩)."""
-    cols = (
-        "foreign_net_vol_ratio_lag1",
-        "inst_net_vol_ratio_lag1",
-        "foreign_holding_pct_lag1",
-        "foreign_net_sum3_ratio",
-        "investor_flow_score",
-    )
-    if idx is None:
-        return [0.0] * len(cols)
-    try:
-        row = idx.loc[(trading_day, code)]
-    except KeyError:
-        return [0.0] * len(cols)
-    if isinstance(row, pd.DataFrame):
-        row = row.iloc[-1]
-    out: list[float] = []
-    for c in cols:
-        try:
-            v = float(row.get(c, 0.0) or 0.0)
-        except (TypeError, ValueError):
-            v = 0.0
-        if math.isnan(v) or math.isinf(v):
-            v = 0.0
-        if c == "foreign_holding_pct_lag1":
-            v = v / 100.0
-        out.append(v)
-    return out
-
-
-def _price_feats_row(idx: pd.DataFrame | None, code: str, trading_day: date) -> list[float]:
-    """``returns_ml`` 인덱스에서 종목·거래일 시세 피처. 없으면 0으로 채움."""
-    cols = (
-        "ret_lag1",
-        "log_vol_lag1",
-        "ret_roll_std5",
-        "log_vol_roll_mean5",
-        "close_ma20_ratio",
-        "ret_roll_mean5",
-        "vol_surge_ratio",
-    )
-    if idx is None:
-        return [0.0] * len(cols)
-    try:
-        row = idx.loc[(trading_day, code)]
-    except KeyError:
-        return [0.0] * len(cols)
-    if isinstance(row, pd.DataFrame):
-        row = row.iloc[-1]
-    out: list[float] = []
-    for c in cols:
-        try:
-            v = float(row.get(c, 0.0) or 0.0)
-        except (TypeError, ValueError):
-            v = 0.0
-        if math.isnan(v) or math.isinf(v):
-            v = 0.0
-        out.append(v)
-    return out
-
-
-def _blended_hist_return(
-    all_returns: list[float],
-    code_returns: list[float] | None,
-) -> float:
-    """``predict._historical_mean_return`` 과 동일 로직, 누적 통계로 O(1) 계산."""
-    lo = float(config.PRED_RETURN_MIN)
-    hi = float(config.PRED_RETURN_MAX)
-    global_mean = sum(all_returns) / len(all_returns) if all_returns else lo
-    prior = float(min(hi, max(lo, global_mean)))
-    if not code_returns:
-        return prior
-    code_mean = sum(code_returns) / len(code_returns)
-    prior_strength = 5.0
-    n = float(len(code_returns))
-    blended = (n * code_mean + prior_strength * prior) / (n + prior_strength)
-    return float(min(hi, max(lo, blended)))
-
-
-def _industry_feats(
-    code: str,
-    day: date,
-    ohlcv_idx: pd.DataFrame | None,
-    kw_news: frozenset[str],
-    returns_ml: pd.DataFrame | None = None,
-) -> tuple[float, float, float]:
-    """동종 업종 모멘텀·당일 뉴스-업종 겹침·최근 동종 급등 열기."""
-    from .. import stocks as stocks_mod
-
-    ind_ov = float(stocks_mod.industry_theme_overlap(code, kw_news))
-    ind_lim = 0.0
-    if ohlcv_idx is None:
-        return 0.0, ind_ov, ind_lim
-    ic = stocks_mod.industry_code_for_stock(code)
-    if not ic:
-        return 0.0, ind_ov, ind_lim
-    peer_set = stocks_mod.peers_for_industry(ic)
-    rets: list[float] = []
-    lim_n = 0
-    peer_n = 0
-    for p in peer_set:
-        try:
-            row = ohlcv_idx.loc[(day, str(p).zfill(6))]
-            if isinstance(row, pd.DataFrame):
-                row = row.iloc[0]
-            peer_n += 1
-            v = float(row.get("ret_lag1") or 0.0)
-            if math.isfinite(v):
-                rets.append(v)
-            if v + 1e-12 >= 0.20:
-                lim_n += 1
-        except (KeyError, TypeError, ValueError):
-            continue
-    mom = max(0.0, min(1.0, (sum(rets) / len(rets)) / 0.12)) if rets else 0.0
-    if peer_n > 0:
-        ind_lim = min(1.0, lim_n / max(1, min(peer_n, 8)))
-
-    if returns_ml is not None and not returns_ml.empty:
-        session_days: list[date] = []
-        try:
-            d = trading_calendar.last_trading_day_before(day)
-        except ValueError:
-            d = None
-        lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
-        for _ in range(lookback):
-            if d is None:
-                break
-            session_days.append(d)
-            try:
-                d = trading_calendar.last_trading_day_before(d)
-            except ValueError:
-                break
-        hot_peer_rets: list[float] = []
-        hot_n = 0
-        for sess in session_days:
-            sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(sess)]
-            for p in peer_set[:24]:
-                sub = sl[sl["Code"].astype(str).str.zfill(6) == str(p).zfill(6)]
-                if sub.empty:
-                    continue
-                try:
-                    rp = float(sub.iloc[0].get("return_pct") or 0.0)
-                except (TypeError, ValueError):
-                    continue
-                if not math.isfinite(rp):
-                    continue
-                hot_peer_rets.append(rp)
-                if rp + 1e-12 >= 0.15:
-                    hot_n += 1
-        if hot_peer_rets:
-            avg_hot = sum(hot_peer_rets) / len(hot_peer_rets)
-            mom = max(mom, min(1.0, max(0.0, avg_hot) / 0.10))
-            ind_lim = max(ind_lim, min(1.0, hot_n / max(1, min(len(peer_set), 10))))
-
-    return mom, ind_ov, ind_lim
-
-
-def _prior_industry_hot_score(
-    code: str,
-    target_day: date,
-    returns_ml: pd.DataFrame | None,
-) -> float:
-    """직전 거래일 동업종 15%+ 급등 밀도 → 0~1."""
-    if returns_ml is None or returns_ml.empty:
-        return 0.0
-    from .. import stocks as stocks_mod
-
-    try:
-        prev = trading_calendar.last_trading_day_before(target_day)
-    except ValueError:
-        return 0.0
-    ic = stocks_mod.industry_code_for_stock(code)
-    if not ic:
-        return 0.0
-    peers = stocks_mod.peers_for_industry(ic)
-    sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(prev)]
-    hot = 0.0
-    n = 0
-    for p in peers[:32]:
-        sub = sl[sl["Code"].astype(str).str.zfill(6) == str(p).zfill(6)]
-        if sub.empty:
-            continue
-        try:
-            rp = float(sub.iloc[0].get("return_pct") or 0.0)
-        except (TypeError, ValueError):
-            continue
-        if not math.isfinite(rp):
-            continue
-        n += 1
-        if rp + 1e-12 >= 0.12:
-            hot += min(1.0, rp / 0.30)
-    if n == 0:
-        return 0.0
-    return min(1.0, hot / max(1, min(n, 8)))
-
-
 def _feat_vector(
     train_events: list[BreakoutEvent],
     code: str,
@@ -736,9 +197,8 @@ def _feat_vector(
     else:
         ce = int(code_event_count)
     overlap = theme_carryover.theme_kw_overlap_score(kw_news, theme_weights)
-    # 시장흐름(지수) 피처: KOSPI(KS11) 전일 수익률 및 최근 변동성
-    ks11_ret_lag1, ks11_std5 = _ks11_market_feats(before_exclusive)
-    price = _price_feats_row(ohlcv_idx, code, before_exclusive)
+    ks11_ret_lag1, ks11_std5 = ks11_market_feats(before_exclusive)
+    price = price_feats_row(ohlcv_idx, code, before_exclusive)
     ret_lag1 = price[0] if price else 0.0
     ret_vs_ks11 = float(ret_lag1) - float(ks11_ret_lag1)
     risk_off = (
@@ -778,11 +238,11 @@ def _feat_vector(
         if lift is None:
             lift = np.zeros(len(vocab), dtype=np.float64)
         ctx_part = context_feature_vector(today_v, prof, global_c, lift)
-    ind_mom, ind_ov, ind_lim = _industry_feats(
+    ind_mom, ind_ov, ind_lim = industry_feats(
         code, before_exclusive, ohlcv_idx, kw_news, returns_ml=returns_ml
     )
-    investor = _investor_flow_feats_row(ohlcv_idx, code, before_exclusive)
-    prior_hot = _prior_industry_hot_score(code, before_exclusive, returns_ml)
+    investor = investor_flow_feats_row(ohlcv_idx, code, before_exclusive)
+    prior_hot = prior_industry_hot_score(code, before_exclusive, returns_ml)
     return base + price + investor + [float(ret_vs_ks11), float(risk_off)] + ctx_part + [
         float(ind_mom),
         float(ind_ov),
@@ -811,7 +271,7 @@ def _build_training_arrays(
     rng = np.random.default_rng(42)
     rows_x: list[list[float]] = []
     rows_y: list[int] = []
-    ohlcv_idx = _ohlcv_lookup(returns_ml)
+    ohlcv_idx = ohlcv_lookup(returns_ml)
     pos_boost = pos_boost_keys or set()
     neg_boost = neg_boost_keys or set()
     boost_cap = int(config.ML_MISS_BOOST_MAX_KEYS)
@@ -876,7 +336,7 @@ def _build_training_arrays(
             ctx_global=glob_t,
             ctx_lift=lift_t,
             hist_kw=hist_kw_by_code.get(c6, set()),
-            base_ret=_blended_hist_return(all_returns, code_returns.get(c6)),
+            base_ret=blended_hist_return(all_returns, code_returns.get(c6)),
             code_event_count=len(code_returns.get(c6, [])),
             today_tfidf=today_v,
             returns_ml=returns_ml,
@@ -892,13 +352,13 @@ def _build_training_arrays(
             code_returns.setdefault(c6, []).append(ev.return_pct)
             all_returns.append(ev.return_pct)
             ev_i += 1
-        blob = _early_blob_for_trading_day(news_by_calendar, d)
+        blob = early_blob_for_trading_day(news_by_calendar, d)
         if not blob.strip():
             continue
         kw_news = keyword_set(blob, k=100)
         ctx = predict.build_scoring_context(blob, train_events)
         cand_set = set(
-            _day_candidate_codes(
+            day_candidate_codes(
                 listing_codes,
                 names,
                 blob,
@@ -932,7 +392,6 @@ def _build_training_arrays(
             code = str(r["Code"]).zfill(6)
             in_pool = not cand_set or code in cand_set
             if not in_pool:
-                # 풀 밖 급등도 학습 — 실제 적중률(리콜) 개선. 풀 내 급등보다 1회 추가 가중.
                 pass
             name = str(names.get(code, r.get("Name", "")))
             fv = _train_feat(code, name, blob, kw_news, d, tw, today_v)
@@ -1154,12 +613,12 @@ def rank_predictions_ml(
         feedback_ctx = prediction_accuracy_cache.build_feedback_context()
     kw_news, _ = ctx
     tw = theme_weights or {}
-    ohlcv_idx = _ohlcv_lookup(returns_ml)
+    ohlcv_idx = ohlcv_lookup(returns_ml)
     from .. import investor_flow
     from . import prediction_ranking as pred_hybrid, prediction_ranking
 
     news_ctx = (ml_bundle or {}).get("news_ctx")
-    score_codes = _day_candidate_codes(
+    score_codes = day_candidate_codes(
         listing_codes,
         listing_names,
         news_text_blob,
@@ -1169,7 +628,7 @@ def rank_predictions_ml(
         news_ctx_bundle=news_ctx,
     )
     news_only = set(
-        _ml_scoring_candidate_codes(
+        ml_scoring_candidate_codes(
             listing_codes,
             listing_names,
             news_text_blob,
@@ -1225,8 +684,7 @@ def rank_predictions_ml(
         dtype=np.float64,
     )
     buf: list[predict.PredictionRow] = []
-    ks11_ret, _ = _ks11_market_feats(target_day)
-    from . import prediction_ranking as pred_hybrid
+    ks11_ret, _ = ks11_market_feats(target_day)
 
     for fi in range(len(cand_ix)):
         i = cand_ix[fi]
@@ -1249,8 +707,8 @@ def rank_predictions_ml(
         p = float(proba[fi])
         pr.ml_prob = p
         pr.ks11_ret_lag1 = ks11_ret
-        pr.momentum_score = _momentum_for_code(ohlcv_idx, code, target_day)
-        ohlcv_row = _ohlcv_row_for_code(ohlcv_idx, code, target_day)
+        pr.momentum_score = momentum_for_code(ohlcv_idx, code, target_day)
+        ohlcv_row = ohlcv_row_for_code(ohlcv_idx, code, target_day)
         if ohlcv_row is not None:
             pr.relative_strength_score = pred_hybrid.relative_strength_from_row(
                 ohlcv_row, ks11_ret_lag1=ks11_ret
@@ -1266,11 +724,11 @@ def rank_predictions_ml(
         except (KeyError, TypeError, ValueError):
             pr.investor_flow_score = 0.0
             pr.foreign_net_vol_ratio = 0.0
-        ind_mom, ind_ov, ind_lim = _industry_feats(code, target_day, ohlcv_idx, kw_news, returns_ml=returns_ml)
+        ind_mom, ind_ov, ind_lim = industry_feats(code, target_day, ohlcv_idx, kw_news, returns_ml=returns_ml)
         pr.industry_momentum = ind_mom
         pr.industry_theme_overlap = ind_ov
         pr.industry_limit_up_heat = ind_lim
-        pr.prior_industry_hot = _prior_industry_hot_score(code, target_day, returns_ml)
+        pr.prior_industry_hot = prior_industry_hot_score(code, target_day, returns_ml)
         if news_ctx:
             _, nctx = feats_for_code(news_ctx, news_text_blob, code)
             pr.news_context_score = nctx
@@ -1317,234 +775,6 @@ def rank_predictions_ml(
     return out
 
 
-# --- news context ML (from news_context_ml.py) ---
-
-VOCAB_SIZE = 56  # TF-IDF 상위 용어 수(학습·추론 공통)
-_CONTEXT_FEAT_NAMES = (
-    "news_cos_code",
-    "news_cos_global",
-    "news_dot_code",
-    "news_lift",
-    "news_today_norm",
-)
-
-
-def _early_blob(news_by: dict[date, list[dict[str, str]]], d: date) -> str:
-    """거래일 ``d`` 의 early 뉴스 텍스트 blob(14:30 컷오프 또는 전체 윈도우)."""
-    if config.USE_DECISION_NEWS_INTRADAY_CUTOFF:
-        blob, _ = news.aggregate_early_late_for_target(news_by, d)
-        return blob
-    ws, we = trading_calendar.news_window_for_target_trading_day(d)
-    from . import predict
-
-    return predict.aggregate_news_for_window(news_by, ws, we)
-
-
-def build_vocab_idf(
-    news_by: dict[date, list[dict[str, str]]],
-    days: list[date],
-) -> tuple[list[str], np.ndarray, np.ndarray]:
-    """훈련 구간 전체 뉴스로 어휘·IDF·급등일 term lift."""
-    tf_counter: Counter[str] = Counter()
-    doc_freq: Counter[str] = Counter()
-    n_docs = 0
-    for d in days:
-        blob = _early_blob(news_by, d)
-        if not blob.strip():
-            continue
-        toks = filter_specific_keywords(keyword_set(blob, k=280))
-        if not toks:
-            continue
-        n_docs += 1
-        tc = Counter(toks)
-        tf_counter.update(tc)
-        for t in set(toks):
-            doc_freq[t] += 1
-    vocab = [w for w, _ in tf_counter.most_common(VOCAB_SIZE)]
-    if not vocab:
-        vocab = ["__pad__"]
-    idf = np.array(
-        [math.log((1.0 + n_docs) / (1.0 + doc_freq.get(w, 0))) + 1.0 for w in vocab],
-        dtype=np.float64,
-    )
-    lift = np.zeros(len(vocab), dtype=np.float64)
-    return vocab, idf, lift
-
-
-def enrich_vocab_with_breakouts(
-    vocab: list[str],
-    idf: np.ndarray,
-    lift: np.ndarray,
-    train_events: list[BreakoutEvent],
-    news_by: dict[date, list[dict[str, str]]],
-    before_exclusive: date,
-) -> np.ndarray:
-    """급등 이벤트 당일 뉴스로 term lift 재계산."""
-    idx = {w: i for i, w in enumerate(vocab)}
-    breakout_tf: Counter[str] = Counter()
-    global_tf: Counter[str] = Counter()
-    for e in train_events:
-        if e.trading_day >= before_exclusive:
-            continue
-        blob = _early_blob(news_by, e.trading_day)
-        toks = filter_specific_keywords(keyword_set(blob, k=280))
-        breakout_tf.update(toks)
-        global_tf.update(toks)
-    out = lift.copy()
-    for w, i in idx.items():
-        g = global_tf.get(w, 0) / max(1.0, sum(global_tf.values()))
-        b = breakout_tf.get(w, 0) / max(1.0, sum(breakout_tf.values()))
-        out[i] = math.log1p(max(0.0, b / max(g, 1e-8)))
-    return out
-
-
-def tfidf_vector(
-    blob: str, vocab: list[str], idf: np.ndarray
-) -> np.ndarray:
-    """뉴스 blob → L2 정규화 TF-IDF 벡터(어휘 크기 ``len(vocab)``)."""
-    idx = {w: i for i, w in enumerate(vocab)}
-    tf = Counter(filter_specific_keywords(keyword_set(blob, k=280)))
-    v = np.zeros(len(vocab), dtype=np.float64)
-    for w, c in tf.items():
-        j = idx.get(w)
-        if j is not None:
-            v[j] = float(c)
-    v = v * idf
-    n = float(np.linalg.norm(v))
-    if n > 1e-12:
-        v /= n
-    return v
-
-
-def _profiles(
-    train_events: list[BreakoutEvent],
-    news_by: dict[date, list[dict[str, str]]],
-    vocab: list[str],
-    idf: np.ndarray,
-    before_exclusive: date,
-) -> tuple[dict[str, np.ndarray], np.ndarray]:
-    """급등일 뉴스 TF-IDF 평균 → 종목별 프로필·전체 급등일 global centroid."""
-    by_code: dict[str, list[np.ndarray]] = defaultdict(list)
-    all_vecs: list[np.ndarray] = []
-    for e in train_events:
-        if e.trading_day >= before_exclusive:
-            continue
-        blob = _early_blob(news_by, e.trading_day)
-        if not blob.strip():
-            continue
-        vec = tfidf_vector(blob, vocab, idf)
-        by_code[e.code].append(vec)
-        all_vecs.append(vec)
-    prof = {c: np.mean(vs, axis=0) for c, vs in by_code.items() if vs}
-    if all_vecs:
-        global_c = np.mean(all_vecs, axis=0)
-        gn = float(np.linalg.norm(global_c))
-        if gn > 1e-12:
-            global_c /= gn
-    else:
-        global_c = np.zeros(len(vocab), dtype=np.float64)
-    return prof, global_c
-
-
-def context_feature_vector(
-    today_vec: np.ndarray,
-    code_prof: np.ndarray,
-    global_c: np.ndarray,
-    lift: np.ndarray,
-) -> list[float]:
-    """
-    ML 랭커용 뉴스 맥락 피처 5종.
-
-    Returns:
-        ``[news_cos_code, news_cos_global, news_dot_code, news_lift, news_today_norm]``
-    """
-    cos_code = float(np.dot(today_vec, code_prof))
-    cos_glob = float(np.dot(today_vec, global_c))
-    dot_code = float(np.sum(today_vec * code_prof))
-    lift_sc = float(np.dot(today_vec, lift))
-    norm = float(np.linalg.norm(today_vec))
-    return [cos_code, cos_glob, dot_code, lift_sc, norm]
-
-
-def context_score_from_feats(feats: list[float]) -> float:
-    """0~1 뉴스 맥락 적합도(종목별 과거 급등일 뉴스 패턴 유사도 중심)."""
-    if len(feats) < 5:
-        return 0.0
-    cos_c, cos_g, dot_c, lift, _norm = feats
-    if cos_c + 1e-12 < 0.10:
-        return max(0.0, min(0.22, 0.18 * max(0.0, cos_g)))
-    s = (
-        0.62 * max(0.0, cos_c)
-        + 0.18 * min(1.0, max(0.0, lift) / 2.2)
-        + 0.12 * min(1.0, max(0.0, dot_c))
-        + 0.08 * max(0.0, cos_g)
-    )
-    return max(0.0, min(1.0, s))
-
-
-def affinity_candidate_codes(
-    listing_codes: list[str],
-    profiles: dict[str, np.ndarray],
-    today_vec: np.ndarray,
-    *,
-    top_k: int = 100,
-    min_score: float = 0.26,
-) -> list[str]:
-    """당일 뉴스와 과거 급등 프로필 유사도가 높은 종목 — 키워드 교집합 없이도 ML 풀에 편입."""
-    allowed = {str(c).zfill(6) for c in listing_codes}
-    scored: list[tuple[float, str]] = []
-    for code in allowed:
-        prof = profiles.get(code)
-        if prof is None:
-            continue
-        feats = context_feature_vector(today_vec, prof, np.zeros_like(today_vec), np.zeros_like(today_vec))
-        sc = context_score_from_feats(feats)
-        if sc + 1e-12 >= min_score:
-            scored.append((sc, code))
-    scored.sort(key=lambda x: (-x[0], x[1]))
-    return [c for _, c in scored[:top_k]]
-
-
-def make_news_ctx_bundle(
-    train_events: list[BreakoutEvent],
-    news_by: dict[date, list[dict[str, str]]],
-    train_start: date,
-    before_exclusive: date,
-) -> dict[str, Any]:
-    """T 직전 구간 기준 뉴스 맥락 bundle — ML 학습·추론·joblib 캐시에 공통 저장."""
-    days = sorted(
-        d for d in news_by if train_start <= d < before_exclusive
-    )
-    vocab, idf, lift = build_vocab_idf(news_by, days)
-    lift = enrich_vocab_with_breakouts(
-        vocab, idf, lift, train_events, news_by, before_exclusive
-    )
-    profiles, global_c = _profiles(
-        train_events, news_by, vocab, idf, before_exclusive
-    )
-    return {
-        "vocab": vocab,
-        "idf": idf,
-        "lift": lift,
-        "profiles": profiles,
-        "global_c": global_c,
-    }
-
-
-def feats_for_code(
-    bundle: dict[str, Any],
-    blob: str,
-    code: str,
-) -> tuple[list[float], float]:
-    """bundle·당일 뉴스 blob·종목코드 → (ML 피처 5종, 0~1 맥락 점수)."""
-    vocab = bundle["vocab"]
-    idf = bundle["idf"]
-    lift = bundle["lift"]
-    profiles: dict[str, np.ndarray] = bundle["profiles"]
-    global_c: np.ndarray = bundle["global_c"]
-    today = tfidf_vector(blob, vocab, idf)
-    prof = profiles.get(str(code).zfill(6))
-    if prof is None:
-        prof = np.zeros(len(vocab), dtype=np.float64)
-    feats = context_feature_vector(today, prof, global_c, lift)
-    return feats, context_score_from_feats(feats)
+# 하위 호환(구 진단·외부 스크립트)
+_day_candidate_codes = day_candidate_codes
+_ks11_market_feats = ks11_market_feats

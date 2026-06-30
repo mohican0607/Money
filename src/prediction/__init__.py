@@ -7,6 +7,18 @@
 from .predict import PredictionRow, predict_for_trading_day, prediction_row_for_code
 from .ml_move_rank import fit_or_load_classifier, rank_predictions_ml
 from .prediction_ranking import finalize_ranked_predictions
+from .candidate_pool import day_candidate_codes
+from .news_context import (
+    CONTEXT_FEAT_NAMES,
+    VOCAB_SIZE,
+    affinity_candidate_codes,
+    context_feature_vector,
+    context_score_from_feats,
+    early_blob_for_day,
+    feats_for_code,
+    make_news_ctx_bundle,
+    tfidf_vector,
+)
 
 __all__ = [
     "PredictionRow",
@@ -15,6 +27,16 @@ __all__ = [
     "fit_or_load_classifier",
     "rank_predictions_ml",
     "finalize_ranked_predictions",
+    "day_candidate_codes",
+    "CONTEXT_FEAT_NAMES",
+    "VOCAB_SIZE",
+    "affinity_candidate_codes",
+    "context_feature_vector",
+    "context_score_from_feats",
+    "early_blob_for_day",
+    "feats_for_code",
+    "make_news_ctx_bundle",
+    "tfidf_vector",
 ]
 
 from . import accuracy_cache as prediction_accuracy_cache  # noqa: F401
