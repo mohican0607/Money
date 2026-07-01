@@ -53,6 +53,7 @@ from .rows import (
     _backfill_day_actuals_from_returns,
     _build_rebuild_learning_payload,
     _enrich_rows_actual_ret_prev_day,
+    _reconcile_closed_day_report,
     _enrich_rows_disclosure_hits,
     _enrich_rows_news_evidence,
     _enrich_rows_stock_ret_tooltip,
@@ -996,21 +997,29 @@ def _run_pipeline(
             refresh_tail_days=1,
         )
         returns_post = stocks.daily_returns_table(ohlcv_post)
-        for dr in day_reports:
-            if dr.forward_observation:
-                continue
-            if dr.trading_day > refresh_ohlcv_end:
-                continue
-            if not trading_calendar.is_krx_daily_bar_effective_closed(
-                dr.trading_day, now_kst=now_end_kst
-            ):
-                continue
-            _backfill_day_actuals_from_returns(
-                dr,
-                returns=returns_post,
-                threshold=config.BIG_MOVE_THRESHOLD,
-            )
         returns = returns_post
+    else:
+        returns_post = returns
+
+    reconciled = 0
+    for dr in day_reports:
+        if dr.trading_day > refresh_ohlcv_end:
+            continue
+        if _reconcile_closed_day_report(
+            dr,
+            returns=returns_post,
+            threshold=config.BIG_MOVE_THRESHOLD,
+            listing_names=names,
+            market_by_code=market_by_code,
+            now_kst=now_end_kst,
+            universe_size=len(codes),
+        ):
+            reconciled += 1
+    if reconciled:
+        print(
+            f"장 마감 반영: 종가 기준 실적·Hit@K·테마 재구성 {reconciled}일",
+            flush=True,
+        )
 
     _enrich_cumulative_accuracy_avg(day_reports)
     prediction_accuracy_cache.merge_from_day_reports(day_reports)

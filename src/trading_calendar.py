@@ -194,3 +194,8 @@ def is_krx_daily_bar_effective_closed(session_day: date, *, now_kst: datetime | 
     if not is_trading_day(session_day):
         return True
     return not is_before_krx_regular_close_kst(session_day, now_kst=now_kst)
+
+
+def trading_day_actuals_finalized(session_day: date, *, now_kst: datetime | None = None) -> bool:
+    """관측 거래일 ``T`` 종가·일봉 실적을 확정 반영할 수 있으면 True(과거일·당일 장마감 후)."""
+    return is_krx_daily_bar_effective_closed(session_day, now_kst=now_kst)

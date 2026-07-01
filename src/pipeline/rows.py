@@ -1145,3 +1145,126 @@ def _backfill_day_actuals_from_returns(
         }
         for _, r in movers.iterrows()
     ]
+
+
+def _reconcile_closed_day_report(
+    dr: report.DayReport,
+    *,
+    returns,
+    threshold: float,
+    listing_names: dict[str, str],
+    market_by_code: dict[str, str],
+    now_kst: datetime,
+    universe_size: int = 0,
+) -> bool:
+    """
+    장 마감 확정 후 ``DayReport`` 를 종가 기준으로 다시 맞춥니다.
+
+    장중·예측 전용으로 만들어진 표·Hit@K·테마 placeholder 를 실제 수익률로 갱신합니다.
+    """
+    t = dr.trading_day
+    if not trading_calendar.trading_day_actuals_finalized(t, now_kst=now_kst):
+        return False
+
+    dr.forward_observation = False
+    dr.forward_pred_rationale_html = ""
+    pred_pct_mid_min = 10.0
+    preds_by_code = {str(p.code).zfill(6): p for p in (dr.predictions or [])}
+    seen = {str(r.get("code", "")).zfill(6) for r in dr.rows_compare if r.get("code")}
+
+    movers_10up = stocks.big_movers_on_date(returns, t, pred_pct_mid_min / 100.0)
+    for _, mrow in movers_10up.iterrows():
+        code = str(mrow["Code"]).zfill(6)
+        if code in seen:
+            continue
+        seen.add(code)
+        act = float(mrow["return_pct"])
+        pr = preds_by_code.get(code)
+        name = str(mrow.get("Name") or listing_names.get(code, "") or code)
+        dr.rows_compare.append(
+            {
+                "code": code,
+                "market_segment": market_by_code.get(code, "other"),
+                "name": name,
+                "reasons_html": (
+                    "일일 예측 후보에 포함되지 않음(예측 수익률 재계산 안 함)"
+                    if pr is None
+                    else "<br/>".join(pr.reasons)
+                ),
+                "keywords": list(pr.matched_keywords) if pr else [],
+                "keyword_hits": int(pr.keyword_hits) if pr else 0,
+                "mention_score": float(pr.mention_score) if pr else 0.0,
+                "pred_ret": float(pr.predicted_return_pct) if pr else None,
+                "ml_prob": float(pr.ml_prob) if pr and pr.ml_prob is not None else None,
+                "rank_position": getattr(pr, "rank_position", None) if pr else None,
+                "confidence_tier": str(getattr(pr, "confidence_tier", "none") or "none")
+                if pr
+                else "none",
+                "actual_ret": act,
+                "actual_big": bool(act >= threshold),
+                "pred_high": (
+                    prediction_ranking.is_high_confidence_prediction(pr) if pr else False
+                ),
+                "pred_mid": (
+                    prediction_ranking.is_mid_confidence_prediction(pr) if pr else False
+                ),
+                "rise_band": _rise_band_for_row(
+                    float(pr.predicted_return_pct) if pr else None, act
+                ),
+                "gap_analysis_html": "",
+                "late_news_hit": None,
+            }
+        )
+
+    _backfill_day_actuals_from_returns(dr, returns=returns, threshold=threshold)
+
+    for r in dr.rows_compare:
+        for k in (
+            "forward_observation",
+            "actual_ret_forward_n_ref",
+            "actual_ret_n_day_pct",
+            "actual_cell_pre_close_snapshot",
+            "actual_ret_intraday_pct",
+        ):
+            r.pop(k, None)
+
+    dr.rows_compare = [
+        r
+        for r in dr.rows_compare
+        if r.get("actual_big")
+        or r.get("pred_high")
+        or r.get("pred_mid")
+        or (
+            r.get("pred_ret") is not None
+            and float(r.get("pred_ret") or 0) >= pred_pct_mid_min
+        )
+    ]
+    dr.rows_compare.sort(key=lambda r: (not r["actual_big"], not r["pred_high"], r["code"]))
+
+    _enrich_rows_actual_ret_prev_day(dr.rows_compare, returns, t)
+    _enrich_rows_stock_ret_tooltip(
+        dr.rows_compare,
+        returns,
+        t,
+        forward_observation=False,
+        now_kst=now_kst,
+    )
+
+    if dr.predictions:
+        actual_big_codes = {
+            str(m.get("code", "")).zfill(6)
+            for m in (dr.actual_big_movers or [])
+            if m.get("code")
+        }
+        dr.hit_at_k_metrics = prediction_ranking.compute_hit_at_k_metrics(
+            [p.code for p in dr.predictions],
+            actual_big_codes,
+            universe_size=universe_size,
+        )
+
+    dr.pred_accuracy_summary = _compute_day_pred_accuracy_summary(
+        dr.rows_compare, threshold=threshold
+    )
+    dr.market_theme_html = ""
+    dr.mover_rationale_html = ""
+    return True

@@ -309,6 +309,8 @@ def _observation_day_forward_mode(
         now_kst = datetime.now(trading_calendar.KST)
     if t > today:
         return True
+    if t < today:
+        return False
     if (
         t == today
         and trading_calendar.is_trading_day(t)

@@ -10,6 +10,7 @@ from .render import (
     extract_monthly_report_day_sections,
     merge_dated_n_rollup,
     parse_monthly_report_trading_days,
+    preserved_day_section_is_stale_forward_observation,
     preserved_day_section_needs_market_theme_backfill,
     render_compact_tabbed_report,
     render_dated_n_report,
@@ -31,5 +32,6 @@ __all__ = [
     "parse_monthly_report_trading_days",
     "collect_monthly_report_index_links",
     "backfill_preserved_day_sections_market_theme",
+    "preserved_day_section_is_stale_forward_observation",
     "preserved_day_section_needs_market_theme_backfill",
 ]

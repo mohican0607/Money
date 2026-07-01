@@ -1898,27 +1898,34 @@ def build_move_reference_html(
                 "아래 시세·뉴스 해석은 장 마감 후 갱신될 수 있습니다.</p>"
             )
         elif t_trading_day is not None and trading_calendar.is_trading_day(t_trading_day):
-            asof = trading_calendar.last_trading_day_before(t_trading_day)
-            chunks.append(
-                "<p><strong>예측 전용</strong> — "
-                f"{tlabel} 장 시작 전·실적 미확정. "
-                f"시세·뉴스는 <strong>{asof.isoformat()}</strong>까지 확정된 일봉·"
-                "예측 입력 뉴스 구간 기준입니다.</p>"
-            )
-            chunks.append(
-                build_forward_pred_context_html(
-                    code=code,
-                    name=name,
-                    t_trading_day=t_trading_day,
-                    kospi_return=kospi_return,
-                    pred_news_hits=pred_news_hits,
-                    actual_ctx_rows=actual_ctx_rows,
-                    disclosure_hits=disclosure_hits,
-                    keywords=keywords,
-                    returns_sub=returns_sub,
-                    returns_ml_sub=returns_ml_sub,
+            if trading_calendar.trading_day_actuals_finalized(t_trading_day):
+                chunks.append(
+                    f"<p class=\"combo-tip-empty\"><strong>참고</strong> — "
+                    f"{tlabel} 종가 실적은 비교표·일봉에 반영됩니다. "
+                    "이 패널은 종목 맥락 참고용입니다.</p>"
                 )
-            )
+            else:
+                asof = trading_calendar.last_trading_day_before(t_trading_day)
+                chunks.append(
+                    "<p><strong>예측 전용</strong> — "
+                    f"{tlabel} 장 마감 전·실적 미확정. "
+                    f"시세·뉴스는 <strong>{asof.isoformat()}</strong>까지 확정된 일봉·"
+                    "예측 입력 뉴스 구간 기준입니다.</p>"
+                )
+                chunks.append(
+                    build_forward_pred_context_html(
+                        code=code,
+                        name=name,
+                        t_trading_day=t_trading_day,
+                        kospi_return=kospi_return,
+                        pred_news_hits=pred_news_hits,
+                        actual_ctx_rows=actual_ctx_rows,
+                        disclosure_hits=disclosure_hits,
+                        keywords=keywords,
+                        returns_sub=returns_sub,
+                        returns_ml_sub=returns_ml_sub,
+                    )
+                )
         else:
             chunks.append(
                 "<p class=\"combo-tip-empty\"><strong>참고</strong> — "

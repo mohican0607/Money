@@ -220,6 +220,32 @@ def inject_market_theme_into_day_section(section_html: str, theme_inner_html: st
     return block + "\n" + section_html
 
 
+def preserved_day_section_is_stale_forward_observation(
+    section_html: str,
+    t_day: date,
+    *,
+    now_kst: datetime | None = None,
+) -> bool:
+    """
+    월간 병합으로 유지된 일자 블록이 장 마감 후에도 예측 전용 UI로 남아 있으면 True.
+
+    (예: 6/30 실행으로 미래일 T=7/1 이 예측 전용으로 저장된 뒤, 7/2 에 7/2 만 재실행)
+    """
+    if not trading_calendar.is_trading_day(t_day):
+        return False
+    now = now_kst or datetime.now(trading_calendar.KST)
+    if not trading_calendar.trading_day_actuals_finalized(t_day, now_kst=now):
+        return False
+    html = section_html or ""
+    if "day-forward-obs" in html:
+        return True
+    if re.search(r"예측\s*전용\s*</span>", html):
+        return True
+    if re.search(r"<th[^>]*>예측\s*근거</th>", html):
+        return True
+    return False
+
+
 def preserved_day_section_needs_market_theme_backfill(
     section_html: str,
     t_day: date,

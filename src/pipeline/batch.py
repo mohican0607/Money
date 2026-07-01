@@ -1,6 +1,7 @@
 """월간 HTML 배치 렌더."""
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from pathlib import Path
 
@@ -20,6 +21,91 @@ from .rows import (
 )
 from .support import _collect_calendar_days_for_trading_range, _fetch_news_for_calendar_days
 from .types import PipelineOut
+
+_MONTHLY_REPORT_RE = re.compile(r"^report_\d{4}\.\d{2}\.html$", re.IGNORECASE)
+
+
+def _monthly_report_paths_for_po(po: PipelineOut) -> list[Path]:
+    """이번 ``PipelineOut`` 과 인접 달(ISO 주 경계) 월간 리포트만 스캔합니다."""
+    months: set[tuple[int, int]] = set()
+    for dr in po.day_reports:
+        y, m = dr.trading_day.year, dr.trading_day.month
+        months.add((y, m))
+        if m == 1:
+            months.add((y - 1, 12))
+        else:
+            months.add((y, m - 1))
+        if m == 12:
+            months.add((y + 1, 1))
+        else:
+            months.add((y, m + 1))
+    paths: list[Path] = []
+    for y, m in sorted(months):
+        p = config.OUTPUT_DIR / f"report_{y}.{m:02d}.html"
+        if p.is_file():
+            paths.append(p)
+    return paths
+
+
+def _supplement_stale_forward_preserved_reports(
+    po: PipelineOut,
+    *,
+    merge_existing_monthly_days: bool,
+) -> PipelineOut:
+    """
+    월간 HTML 병합으로 남은 **장 마감 후에도 예측 전용** 일자 블록을 자동 재처리합니다.
+    """
+    if not merge_existing_monthly_days:
+        return po
+    now_kst = datetime.now(trading_calendar.KST)
+    in_po = {dr.trading_day for dr in po.day_reports}
+    stale: list[date] = []
+    for path in _monthly_report_paths_for_po(po):
+        for d, html in report.extract_monthly_report_day_sections(path).items():
+            if d in in_po:
+                continue
+            if report.preserved_day_section_is_stale_forward_observation(
+                html, d, now_kst=now_kst
+            ):
+                stale.append(d)
+    stale = sorted(set(stale))
+    if not stale:
+        return po
+    print(
+        "장 마감 후 미갱신 예측 전용 일자 자동 재처리: "
+        + ", ".join(t.isoformat() for t in stale),
+        flush=True,
+    )
+    from .run import _run_pipeline as run_pipeline
+
+    end_date = max(stale + [dr.trading_day for dr in po.day_reports])
+    extra = run_pipeline(
+        stale,
+        end_date,
+        include_target_calendar_news=True,
+        skip_ohlcv_gap_download=True,
+    )
+    by_day = {dr.trading_day: dr for dr in po.day_reports}
+    for dr in extra.day_reports:
+        by_day[dr.trading_day] = dr
+    news_map = dict(po.news_by_calendar or {})
+    news_map.update(extra.news_by_calendar or {})
+    return PipelineOut(
+        day_reports=sorted(by_day.values(), key=lambda x: x.trading_day),
+        news_source=po.news_source,
+        correlation_rows=po.correlation_rows,
+        train_start=po.train_start,
+        test_start=po.test_start,
+        end_date=max(po.end_date, extra.end_date),
+        late_below_n=po.late_below_n,
+        late_below_kw=po.late_below_kw,
+        late_gte_n=po.late_gte_n,
+        late_gte_kw=po.late_gte_kw,
+        movers_data_note=po.movers_data_note,
+        returns_df=extra.returns_df or po.returns_df,
+        news_by_calendar=news_map,
+        listing_names=extra.listing_names or po.listing_names,
+    )
 
 
 def _render_monthly_batch(
@@ -73,6 +159,10 @@ def _render_monthly_batch(
     if po.movers_data_note:
         meta_base["movers_data_note"] = po.movers_data_note
 
+    po = _supplement_stale_forward_preserved_reports(
+        po, merge_existing_monthly_days=merge_existing_monthly_days
+    )
+
     month_batches: dict[tuple[int, int], list[report.DayReport]] = {}
     for dr in po.day_reports:
         t = dr.trading_day
@@ -116,6 +206,35 @@ def _render_monthly_batch(
         cutoff_kst = (
             f"{config.NEWS_CUTOFF_KST_HOUR:02d}:{config.NEWS_CUTOFF_KST_MINUTE:02d}"
         )
+        now_kst = datetime.now(trading_calendar.KST)
+        if preserved_day_html and po.returns_df is not None and po.listing_names:
+            news_map = dict(po.news_by_calendar or {})
+            need_news_days = [
+                d
+                for d in preserved_day_html
+                if report.preserved_day_section_needs_market_theme_backfill(
+                    preserved_day_html[d],
+                    d,
+                    now_kst=now_kst,
+                )
+            ]
+            if need_news_days:
+                cal_for_news = _collect_calendar_days_for_trading_range(
+                    need_news_days,
+                    include_target_calendar_days=True,
+                    target_calendar_trading_days=frozenset(need_news_days),
+                )
+                missing_cal = [d for d in cal_for_news if d not in news_map]
+                if missing_cal:
+                    news_map.update(_fetch_news_for_calendar_days(missing_cal))
+            preserved_day_html = report.backfill_preserved_day_sections_market_theme(
+                preserved_day_html,
+                news_by_calendar=news_map,
+                returns_df=po.returns_df,
+                listing_names=po.listing_names,
+                news_cutoff_label=cutoff_kst,
+                now_kst=now_kst,
+            )
         if po.returns_df is not None and po.listing_names:
             theme_days = sorted(
                 dr.trading_day for dr in batch if not dr.forward_observation
@@ -148,6 +267,21 @@ def _render_monthly_batch(
                         early_rows=early,
                         news_cutoff_label=cutoff_kst,
                     )
+                    if not dr.market_theme_html:
+                        dr.market_theme_html = (
+                            snapshot_rebuild_learning.format_market_theme_flow_html(
+                                flow_row,
+                                news_cutoff_label=cutoff_kst,
+                                threshold_pct=float(config.BIG_MOVE_THRESHOLD) * 100.0,
+                            )
+                        )
+                        day_mover_rationale.enrich_day_report_mover_rationale(
+                            dr,
+                            flow_row,
+                            listing_names=po.listing_names,
+                            early_rows=early,
+                            news_by_calendar=po.news_by_calendar or {},
+                        )
         report.render_compact_tabbed_report(
             title=f"실제 20%↑ 종목 · 예측 상승률 · {fname.replace('.html', '')}",
             days=batch,

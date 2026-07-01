@@ -1545,6 +1545,8 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
           {{ market_filter_radios(d.trading_day.isoformat() ~ "-" ~ w.monday.isoformat(), d.forward_observation | default(false)) }}
         </div>
         {{ day_pred_accuracy_banner(d, meta) }}
+        {{ market_theme_panel(d) }}
+        {{ mover_rationale_panel(d) }}
         {{ forward_pred_rationale_panel(d, meta) }}
         {{ hit_at_k_panel(d, meta) }}
         {{ compact_day_table(d, meta) }}
