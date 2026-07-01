@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import math
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -25,6 +27,7 @@ from .candidate_pool import day_candidate_codes, ml_scoring_candidate_codes
 from .market_features import (
     blended_hist_return,
     industry_feats,
+    IndustryFeatureCache,
     investor_flow_feats_row,
     ks11_market_feats,
     momentum_for_code,
@@ -180,6 +183,8 @@ def _feat_vector(
     code_event_count: int | None = None,
     today_tfidf: np.ndarray | None = None,
     returns_ml: pd.DataFrame | None = None,
+    ks11_feats: tuple[float, float] | None = None,
+    ind_cache: IndustryFeatureCache | None = None,
 ) -> list[float]:
     """뉴스·이력 피터 + (선택) 시세 피처. ``ohlcv_idx`` 가 있으면 ``before_exclusive`` 거래일 행을 붙입니다."""
     if hist_kw is None:
@@ -203,7 +208,10 @@ def _feat_vector(
     else:
         ce = int(code_event_count)
     overlap = theme_carryover.theme_kw_overlap_score(kw_news, theme_weights)
-    ks11_ret_lag1, ks11_std5 = ks11_market_feats(before_exclusive)
+    if ks11_feats is not None:
+        ks11_ret_lag1, ks11_std5 = float(ks11_feats[0]), float(ks11_feats[1])
+    else:
+        ks11_ret_lag1, ks11_std5 = ks11_market_feats(before_exclusive)
     price = price_feats_row(ohlcv_idx, code, before_exclusive)
     ret_lag1 = price[0] if price else 0.0
     ret_vs_ks11 = float(ret_lag1) - float(ks11_ret_lag1)
@@ -244,13 +252,18 @@ def _feat_vector(
         if lift is None:
             lift = np.zeros(len(vocab), dtype=np.float64)
         ctx_part = context_feature_vector(today_v, prof, global_c, lift)
-    ind_mom, ind_ov, ind_lim = industry_feats(
-        code, before_exclusive, ohlcv_idx, kw_news, returns_ml=returns_ml
-    )
+    if ind_cache is not None:
+        ind_mom, ind_ov, ind_lim = ind_cache.industry_feats(code)
+        prior_hot = ind_cache.prior_hot(code)
+        peer_lag1 = ind_cache.peer_lag1_mean(code)
+    else:
+        ind_mom, ind_ov, ind_lim = industry_feats(
+            code, before_exclusive, ohlcv_idx, kw_news, returns_ml=returns_ml
+        )
+        prior_hot = prior_industry_hot_score(code, before_exclusive, returns_ml)
+        peer_lag1 = peer_ret_lag1_mean(code, before_exclusive, returns_ml)
     investor = investor_flow_feats_row(ohlcv_idx, code, before_exclusive)
-    prior_hot = prior_industry_hot_score(code, before_exclusive, returns_ml)
     ret_lag2 = prior_return_pct(ohlcv_idx, code, before_exclusive, lag_sessions=2)
-    peer_lag1 = peer_ret_lag1_mean(code, before_exclusive, returns_ml)
     vol_surge = float(price[6]) if len(price) > 6 else 0.0
     mom_news = float(ret_lag1) * math.sqrt(max(0.0, float(n_hit)))
     vol_mom = float(ret_lag1) * min(3.0, max(0.0, vol_surge))
@@ -266,6 +279,154 @@ def _feat_vector(
     ]
 
 
+def _code_stats_before_exclusive(
+    train_events: list[BreakoutEvent],
+    before_exclusive: date,
+) -> tuple[dict[str, int], dict[str, float]]:
+    """관측일 이전 급등 이벤트 건수·베이스 수익률(피처 반복 계산 방지)."""
+    code_returns: dict[str, list[float]] = {}
+    all_returns: list[float] = []
+    counts: dict[str, int] = {}
+    for e in train_events:
+        if e.trading_day >= before_exclusive:
+            continue
+        c6 = str(e.code).zfill(6)
+        counts[c6] = counts.get(c6, 0) + 1
+        code_returns.setdefault(c6, []).append(float(e.return_pct))
+        all_returns.append(float(e.return_pct))
+    base_ret = {
+        c6: blended_hist_return(all_returns, rets)
+        for c6, rets in code_returns.items()
+    }
+    return counts, base_ret
+
+
+def _cheap_prescore_code(
+    code: str,
+    *,
+    target_day: date,
+    ohlcv_idx: pd.DataFrame,
+    kw_news: frozenset[str],
+    profile: dict[str, frozenset[str]],
+    news_blob: str,
+    listing_names: dict[str, str],
+) -> float:
+    """ML 피처 전 1차 컷 — 뉴스·모멘텀만으로 후보 순위."""
+    from . import prediction_ranking as pred_hybrid
+
+    c6 = str(code).zfill(6)
+    name = listing_names.get(c6, "") or ""
+    hist = profile.get(c6, frozenset())
+    n_hit = len(filter_specific_keywords(hist & kw_news))
+    mention = name_mention_score(news_blob, name)
+    score = n_hit * 2.5 + mention * 4.0
+    try:
+        row = ohlcv_idx.loc[(target_day, c6)]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[-1]
+        mom = pred_hybrid.momentum_raw_from_row(row)
+        rl = float(row.get("ret_lag1") or 0.0)
+        vs = float(row.get("vol_surge_ratio") or 0.0)
+        score += mom * 3.5 + max(0.0, rl) * 10.0 + min(vs, 2.5) * 0.4
+        if rl <= -0.02 and vs + 1e-12 >= 0.06:
+            score += 0.85
+    except (KeyError, TypeError, ValueError):
+        pass
+    return score
+
+
+def _cap_score_codes_for_ml(
+    score_codes: list[str],
+    *,
+    cap: int,
+    target_day: date,
+    ohlcv_idx: pd.DataFrame,
+    kw_news: frozenset[str],
+    profile: dict[str, frozenset[str]],
+    news_blob: str,
+    listing_names: dict[str, str],
+) -> list[str]:
+    """추론 풀 상한 — 저신호 후보는 ML 피처 계산 전에 제외."""
+    if cap <= 0 or len(score_codes) <= cap:
+        return score_codes
+    ranked = sorted(
+        score_codes,
+        key=lambda c: (-_cheap_prescore_code(
+            c,
+            target_day=target_day,
+            ohlcv_idx=ohlcv_idx,
+            kw_news=kw_news,
+            profile=profile,
+            news_blob=news_blob,
+            listing_names=listing_names,
+        ), str(c).zfill(6)),
+    )
+    return ranked[:cap]
+
+
+def _build_feat_matrix_parallel(
+    *,
+    cand_ix: list[int],
+    listing_codes: list[str],
+    listing_names: dict[str, str],
+    train_events: list[BreakoutEvent],
+    news_blob: str,
+    kw_news: frozenset[str],
+    target_day: date,
+    ohlcv_idx: pd.DataFrame,
+    theme_weights: dict[str, float],
+    news_ctx: dict[str, Any] | None,
+    returns_ml: pd.DataFrame,
+    ks11_feats: tuple[float, float],
+    event_counts: dict[str, int],
+    base_rets: dict[str, float],
+    profile: dict[str, frozenset[str]],
+    today_tfidf: np.ndarray | None,
+    ind_cache: IndustryFeatureCache | None,
+) -> np.ndarray:
+    """후보 종목 ML 피처 행렬(병렬)."""
+    prof_t = (news_ctx or {}).get("profiles") or {}
+    glob_t = (news_ctx or {}).get("global_c")
+    lift_t = (news_ctx or {}).get("lift")
+
+    def _one(i: int) -> list[float]:
+        code = listing_codes[i]
+        c6 = str(code).zfill(6)
+        name = listing_names.get(c6, "") or ""
+        return _feat_vector(
+            train_events,
+            c6,
+            name,
+            news_blob,
+            kw_news,
+            before_exclusive=target_day,
+            ohlcv_idx=ohlcv_idx,
+            theme_weights=theme_weights,
+            news_ctx=news_ctx,
+            ctx_profiles=prof_t,
+            ctx_global=glob_t,
+            ctx_lift=lift_t,
+            hist_kw=profile.get(c6, frozenset()),
+            base_ret=base_rets.get(c6),
+            code_event_count=event_counts.get(c6, 0),
+            today_tfidf=today_tfidf,
+            returns_ml=returns_ml,
+            ks11_feats=ks11_feats,
+            ind_cache=ind_cache,
+        )
+
+    workers = min(max(1, int(config.PRED_ML_FEAT_WORKERS)), len(cand_ix))
+    if workers <= 1 or len(cand_ix) < 24:
+        feats = [_one(i) for i in cand_ix]
+    else:
+        feats = [None] * len(cand_ix)  # type: ignore[list-item]
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(_one, i): fi for fi, i in enumerate(cand_ix)}
+            for fut in futs:
+                feats[futs[fut]] = fut.result()
+    return np.asarray(feats, dtype=np.float64)
+
+
 def _build_training_arrays(
     returns_ml: pd.DataFrame,
     train_events: list[BreakoutEvent],
@@ -277,6 +438,7 @@ def _build_training_arrays(
     *,
     pos_boost_keys: set[tuple[str, str]] | None = None,
     neg_boost_keys: set[tuple[str, str]] | None = None,
+    fast_train: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]] | None:
     """
     훈련 구간 거래일별 급등(양)·비급등(음) 샘플 행을 만들어 ``(X, y)`` 배열로 반환.
@@ -298,14 +460,23 @@ def _build_training_arrays(
             pick = rng.choice(len(neg_boost), size=boost_cap, replace=False)
             neg_boost = {list(neg_boost)[i] for i in pick}
     boost_dup = max(0, int(config.ML_MISS_BOOST_DUP))
-    neg_cap = min(MAX_NEG_PER_DAY, int(config.ML_TRAIN_MAX_NEG_PER_DAY))
+    if fast_train:
+        neg_cap = min(MAX_NEG_PER_DAY, int(config.ML_TRAIN_MAX_NEG_PER_DAY_FAST))
+        train_day_cap = int(config.ML_TRAIN_DAY_CANDIDATE_CAP)
+    else:
+        neg_cap = min(MAX_NEG_PER_DAY, int(config.ML_TRAIN_MAX_NEG_PER_DAY))
+        train_day_cap = 0
 
     days = sorted(
         d
         for d in returns_ml["Date"].dt.date.unique()
         if train_start <= d < label_before_exclusive
     )
-    lookback = int(config.ML_TRAIN_LOOKBACK_DAYS)
+    lookback = int(
+        config.ML_TRAIN_LOOKBACK_DAYS_FAST
+        if fast_train
+        else config.ML_TRAIN_LOOKBACK_DAYS
+    )
     if lookback > 0 and len(days) > lookback:
         days = days[-lookback:]
     news_ctx = make_news_ctx_bundle(
@@ -372,6 +543,9 @@ def _build_training_arrays(
             continue
         kw_news = keyword_set(blob, k=100)
         ctx = predict.build_scoring_context(blob, train_events)
+        day_slice = returns_ml[returns_ml["Date"] == pd.Timestamp(d)]
+        if day_slice.empty:
+            continue
         cand_set = set(
             day_candidate_codes(
                 listing_codes,
@@ -383,6 +557,28 @@ def _build_training_arrays(
                 news_ctx_bundle=news_ctx,
             )
         )
+        if train_day_cap > 0 and len(cand_set) > train_day_cap:
+            pos_day = set(
+                day_slice.loc[day_slice["return_pct"] >= threshold, "Code"]
+                .astype(str)
+                .str.zfill(6)
+            )
+            ranked = sorted(
+                cand_set,
+                key=lambda c: (
+                    -_cheap_prescore_code(
+                        c,
+                        target_day=d,
+                        ohlcv_idx=ohlcv_idx,
+                        kw_news=kw_news,
+                        profile=ctx[1],
+                        news_blob=blob,
+                        listing_names=names,
+                    ),
+                    str(c).zfill(6),
+                ),
+            )
+            cand_set = set(ranked[:train_day_cap]) | pos_day
         tw = theme_carryover.weights_for_observation_day(
             d,
             train_events=train_events,
@@ -393,9 +589,6 @@ def _build_training_arrays(
         today_v: np.ndarray | None = None
         if vocab and idf_arr is not None:
             today_v = tfidf_vector(blob, vocab, idf_arr)
-        day_slice = returns_ml[returns_ml["Date"] == pd.Timestamp(d)]
-        if day_slice.empty:
-            continue
         pos_mask = day_slice["return_pct"] >= threshold
         pos_df = day_slice.loc[pos_mask]
         neg_df = day_slice.loc[~pos_mask]
@@ -498,6 +691,7 @@ def fit_or_load_classifier(
         return None
 
     path = _model_path(fp, label_before_exclusive)
+    fast_train = bool(not force_retrain and config.ML_TRAIN_FAST_ON_CACHE_MISS)
     bundle: dict[str, Any] = {
         "pipeline": None,
         "fp": fp,
@@ -546,6 +740,7 @@ def fit_or_load_classifier(
         label_before_exclusive,
         pos_boost_keys=pos_boost,
         neg_boost_keys=neg_boost,
+        fast_train=fast_train,
     )
     if xy is None:
         print(
@@ -566,15 +761,21 @@ def fit_or_load_classifier(
         X_tr, y_tr = X, y
         X_cal, y_cal = X[:0], y[:0]
 
+    if fast_train:
+        print(
+            "ML 랭커: 캐시 미스 — 장마감(15:30) 전 완료용 경량 학습",
+            flush=True,
+        )
+
     clf = HistGradientBoostingClassifier(
-        max_depth=8,
-        max_iter=220,
-        learning_rate=0.05,
+        max_depth=7 if fast_train else 8,
+        max_iter=90 if fast_train else 220,
+        learning_rate=0.07 if fast_train else 0.05,
         random_state=42,
         class_weight="balanced",
         early_stopping=True,
         validation_fraction=0.12,
-        n_iter_no_change=14,
+        n_iter_no_change=10 if fast_train else 14,
     )
     pipe: Pipeline = Pipeline(
         [
@@ -623,10 +824,11 @@ def rank_predictions_ml(
     forward_observation: bool = False,
 ) -> list[predict.PredictionRow]:
     """종목 관련 신호가 있는 후보만 급등 확률을 매기고 상위 ``top_n`` ``PredictionRow`` 를 만듭니다."""
+    t0 = time.perf_counter()
     ctx = predict.build_scoring_context(news_text_blob, train_events)
+    kw_news, profile = ctx
     if feedback_ctx is None:
         feedback_ctx = prediction_accuracy_cache.build_feedback_context()
-    kw_news, _ = ctx
     tw = theme_weights or {}
     ohlcv_idx = ohlcv_lookup(returns_ml)
     from .. import investor_flow
@@ -641,6 +843,18 @@ def rank_predictions_ml(
         returns_ml,
         target_day,
         news_ctx_bundle=news_ctx,
+    )
+    pool_cap = int(config.PRED_ML_SCORE_POOL_CAP)
+    n_raw = len(score_codes)
+    score_codes = _cap_score_codes_for_ml(
+        score_codes,
+        cap=pool_cap,
+        target_day=target_day,
+        ohlcv_idx=ohlcv_idx,
+        kw_news=kw_news,
+        profile=profile,
+        news_blob=news_text_blob,
+        listing_names=listing_names,
     )
     news_only = set(
         ml_scoring_candidate_codes(
@@ -669,25 +883,42 @@ def rank_predictions_ml(
             cand_ix.append(ix)
     if not cand_ix:
         return []
-    feats: list[list[float]] = []
-    for i in cand_ix:
-        code = listing_codes[i]
-        name = listing_names.get(code, "")
-        feats.append(
-            _feat_vector(
-                train_events,
-                code,
-                name,
-                news_text_blob,
-                kw_news,
-                before_exclusive=target_day,
-                ohlcv_idx=ohlcv_idx,
-                theme_weights=tw,
-                news_ctx=news_ctx,
-                returns_ml=returns_ml,
-            )
+
+    ks11_ret, ks11_std5 = ks11_market_feats(target_day)
+    ks11_feats = (ks11_ret, ks11_std5)
+    event_counts, base_rets = _code_stats_before_exclusive(train_events, target_day)
+    today_tfidf: np.ndarray | None = None
+    if news_ctx and news_ctx.get("vocab"):
+        today_tfidf = tfidf_vector(
+            news_text_blob,
+            list(news_ctx["vocab"]),
+            news_ctx.get("idf"),
         )
-    X = np.asarray(feats, dtype=np.float64)
+
+    ind_cache = IndustryFeatureCache(
+        target_day, ohlcv_idx, returns_ml, kw_news
+    )
+    ind_cache.prewarm(score_codes)
+
+    X = _build_feat_matrix_parallel(
+        cand_ix=cand_ix,
+        listing_codes=listing_codes,
+        listing_names=listing_names,
+        train_events=train_events,
+        news_blob=news_text_blob,
+        kw_news=kw_news,
+        target_day=target_day,
+        ohlcv_idx=ohlcv_idx,
+        theme_weights=tw,
+        news_ctx=news_ctx,
+        returns_ml=returns_ml,
+        ks11_feats=ks11_feats,
+        event_counts=event_counts,
+        base_rets=base_rets,
+        profile=profile,
+        today_tfidf=today_tfidf,
+        ind_cache=ind_cache,
+    )
     proba_raw = pipeline.predict_proba(X)[:, 1]
     cal_table = list((ml_bundle or {}).get("cal_table") or [])
     cal_base = float((ml_bundle or {}).get("cal_base_rate") or 0.01)
@@ -698,11 +929,22 @@ def rank_predictions_ml(
         ],
         dtype=np.float64,
     )
-    buf: list[predict.PredictionRow] = []
-    ks11_ret, _ = ks11_market_feats(target_day)
+    eval_k = max(config.PRED_EVAL_HIT_AT_K) if config.PRED_EVAL_HIT_AT_K else 40
+    finalize_n = max(
+        int(top_n),
+        int(config.PRED_ML_FINALIZE_POOL_N),
+        int(eval_k),
+    )
+    enrich_n = min(
+        len(cand_ix),
+        max(finalize_n, int(config.PRED_ML_ENRICH_TOP_N)),
+    )
+    order = np.argsort(-proba)
+    enrich_order = order[:enrich_n]
 
-    for fi in range(len(cand_ix)):
-        i = cand_ix[fi]
+    buf: list[predict.PredictionRow] = []
+    for fi in enrich_order:
+        i = cand_ix[int(fi)]
         code = listing_codes[i]
         pr = predict.prediction_row_for_code(
             code,
@@ -719,7 +961,7 @@ def rank_predictions_ml(
         )
         if pr is None:
             continue
-        p = float(proba[fi])
+        p = float(proba[int(fi)])
         pr.ml_prob = p
         pr.ks11_ret_lag1 = ks11_ret
         pr.momentum_score = momentum_for_code(ohlcv_idx, code, target_day)
@@ -739,11 +981,11 @@ def rank_predictions_ml(
         except (KeyError, TypeError, ValueError):
             pr.investor_flow_score = 0.0
             pr.foreign_net_vol_ratio = 0.0
-        ind_mom, ind_ov, ind_lim = industry_feats(code, target_day, ohlcv_idx, kw_news, returns_ml=returns_ml)
+        ind_mom, ind_ov, ind_lim = ind_cache.industry_feats(code)
         pr.industry_momentum = ind_mom
         pr.industry_theme_overlap = ind_ov
         pr.industry_limit_up_heat = ind_lim
-        pr.prior_industry_hot = prior_industry_hot_score(code, target_day, returns_ml)
+        pr.prior_industry_hot = ind_cache.prior_hot(code)
         if news_ctx:
             _, nctx = feats_for_code(news_ctx, news_text_blob, code)
             pr.news_context_score = nctx
@@ -755,13 +997,13 @@ def rank_predictions_ml(
         buf.append(pr)
 
     buf.sort(key=lambda r: -pred_hybrid.recall_presort_score(r))
-    eval_k = max(config.PRED_EVAL_HIT_AT_K) if config.PRED_EVAL_HIT_AT_K else 40
-    finalize_n = max(
-        int(top_n),
-        int(config.PRED_ML_FINALIZE_POOL_N),
-        int(eval_k),
-    )
     pre_pool = buf[: min(len(buf), finalize_n)]
+    t_ml = time.perf_counter() - t0
+    cap_note = f" 풀 {n_raw}→{len(cand_ix)}" if n_raw != len(cand_ix) else ""
+    print(
+        f"ML 랭커: 추론{cap_note} enrich {len(enrich_order)}종 {t_ml:.1f}s",
+        flush=True,
+    )
 
     out = prediction_ranking.finalize_ranked_predictions(
         pre_pool,

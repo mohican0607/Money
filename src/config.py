@@ -188,7 +188,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 24
+PREDICTION_FREEZE_SCHEMA_VERSION = 25
 
 # --- 다요인(멀티팩터) 랭킹 가중치 (합≈1, 뉴스 최소) ---
 PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.28)
@@ -242,7 +242,12 @@ PRED_USE_DISPLAY_RANK_MAPPING = os.getenv("PRED_USE_DISPLAY_RANK_MAPPING", "0").
 )
 PRED_RANK_POOL_N = _positive_int_env("PRED_RANK_POOL_N", 80)
 # ML 하이브리드 점수 1차 컷 전 finalize(캐리오버·섹터 재랭킹)에 넣을 후보 수
-PRED_ML_FINALIZE_POOL_N = _positive_int_env("PRED_ML_FINALIZE_POOL_N", 200)
+PRED_ML_FINALIZE_POOL_N = _positive_int_env("PRED_ML_FINALIZE_POOL_N", 160)
+# ML predict_proba 대상 상한(14:30 실행 → **30분 내** 완료 목표)
+PRED_ML_SCORE_POOL_CAP = _positive_int_env("PRED_ML_SCORE_POOL_CAP", 260)
+# 확률 산출 후 PredictionRow 풀구성·finalize에 쓸 상한
+PRED_ML_ENRICH_TOP_N = _positive_int_env("PRED_ML_ENRICH_TOP_N", 130)
+PRED_ML_FEAT_WORKERS = _positive_int_env("PRED_ML_FEAT_WORKERS", 12)
 # 휴리스틱·ML 후보: 종목 관련(비범용) 키워드 교집합 최소 개수
 PRED_MIN_KEYWORD_HITS = _positive_int_env("PRED_MIN_KEYWORD_HITS", 2)
 # ML ``predict_proba`` 대상 풀만 완화(고확신 게이트는 ``PRED_MIN_KEYWORD_HITS`` 유지)
@@ -293,8 +298,18 @@ PRED_EVAL_HIT_AT_K: tuple[int, ...] = tuple(
 TRAIN_START_DEFAULT = date(2025, 4, 11)  # 급등–뉴스 이벤트·스냅샷 수집 시작
 # ML 랭커 학습: 관측일 T 직전 최근 N거래일만 사용(0=전구간). 표본·시간 폭증 방지.
 ML_TRAIN_LOOKBACK_DAYS = _positive_int_env("ML_TRAIN_LOOKBACK_DAYS", 120)
+# 캐시 미스 시 일일 추론용 경량 학습(``--rebuild-train-snapshot`` 제외)
+ML_TRAIN_FAST_ON_CACHE_MISS = os.getenv("ML_TRAIN_FAST_ON_CACHE_MISS", "1").strip().lower() in (
+    "1",
+    "true",
+    "True",
+    "yes",
+)
+ML_TRAIN_LOOKBACK_DAYS_FAST = _positive_int_env("ML_TRAIN_LOOKBACK_DAYS_FAST", 42)
 # 일별 음성 샘플 상한·miss 부스트(학습 시간 단축)
 ML_TRAIN_MAX_NEG_PER_DAY = _positive_int_env("ML_TRAIN_MAX_NEG_PER_DAY", 140)
+ML_TRAIN_MAX_NEG_PER_DAY_FAST = _positive_int_env("ML_TRAIN_MAX_NEG_PER_DAY_FAST", 65)
+ML_TRAIN_DAY_CANDIDATE_CAP = _positive_int_env("ML_TRAIN_DAY_CANDIDATE_CAP", 180)
 ML_MISS_BOOST_MAX_KEYS = _positive_int_env("ML_MISS_BOOST_MAX_KEYS", 320)
 ML_MISS_BOOST_DUP = _positive_int_env("ML_MISS_BOOST_DUP", 2)
 # --weekly 등 날짜 인자 없을 때 관측(리포트) 시작일. 학습 라벨 상한은 관측일 T 직전(워크포워드).

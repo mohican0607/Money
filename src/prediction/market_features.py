@@ -19,6 +19,7 @@ __all__ = [
     "investor_flow_feats_row",
     "price_feats_row",
     "industry_feats",
+    "IndustryFeatureCache",
     "prior_industry_hot_score",
     "prior_return_pct",
     "peer_ret_lag1_mean",
@@ -169,6 +170,214 @@ def blended_hist_return(
     n = float(len(code_returns))
     blended = (n * code_mean + prior_strength * prior) / (n + prior_strength)
     return float(min(hi, max(lo, blended)))
+
+
+class IndustryFeatureCache:
+    """관측일·업종 단위 모멘텀·열기·peer 통계 — 종목마다 재계산 방지."""
+
+    def __init__(
+        self,
+        day: date,
+        ohlcv_idx: pd.DataFrame | None,
+        returns_ml: pd.DataFrame | None,
+        kw_news: frozenset[str],
+    ) -> None:
+        self.day = day
+        self.ohlcv_idx = ohlcv_idx
+        self.returns_ml = returns_ml
+        self.kw_news = kw_news
+        self._mom_lim: dict[str, tuple[float, float]] = {}
+        self._prior_hot: dict[str, float] = {}
+        self._peer_lag1: dict[str, float] = {}
+        self._sl_by_day: dict[date, pd.DataFrame] = {}
+        self._session_days: list[date] = []
+        if returns_ml is not None and not returns_ml.empty:
+            try:
+                d = trading_calendar.last_trading_day_before(day)
+            except ValueError:
+                d = None
+            lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
+            for _ in range(lookback):
+                if d is None:
+                    break
+                self._session_days.append(d)
+                try:
+                    d = trading_calendar.last_trading_day_before(d)
+                except ValueError:
+                    break
+            dates_needed = set(self._session_days)
+            dates_needed.add(day)
+            try:
+                dates_needed.add(trading_calendar.last_trading_day_before(day))
+            except ValueError:
+                pass
+            for sess in dates_needed:
+                self._sl_by_day[sess] = returns_ml.loc[
+                    returns_ml["Date"] == pd.Timestamp(sess)
+                ]
+
+    def _slice(self, d: date) -> pd.DataFrame:
+        if d in self._sl_by_day:
+            return self._sl_by_day[d]
+        if self.returns_ml is None or self.returns_ml.empty:
+            return pd.DataFrame()
+        sl = self.returns_ml.loc[self.returns_ml["Date"] == pd.Timestamp(d)]
+        self._sl_by_day[d] = sl
+        return sl
+
+    def prewarm(self, codes: Iterable[str]) -> None:
+        """후보 종목이 속한 업종 통계를 한 번에 계산."""
+        from .. import stocks as stocks_mod
+
+        seen: set[str] = set()
+        for code in codes:
+            ic = stocks_mod.industry_code_for_stock(str(code))
+            if not ic:
+                continue
+            k = str(ic)
+            if k in seen:
+                continue
+            seen.add(k)
+            peers = stocks_mod.peers_for_industry(ic)
+            self._mom_lim[k] = self._compute_mom_lim(peers)
+            self._prior_hot[k] = self._compute_prior_hot(peers)
+            self._peer_lag1[k] = self._compute_peer_lag1(peers)
+
+    def industry_feats(self, code: str) -> tuple[float, float, float]:
+        from .. import stocks as stocks_mod
+
+        ind_ov = float(stocks_mod.industry_theme_overlap(code, self.kw_news))
+        ic = stocks_mod.industry_code_for_stock(code)
+        if not ic:
+            return 0.0, ind_ov, 0.0
+        k = str(ic)
+        if k not in self._mom_lim:
+            peers = stocks_mod.peers_for_industry(ic)
+            self._mom_lim[k] = self._compute_mom_lim(peers)
+        mom, lim = self._mom_lim[k]
+        return mom, ind_ov, lim
+
+    def prior_hot(self, code: str) -> float:
+        from .. import stocks as stocks_mod
+
+        ic = stocks_mod.industry_code_for_stock(code)
+        if not ic:
+            return 0.0
+        k = str(ic)
+        if k not in self._prior_hot:
+            self._prior_hot[k] = self._compute_prior_hot(
+                stocks_mod.peers_for_industry(ic)
+            )
+        return self._prior_hot[k]
+
+    def peer_lag1_mean(self, code: str) -> float:
+        from .. import stocks as stocks_mod
+
+        ic = stocks_mod.industry_code_for_stock(code)
+        if not ic:
+            return 0.0
+        k = str(ic)
+        if k not in self._peer_lag1:
+            self._peer_lag1[k] = self._compute_peer_lag1(
+                stocks_mod.peers_for_industry(ic)
+            )
+        return self._peer_lag1[k]
+
+    def _compute_mom_lim(self, peer_set: list[str]) -> tuple[float, float]:
+        if self.ohlcv_idx is None:
+            return 0.0, 0.0
+        day = self.day
+        rets: list[float] = []
+        lim_n = 0
+        peer_n = 0
+        for p in peer_set:
+            try:
+                row = self.ohlcv_idx.loc[(day, str(p).zfill(6))]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[0]
+                peer_n += 1
+                v = float(row.get("ret_lag1") or 0.0)
+                if math.isfinite(v):
+                    rets.append(v)
+                if v + 1e-12 >= 0.20:
+                    lim_n += 1
+            except (KeyError, TypeError, ValueError):
+                continue
+        mom = max(0.0, min(1.0, (sum(rets) / len(rets)) / 0.12)) if rets else 0.0
+        ind_lim = min(1.0, lim_n / max(1, min(peer_n, 8))) if peer_n > 0 else 0.0
+        if self.returns_ml is not None and not self.returns_ml.empty:
+            hot_peer_rets: list[float] = []
+            hot_n = 0
+            for sess in self._session_days:
+                sl = self._slice(sess)
+                if sl.empty:
+                    continue
+                for p in peer_set[:24]:
+                    sub = sl[sl["Code"].astype(str).str.zfill(6) == str(p).zfill(6)]
+                    if sub.empty:
+                        continue
+                    try:
+                        rp = float(sub.iloc[0].get("return_pct") or 0.0)
+                    except (TypeError, ValueError):
+                        continue
+                    if not math.isfinite(rp):
+                        continue
+                    hot_peer_rets.append(rp)
+                    if rp + 1e-12 >= 0.15:
+                        hot_n += 1
+            if hot_peer_rets:
+                avg_hot = sum(hot_peer_rets) / len(hot_peer_rets)
+                mom = max(mom, min(1.0, max(0.0, avg_hot) / 0.10))
+                ind_lim = max(
+                    ind_lim, min(1.0, hot_n / max(1, min(len(peer_set), 10)))
+                )
+        return mom, ind_lim
+
+    def _compute_prior_hot(self, peers: list[str]) -> float:
+        try:
+            prev = trading_calendar.last_trading_day_before(self.day)
+        except ValueError:
+            return 0.0
+        sl = self._slice(prev)
+        if sl.empty:
+            return 0.0
+        hot = 0.0
+        n = 0
+        for p in peers[:32]:
+            sub = sl[sl["Code"].astype(str).str.zfill(6) == str(p).zfill(6)]
+            if sub.empty:
+                continue
+            try:
+                rp = float(sub.iloc[0].get("return_pct") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(rp):
+                continue
+            n += 1
+            if rp + 1e-12 >= 0.12:
+                hot += min(1.0, rp / 0.30)
+        if n == 0:
+            return 0.0
+        return min(1.0, hot / max(1, min(n, 8)))
+
+    def _compute_peer_lag1(self, peers: list[str]) -> float:
+        sl = self._slice(self.day)
+        if sl.empty:
+            return 0.0
+        rets: list[float] = []
+        for p in peers[:28]:
+            sub = sl[sl["Code"].astype(str).str.zfill(6) == str(p).zfill(6)]
+            if sub.empty:
+                continue
+            try:
+                rl = float(sub.iloc[0].get("ret_lag1") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(rl):
+                rets.append(rl)
+        if not rets:
+            return 0.0
+        return min(0.15, sum(rets) / len(rets))
 
 
 def industry_feats(

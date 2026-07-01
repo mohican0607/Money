@@ -4,7 +4,9 @@ KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까�
 
 예측은 **휴리스틱**과 **ML 랭커(HistGradientBoosting)** 를 함께 쓰며, `PRED_USE_ML_RANKER=0` 이면 휴리스틱만 사용합니다. 기본(**랭킹 모드**)에서는 후보 풀을 **키워드·시세 모멘텀·전체뉴스 TF-IDF 맥락**(`news_context_ml`)의 합집합으로 넓힌 뒤 **하이브리드 점수**(`pred_hybrid`: ML + 모멘텀 + 뉴스맥락)로 정렬하고, **고확신/중확신**만 `pred_high`·`pred_mid`로 표시합니다(`PRED_RANKING_MODE=1`, `PRED_USE_DISPLAY_RANK_MAPPING=0`). **예측 상승률(%)** 은 종목별 과거 급등 평균·키워드 보정값이며, ML 확률은 순위·확신만 반영합니다(확률을 %로 바꿔 붙이지 않음). 레거시 순위→20~30% 일괄 매핑은 `PRED_USE_DISPLAY_RANK_MAPPING=1` 로 되돌릴 수 있습니다.
 
-**현재 ML·freeze 버전:** `ML_MODEL_VERSION=20`, `PREDICTION_FREEZE_SCHEMA_VERSION=24` — 이전 joblib·freeze(JSON 스키마 &lt; 24)는 자동 무시·재계산됩니다.
+**현재 ML·freeze 버전:** `ML_MODEL_VERSION=20`, `PREDICTION_FREEZE_SCHEMA_VERSION=25`
+
+**14:30 실행 → 30분 내 완료 목표:** ML 풀 cap 260·enrich 130·업종 피처 캐시·병렬 피처(12 workers). 캐시 히트 시 **ML 추론 ~1분**. 캐시 미스 경량 학습 **~5분**.
 
 ---
 
