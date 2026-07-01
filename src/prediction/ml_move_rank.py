@@ -30,8 +30,10 @@ from .market_features import (
     momentum_for_code,
     ohlcv_lookup,
     ohlcv_row_for_code,
+    peer_ret_lag1_mean,
     price_feats_row,
     prior_industry_hot_score,
+    prior_return_pct,
     early_blob_for_trading_day,
 )
 from .news_context import (
@@ -91,9 +93,13 @@ FEATURE_NAMES = (
     "industry_theme_overlap",
     "industry_limit_up_heat",
     "prior_industry_hot",
+    "ret_lag2",
+    "peer_ret_lag1_mean",
+    "mom_x_news_hit",
+    "vol_mom_interaction",
 )
 
-ML_MODEL_VERSION = 19
+ML_MODEL_VERSION = 20
 MAX_NEG_PER_DAY = 150
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
@@ -243,11 +249,20 @@ def _feat_vector(
     )
     investor = investor_flow_feats_row(ohlcv_idx, code, before_exclusive)
     prior_hot = prior_industry_hot_score(code, before_exclusive, returns_ml)
+    ret_lag2 = prior_return_pct(ohlcv_idx, code, before_exclusive, lag_sessions=2)
+    peer_lag1 = peer_ret_lag1_mean(code, before_exclusive, returns_ml)
+    vol_surge = float(price[6]) if len(price) > 6 else 0.0
+    mom_news = float(ret_lag1) * math.sqrt(max(0.0, float(n_hit)))
+    vol_mom = float(ret_lag1) * min(3.0, max(0.0, vol_surge))
     return base + price + investor + [float(ret_vs_ks11), float(risk_off)] + ctx_part + [
         float(ind_mom),
         float(ind_ov),
         float(ind_lim),
         float(prior_hot),
+        float(ret_lag2),
+        float(peer_lag1),
+        float(mom_news),
+        float(vol_mom),
     ]
 
 
@@ -552,14 +567,14 @@ def fit_or_load_classifier(
         X_cal, y_cal = X[:0], y[:0]
 
     clf = HistGradientBoostingClassifier(
-        max_depth=7,
-        max_iter=175,
-        learning_rate=0.065,
+        max_depth=8,
+        max_iter=220,
+        learning_rate=0.05,
         random_state=42,
         class_weight="balanced",
         early_stopping=True,
         validation_fraction=0.12,
-        n_iter_no_change=12,
+        n_iter_no_change=14,
     )
     pipe: Pipeline = Pipeline(
         [

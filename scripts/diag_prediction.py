@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import sys
 from datetime import date
 from pathlib import Path
@@ -133,13 +134,11 @@ def cmd_backtest_jun(args: argparse.Namespace) -> int:
 
     year = args.year
     month = args.month
+    last_dom = calendar.monthrange(year, month)[1]
     days = [
         d
-        for d in (
-            date(year, month, day)
-            for day in range(1, 32)
-        )
-        if d.month == month and trading_calendar.is_trading_day(d)
+        for d in (date(year, month, day) for day in range(1, last_dom + 1))
+        if trading_calendar.is_trading_day(d)
     ]
     if not days:
         print("거래일 없음")

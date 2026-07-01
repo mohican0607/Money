@@ -20,6 +20,8 @@ __all__ = [
     "price_feats_row",
     "industry_feats",
     "prior_industry_hot_score",
+    "prior_return_pct",
+    "peer_ret_lag1_mean",
     "momentum_for_code",
     "ohlcv_row_for_code",
     "blended_hist_return",
@@ -245,6 +247,68 @@ def industry_feats(
             ind_lim = max(ind_lim, min(1.0, hot_n / max(1, min(len(peer_set), 10))))
 
     return mom, ind_ov, ind_lim
+
+
+def prior_return_pct(
+    idx: pd.DataFrame | None,
+    code: str,
+    before_exclusive: date,
+    *,
+    lag_sessions: int = 1,
+) -> float:
+    """``before_exclusive`` 직전 ``lag_sessions`` 거래일의 당일 수익률(소수)."""
+    if idx is None or lag_sessions < 1:
+        return 0.0
+    c6 = str(code).zfill(6)
+    if lag_sessions == 1:
+        pf = price_feats_row(idx, c6, before_exclusive)
+        return float(pf[0]) if pf else 0.0
+    try:
+        d = before_exclusive
+        for _ in range(lag_sessions):
+            d = trading_calendar.last_trading_day_before(d)
+        row = idx.loc[(d, c6)]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[-1]
+        v = float(row.get("return_pct") or row.get("ret_lag1") or 0.0)
+    except (ValueError, KeyError, TypeError):
+        return 0.0
+    if not math.isfinite(v):
+        return 0.0
+    return float(v)
+
+
+def peer_ret_lag1_mean(
+    code: str,
+    target_day: date,
+    returns_ml: pd.DataFrame | None,
+) -> float:
+    """동업종 peer 전일 수익률 평균(자기 제외, 상한 0.15)."""
+    from .. import stocks as stocks_mod
+
+    ic = stocks_mod.industry_code_for_stock(code)
+    if not ic or returns_ml is None or returns_ml.empty:
+        return 0.0
+    c6 = str(code).zfill(6)
+    peers = stocks_mod.peers_for_industry(ic)
+    sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
+    rets: list[float] = []
+    for p in peers[:28]:
+        pc = str(p).zfill(6)
+        if pc == c6:
+            continue
+        sub = sl[sl["Code"].astype(str).str.zfill(6) == pc]
+        if sub.empty:
+            continue
+        try:
+            rl = float(sub.iloc[0].get("ret_lag1") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(rl):
+            rets.append(rl)
+    if not rets:
+        return 0.0
+    return min(0.15, sum(rets) / len(rets))
 
 
 def prior_industry_hot_score(

@@ -19,8 +19,8 @@ def prior_day_hot_peer_codes(
     target_day: date,
     listing_codes: list[str],
     *,
-    min_prev_ret: float = 0.05,
-    max_codes: int = 320,
+    min_prev_ret: float = 0.04,
+    max_codes: int = 420,
 ) -> list[str]:
     """
     T 직전 거래일 급등·강한 전일 모멘텀 종목과 동업종 peer를 후보에 넣습니다.
@@ -59,11 +59,11 @@ def prior_day_hot_peer_codes(
             if ret + 1e-12 >= min_prev_ret:
                 hot.append((ret, code))
         hot.sort(key=lambda x: (-x[0], x[1]))
-        for _, code in hot[:85]:
+        for _, code in hot[:110]:
             _add(code)
             ic = stocks_mod.industry_code_for_stock(code)
             if ic:
-                for peer in stocks_mod.peers_for_industry(ic)[:16]:
+                for peer in stocks_mod.peers_for_industry(ic)[:20]:
                     _add(peer)
 
     lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
@@ -123,10 +123,10 @@ def burst_industry_peer_codes(
     target_day: date,
     listing_codes: list[str],
     *,
-    min_ret: float = 0.12,
+    min_ret: float = 0.10,
     min_count: int = 2,
-    max_industries: int = 18,
-    peers_per_industry: int = 28,
+    max_industries: int = 24,
+    peers_per_industry: int = 32,
 ) -> list[str]:
     """최근 거래일 업종 내 다수 급등 시 동업종 전체를 후보에 넣습니다."""
     from .. import stocks as stocks_mod
@@ -182,6 +182,82 @@ def burst_industry_peer_codes(
                 out.append(c6)
         added_inds += 1
     return out
+
+
+def oversold_bounce_candidate_codes(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+    listing_codes: list[str],
+    *,
+    max_codes: int = 220,
+) -> list[str]:
+    """
+    전일·최근 낙폭 후 거래량·업종 열기로 반등 가능 종목을 후보에 넣습니다.
+
+    6/29처럼 금호·건설 테마 연속일에 전일 하락 종목이 급등하는 패턴을 풀에 포함.
+    """
+    from .. import stocks as stocks_mod
+
+    allowed = {str(c).zfill(6) for c in listing_codes}
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(code: str) -> None:
+        c6 = str(code).zfill(6)
+        if c6 in allowed and c6 not in seen:
+            seen.add(c6)
+            out.append(c6)
+
+    hot_inds: set[str] = set()
+    lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
+    d: date | None = target_day
+    session_days: list[date] = []
+    for _ in range(lookback + 1):
+        if d is None:
+            break
+        try:
+            d = trading_calendar.last_trading_day_before(d)
+        except ValueError:
+            break
+        session_days.append(d)
+    for sess in session_days:
+        sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(sess)]
+        for _, r in sl.iterrows():
+            try:
+                rp = float(r.get("return_pct") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if rp + 1e-12 < 0.10:
+                continue
+            ic = stocks_mod.industry_code_for_stock(str(r["Code"]))
+            if ic:
+                hot_inds.add(str(ic))
+
+    sl_t = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
+    scored: list[tuple[float, str]] = []
+    for _, r in sl_t.iterrows():
+        code = str(r["Code"]).zfill(6)
+        if code not in allowed:
+            continue
+        try:
+            rl = float(r.get("ret_lag1") or 0.0)
+            vs = float(r.get("vol_surge_ratio") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if rl > -0.018:
+            continue
+        ic = stocks_mod.industry_code_for_stock(code)
+        ind_hot = bool(ic and str(ic) in hot_inds)
+        if vs + 1e-12 >= 0.06 or ind_hot or rl <= -0.05:
+            scored.append((abs(rl) + 0.12 * min(vs, 2.5) + (0.14 if ind_hot else 0.0), code))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    for _, code in scored[: max_codes]:
+        _add(code)
+        ic = stocks_mod.industry_code_for_stock(code)
+        if ic:
+            for peer in stocks_mod.peers_for_industry(ic)[:12]:
+                _add(peer)
+    return out[:max_codes]
 
 
 def ml_scoring_candidate_codes(
@@ -252,12 +328,20 @@ def day_candidate_codes(
         )
     hot_peers = prior_day_hot_peer_codes(returns_ml, target_day, listing_codes)
     burst_peers = burst_industry_peer_codes(returns_ml, target_day, listing_codes)
+    bounce_codes = oversold_bounce_candidate_codes(returns_ml, target_day, listing_codes)
     rs_codes = pred_hybrid.relative_strength_candidate_codes(
         returns_ml, target_day, listing_codes
     )
     return list(
         dict.fromkeys(
-            news + mom + news_ctx_codes + flow_codes + hot_peers + burst_peers + rs_codes
+            news
+            + mom
+            + news_ctx_codes
+            + flow_codes
+            + hot_peers
+            + burst_peers
+            + bounce_codes
+            + rs_codes
         )
     )
 

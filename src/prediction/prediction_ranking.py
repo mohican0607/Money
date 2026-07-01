@@ -82,7 +82,7 @@ def compute_pillar_scores(
     news = _clamp01(0.35 * nctx + 0.35 * min(1.0, nh / 4.0) + 0.30 * min(mention, 1.0))
 
     return {
-        "ml": _clamp01(ml / 0.18),
+        "ml": _clamp01(ml / 0.15),
         "momentum": _clamp01(mom / 0.55),
         "flow": flow,
         "relative_strength": rs,
@@ -296,9 +296,12 @@ def momentum_candidate_codes(
             continue
         mom = momentum_raw_from_row(r)
         vs = float(r.get("vol_surge_ratio") or 0.0)
-        rl = max(0.0, float(r.get("ret_lag1") or 0.0))
+        rl_raw = float(r.get("ret_lag1") or 0.0)
+        rl = max(0.0, rl_raw)
         if mom >= 0.18 or vs >= 1.22 or rl >= 0.038:
             scored.append((mom, code))
+        elif rl_raw <= -0.025 and vs + 1e-12 >= 0.07:
+            scored.append((0.14 + min(0.18, abs(rl_raw)) + 0.08 * min(vs, 2.0), code))
         elif vs + 1e-12 >= 0.52 or (mom + 1e-12 >= 0.14 and vs + 1e-12 >= 0.38):
             surge_extra.append((vs + 0.35 * mom, code))
     scored.sort(key=lambda x: (-x[0], x[1]))
@@ -355,16 +358,18 @@ def hybrid_rank_score(row: PredictionRow) -> float:
 
 
 def recall_presort_score(row: PredictionRow) -> float:
-    """finalize 풀 선정용 — 하이브리드·모멘텀·섹터열기 중 강한 신호를 반영."""
+    """finalize 풀 선정용 — ML·하이브리드·모멘텀·섹터열기 중 강한 신호를 반영."""
     h = hybrid_rank_score(row)
+    ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
+    ml_n = min(1.0, ml / 0.11) if ml > 0 else 0.0
     mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
     sec = max(
         float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0),
         float(getattr(row, "industry_momentum", 0.0) or 0.0),
         float(getattr(row, "prior_industry_hot", 0.0) or 0.0),
     )
-    blend = 0.52 * h + 0.28 * mom + 0.20 * sec
-    return max(h, blend)
+    blend = 0.36 * ml_n + 0.34 * h + 0.18 * mom + 0.12 * sec
+    return max(h, blend, 0.72 * ml_n + 0.28 * h if ml_n > 0 else h)
 
 
 def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> bool:
@@ -460,8 +465,20 @@ if TYPE_CHECKING:
 
 
 def rank_score_for_row(row: PredictionRow) -> float:
-    """행의 하이브리드 랭킹 점수."""
-    return hybrid_rank_score(row)
+    """행의 최종 랭킹 점수 — ML 확률·업종열기가 있으면 하이브리드보다 가중."""
+    h = hybrid_rank_score(row)
+    ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
+    if ml <= 0:
+        return h
+    ml_n = min(1.0, ml / 0.12)
+    s = max(h, 0.50 * h + 0.50 * ml_n)
+    prior = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+    lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    if ml_n + 1e-12 >= 0.55 and (prior + 1e-12 >= 0.18 or lim + 1e-12 >= 0.14):
+        s = min(1.0, s + 0.09)
+    if ml_n + 1e-12 >= 0.72:
+        s = min(1.0, s + 0.05)
+    return s
 
 
 def _industry_key(code: str) -> str:
@@ -537,10 +554,13 @@ def _rerank_carryover_industry_leaders(
         lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
         sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
         mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
-        boost = 0.08 + 0.18 * h + 0.06 * max(lim, sec) + 0.05 * mom
+        boost = 0.10 + 0.22 * h + 0.08 * max(lim, sec) + 0.06 * mom
         prior_hot = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
         if prior_hot + 1e-12 >= 0.15:
-            boost += 0.05 * prior_hot
+            boost += 0.07 * prior_hot
+        ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
+        if ml + 1e-12 >= 0.09 and h + 1e-12 >= 0.25:
+            boost += 0.05
         return min(1.0, base + boost)
 
     return sorted(pool, key=_boosted, reverse=True)
@@ -600,7 +620,7 @@ def _inject_hot_sector_leaders(pool: list[PredictionRow]) -> list[PredictionRow]
             continue
         lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
         sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
-        if lim + 1e-12 < 0.10 and sec + 1e-12 < 0.20:
+        if lim + 1e-12 < 0.08 and sec + 1e-12 < 0.16:
             continue
         head.append(row)
         head_ids.add(id(row))
@@ -904,7 +924,7 @@ def finalize_ranked_predictions(
 
     pool = _rerank_sector_diversity(rows)
     pool = _inject_hot_sector_leaders(pool)
-    if returns_ml is not None and not forward_observation:
+    if returns_ml is not None:
         pool = _rerank_carryover_industry_leaders(
             pool, target_day=target_day, returns_ml=returns_ml
         )
