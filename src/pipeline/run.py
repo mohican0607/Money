@@ -32,6 +32,7 @@ from src import (
 
 from .rows import (
     _append_compare_row_from_prediction,
+    _compare_row_is_prediction_candidate,
     _compute_day_pred_accuracy_summary,
     _enrich_cumulative_accuracy_avg,
     _enrich_cumulative_actual_over_pred_from_history,
@@ -61,6 +62,7 @@ from .rows import (
     _movers_data_note_for_report,
 )
 from .support import (
+    _display_prediction_rows_for_freeze,
     _freeze_entry_usable,
     _ignore_freeze_for_trading_day,
     _load_prediction_freeze_payload,
@@ -499,7 +501,9 @@ def _run_pipeline(
                 ignore_freeze_for_t
                 or not _freeze_entry_usable(freeze_payload.get(t_key) or [])
             ):
-                freeze_payload[t_key] = _prediction_rows_to_frozen_items(preds)
+                freeze_payload[t_key] = _prediction_rows_to_frozen_items(
+                    _display_prediction_rows_for_freeze(preds)
+                )
                 freeze_changed = True
         scoring_ctx = predict.build_scoring_context(blob, train_events_t)
 
@@ -599,7 +603,7 @@ def _run_pipeline(
         false_negatives: list[dict] = []
         pred_pct_min = config.BIG_MOVE_THRESHOLD * 100.0
         pred_pct_mid_min = 10.0
-        row_pred_min = 0.0 if day_forward else pred_pct_mid_min
+        row_pred_min = 0.0
         actual_10up_by_code: dict[str, dict] = {}
         actual_10dn_by_code: dict[str, dict] = {}
         if not day_forward:

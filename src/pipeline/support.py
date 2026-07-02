@@ -11,6 +11,7 @@ import requests
 from tqdm import tqdm
 
 from src import config, news, predict, report, snapshot_rebuild_learning, trading_calendar
+from src.prediction import prediction_ranking
 
 
 # --- news_io (from news_io.py) ---
@@ -232,6 +233,20 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
         except (TypeError, ValueError):
             continue
     return rows
+
+
+def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> list[predict.PredictionRow]:
+    """리포트 표에 고정할 예측 후보(고·중 확신)만 골라 freeze 에 저장합니다."""
+    shown = [
+        r
+        for r in rows
+        if prediction_ranking.is_high_confidence_prediction(r)
+        or prediction_ranking.is_mid_confidence_prediction(r)
+    ]
+    if shown:
+        return shown
+    cap = max(1, int(config.PRED_FORWARD_SHOW_MAX))
+    return list(rows[:cap])
 
 
 def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[dict]:

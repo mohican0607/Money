@@ -6,7 +6,7 @@ import math
 import re
 from collections import Counter, defaultdict
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Callable
 
 from src import (
     config,
@@ -75,6 +75,11 @@ def _append_compare_row_from_prediction(
     )
 
 
+def _compare_row_is_prediction_candidate(r: dict) -> bool:
+    """비교 표 행이 14:30 예측 후보(고·중 확신)인지 — 실제 급등만인 행은 제외."""
+    return bool(r.get("pred_high") or r.get("pred_mid"))
+
+
 def _sync_forward_day_rows_from_predictions(
     rows_compare: list[dict],
     preds: list[predict.PredictionRow],
@@ -85,14 +90,16 @@ def _sync_forward_day_rows_from_predictions(
     blob: str,
     kospi_hint: str | None,
     late_blob: str,
+    actual_ret_for_code: Callable[[str], float | None] | None = None,
 ) -> None:
-    """예측 전용일: 상위 후보 전부 표에 넣고, 빠진 ``pred_ret`` 를 보강."""
+    """예측 후보 전부 표에 넣고, 빠진 ``pred_ret``·(장마감 후) 실제 수익률을 보강."""
     by_code = {str(r.get("code", "")).zfill(6): r for r in rows_compare if r.get("code")}
     for pr in preds:
         if not math.isfinite(float(pr.predicted_return_pct)):
             continue
         code = str(pr.code).zfill(6)
         reasons_html = "<br/>".join(pr.reasons)
+        act = actual_ret_for_code(code) if actual_ret_for_code is not None else None
         existing = by_code.get(code)
         if existing is not None:
             existing["pred_ret"] = pr.predicted_return_pct
@@ -101,6 +108,9 @@ def _sync_forward_day_rows_from_predictions(
             existing["confidence_tier"] = getattr(pr, "confidence_tier", "none")
             existing["pred_high"] = prediction_ranking.is_high_confidence_prediction(pr)
             existing["pred_mid"] = prediction_ranking.is_mid_confidence_prediction(pr)
+            if act is not None:
+                existing["actual_ret"] = act
+                existing["actual_big"] = act >= config.BIG_MOVE_THRESHOLD
             existing["rise_band"] = _rise_band_for_row(
                 pr.predicted_return_pct, existing.get("actual_ret")
             )
@@ -115,7 +125,7 @@ def _sync_forward_day_rows_from_predictions(
             market_by_code=market_by_code,
             pred_pct_min=pred_pct_min,
             pred_pct_mid_min=pred_pct_mid_min,
-            actual_ret=None,
+            actual_ret=act,
             reasons_html=reasons_html,
             blob=blob,
             kospi_hint=kospi_hint,
@@ -1210,54 +1220,6 @@ def _reconcile_closed_day_report(
 
     dr.forward_observation = False
     dr.forward_pred_rationale_html = ""
-    pred_pct_mid_min = 10.0
-    preds_by_code = {str(p.code).zfill(6): p for p in (dr.predictions or [])}
-    seen = {str(r.get("code", "")).zfill(6) for r in dr.rows_compare if r.get("code")}
-
-    movers_10up = stocks.big_movers_on_date(returns, t, pred_pct_mid_min / 100.0)
-    for _, mrow in movers_10up.iterrows():
-        code = str(mrow["Code"]).zfill(6)
-        if code in seen:
-            continue
-        seen.add(code)
-        act = float(mrow["return_pct"])
-        pr = preds_by_code.get(code)
-        name = str(mrow.get("Name") or listing_names.get(code, "") or code)
-        dr.rows_compare.append(
-            {
-                "code": code,
-                "market_segment": market_by_code.get(code, "other"),
-                "name": name,
-                "reasons_html": (
-                    "일일 예측 후보에 포함되지 않음(예측 수익률 재계산 안 함)"
-                    if pr is None
-                    else "<br/>".join(pr.reasons)
-                ),
-                "keywords": list(pr.matched_keywords) if pr else [],
-                "keyword_hits": int(pr.keyword_hits) if pr else 0,
-                "mention_score": float(pr.mention_score) if pr else 0.0,
-                "pred_ret": float(pr.predicted_return_pct) if pr else None,
-                "ml_prob": float(pr.ml_prob) if pr and pr.ml_prob is not None else None,
-                "rank_position": getattr(pr, "rank_position", None) if pr else None,
-                "confidence_tier": str(getattr(pr, "confidence_tier", "none") or "none")
-                if pr
-                else "none",
-                "actual_ret": act,
-                "actual_big": bool(act >= threshold),
-                "pred_high": (
-                    prediction_ranking.is_high_confidence_prediction(pr) if pr else False
-                ),
-                "pred_mid": (
-                    prediction_ranking.is_mid_confidence_prediction(pr) if pr else False
-                ),
-                "rise_band": _rise_band_for_row(
-                    float(pr.predicted_return_pct) if pr else None, act
-                ),
-                "gap_analysis_html": "",
-                "late_news_hit": None,
-            }
-        )
-
     _backfill_day_actuals_from_returns(dr, returns=returns, threshold=threshold)
 
     for r in dr.rows_compare:
@@ -1271,15 +1233,7 @@ def _reconcile_closed_day_report(
             r.pop(k, None)
 
     dr.rows_compare = [
-        r
-        for r in dr.rows_compare
-        if r.get("actual_big")
-        or r.get("pred_high")
-        or r.get("pred_mid")
-        or (
-            r.get("pred_ret") is not None
-            and float(r.get("pred_ret") or 0) >= pred_pct_mid_min
-        )
+        r for r in dr.rows_compare if _compare_row_is_prediction_candidate(r)
     ]
     dr.rows_compare.sort(key=lambda r: (not r["actual_big"], not r["pred_high"], r["code"]))
 
