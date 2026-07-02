@@ -40,6 +40,7 @@ from .rows import (
     _enrich_rows_prediction_signal,
     _enrich_forward_day_actual_display_rows,
     _enrich_forward_pred_rationale,
+    _enrich_rows_pred_miss_tooltip,
     _gap_analysis_html_for_row,
     _pred_reason_fields,
     _prediction_row_strict_or_loose,
@@ -879,6 +880,12 @@ def _run_pipeline(
             r["rise_band"] = _rise_band_for_row(r.get("pred_ret"), r.get("actual_ret"))
             if pr_row is not None:
                 r.update(_pred_reason_fields(pr_row, r.get("reasons_html") or ""))
+        if not day_forward:
+            _enrich_rows_pred_miss_tooltip(
+                rows_compare,
+                t_trading_day=T,
+                kospi_hint=kospi_hint,
+            )
         _enrich_rows_prediction_signal(rows_compare)
         forward_pred_rationale_html = ""
         if day_forward:

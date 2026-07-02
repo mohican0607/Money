@@ -240,6 +240,48 @@ def _enrich_forward_pred_rationale(
         )
 
     return ""
+def _is_pred_miss_row(r: dict[str, Any]) -> bool:
+    """고예측(pred_high)인데 실제 급등 임계 미달."""
+    if not bool(r.get("pred_high")) or r.get("pred_ret") is None:
+        return False
+    ar = r.get("actual_ret")
+    if ar is None:
+        return False
+    return float(ar) + 1e-9 < float(config.BIG_MOVE_THRESHOLD)
+
+
+def _enrich_rows_pred_miss_tooltip(
+    rows: list[dict],
+    *,
+    t_trading_day: date | None = None,
+    kospi_hint: str | None = None,
+) -> None:
+    """장 마감 확정일 — 미적중 행에 ``pred_miss_tooltip_html`` 채우기."""
+    from ..learning.support import _tags_for_pred_miss
+
+    thr_pct = float(config.BIG_MOVE_THRESHOLD) * 100.0
+    for r in rows:
+        r["pred_miss"] = False
+        r["pred_miss_tooltip_html"] = ""
+        if not _is_pred_miss_row(r):
+            continue
+        ar = r.get("actual_ret")
+        if ar is None:
+            continue
+        actual_pct = float(ar) * 100.0
+        _tags, hints = _tags_for_pred_miss(
+            row=r, thr_pct=thr_pct, actual_pct=actual_pct
+        )
+        if kospi_hint and kospi_hint not in hints:
+            hints = list(hints) + [kospi_hint]
+        r["pred_miss"] = True
+        r["pred_miss_tooltip_html"] = predict.format_pred_miss_tooltip_html(
+            r,
+            miss_hints=hints,
+            t_trading_day=t_trading_day,
+        )
+
+
 def _rise_band_for_row(
     pred_ret_pct: float | None,
     actual_ret_ratio: float | None,

@@ -485,6 +485,9 @@ _TEMPLATE = r"""
     .gap-tip.integrate-tip:focus-within .integrate-tip-popup { display: block !important; }
     .kw-count-tip { display: inline; vertical-align: baseline; margin: 0 1px; }
     .kw-count-tip .gap-tip-trigger { font-size: inherit; font-weight: 700; color: var(--warn); border-bottom-color: var(--warn); }
+    .gap-tip.pred-miss-tip .gap-tip-trigger { color: var(--bad); border-bottom-color: rgba(248,113,113,0.85); }
+    .gap-tip.pred-miss-tip .gap-tip-trigger:hover,
+    .gap-tip.pred-miss-tip .gap-tip-trigger:focus { color: #ffa8a8; border-bottom-color: #ffa8a8; }
     .kw-list-popup { min-width: 280px; max-width: min(520px, 92vw) !important; width: auto !important; max-height: 70vh; z-index: 4100; }
     .integrate-tip-floating .kw-list-popup { z-index: 4100; }
     .integrate-tip-popup.integrate-tip-floating {
@@ -747,7 +750,30 @@ __ACTUAL_RET_CELL_MACRO__
 {% endif %}
 {%- endmacro %}
 {% macro forward_pred_rationale_panel(d, meta) -%}
-{# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 에만 표시 #}
+{# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 으로만 표시 #}
+{%- endmacro %}
+{% macro pred_rationale_cell(d, r) -%}
+<td class="pred-reason-forward" style="vertical-align:top;white-space:nowrap">
+  {% if r.pred_ret is not none %}
+    {% set pred_reason_body = r.pred_reason_tooltip_html or r.pred_reason_detail_html %}
+    {% if pred_reason_body and pred_reason_body != '—' %}
+    <span class="gap-tip pred-reason-tip">
+      <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+      <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+        <div class="combo-tip-body">{{ pred_reason_body | safe }}</div>
+      </div>
+    </span>
+    {% else %}—{% endif %}
+    {% if not (d.forward_observation | default(false)) and r.pred_miss_tooltip_html %}
+    <span class="gap-tip pred-miss-tip" style="margin-left:8px">
+      <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="틀린 이유">틀린 이유</span>
+      <div class="gap-tip-popup pred-miss-popup" role="tooltip">
+        <div class="combo-tip-body">{{ r.pred_miss_tooltip_html | safe }}</div>
+      </div>
+    </span>
+    {% endif %}
+  {% else %}—{% endif %}
+</td>
 {%- endmacro %}
 {% macro hit_at_k_panel(d, meta) -%}
 {% if d.hit_at_k_metrics %}
@@ -804,7 +830,7 @@ __ACTUAL_RET_CELL_MACRO__
           <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 일봉 확정 전이므로 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
-          {% if d.forward_observation | default(false) %}<th scope="col" title="모델·키워드·모멘텀·섹터 요약 tooltip">예측 근거</th>{% endif %}
+          <th scope="col" title="모델·키워드·모멘텀·섹터 요약 tooltip">예측 근거</th>
           <th>보정(%)</th>
           <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
           <th>누적정확도(10~20)</th>
@@ -830,18 +856,7 @@ __ACTUAL_RET_CELL_MACRO__
           <td class="{% if r.pred_high | default(false) %}warn{% endif %}" style="vertical-align:top;{% if r.pred_high | default(false) %}color:var(--warn);font-weight:600{% endif %}" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
             {% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}
           </td>
-          {% if d.forward_observation | default(false) %}
-          <td class="pred-reason-forward" style="vertical-align:top;white-space:nowrap">
-            {% if r.pred_ret is not none and r.pred_reason_tooltip_html %}
-            <span class="gap-tip pred-reason-tip">
-              <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
-              <div class="gap-tip-popup pred-reason-popup" role="tooltip">
-                <div class="combo-tip-body">{{ r.pred_reason_tooltip_html | safe }}</div>
-              </div>
-            </span>
-            {% else %}—{% endif %}
-          </td>
-          {% endif %}
+          {{ pred_rationale_cell(d, r) }}
           <td style="vertical-align:top">
             {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
             {% if r.cumulative_accuracy_from_hist | default(false) %}—{% else %}{{ "%.2f"|format(r.pred_ret * r.cumulative_accuracy_avg) }}{% endif %}
@@ -1104,6 +1119,9 @@ _COMPACT_TEMPLATE = r"""
     .gap-tip.integrate-tip:focus-within .integrate-tip-popup { display: block !important; }
     .kw-count-tip { display: inline; vertical-align: baseline; margin: 0 1px; }
     .kw-count-tip .gap-tip-trigger { font-size: inherit; font-weight: 700; color: var(--warn); border-bottom-color: var(--warn); }
+    .gap-tip.pred-miss-tip .gap-tip-trigger { color: var(--bad); border-bottom-color: rgba(248,113,113,0.85); }
+    .gap-tip.pred-miss-tip .gap-tip-trigger:hover,
+    .gap-tip.pred-miss-tip .gap-tip-trigger:focus { color: #ffa8a8; border-bottom-color: #ffa8a8; }
     .kw-list-popup { min-width: 280px; max-width: min(520px, 92vw) !important; width: auto !important; max-height: 70vh; z-index: 4100; }
     .integrate-tip-floating .kw-list-popup { z-index: 4100; }
     .integrate-tip-popup.integrate-tip-floating {
@@ -1358,7 +1376,30 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 {% endif %}
 {%- endmacro %}
 {% macro forward_pred_rationale_panel(d, meta) -%}
-{# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 에만 표시 #}
+{# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 으로만 표시 #}
+{%- endmacro %}
+{% macro pred_rationale_cell(d, r) -%}
+<td class="pred-reason-forward" style="vertical-align:top;white-space:nowrap">
+  {% if r.pred_ret is not none %}
+    {% set pred_reason_body = r.pred_reason_tooltip_html or r.pred_reason_detail_html %}
+    {% if pred_reason_body and pred_reason_body != '—' %}
+    <span class="gap-tip pred-reason-tip">
+      <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+      <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+        <div class="combo-tip-body">{{ pred_reason_body | safe }}</div>
+      </div>
+    </span>
+    {% else %}—{% endif %}
+    {% if not (d.forward_observation | default(false)) and r.pred_miss_tooltip_html %}
+    <span class="gap-tip pred-miss-tip" style="margin-left:8px">
+      <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="틀린 이유">틀린 이유</span>
+      <div class="gap-tip-popup pred-miss-popup" role="tooltip">
+        <div class="combo-tip-body">{{ r.pred_miss_tooltip_html | safe }}</div>
+      </div>
+    </span>
+    {% endif %}
+  {% else %}—{% endif %}
+</td>
 {%- endmacro %}
 {% macro hit_at_k_panel(d, meta) -%}
 {% if d.hit_at_k_metrics %}
@@ -1407,7 +1448,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
       <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
       <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
       <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
-      {% if d.forward_observation | default(false) %}<th scope="col" title="모델·키워드·모멘텀·섹터 요약 tooltip">예측 근거</th>{% endif %}
+      <th scope="col" title="예측 근거·미적중 시 틀린 이유 tooltip">예측 근거</th>
       <th>보정(%)</th>
       <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
       <th>누적정확도(10~20)</th>
@@ -1433,18 +1474,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
       <td class="{% if r.pred_high | default(false) %}warn{% endif %}" style="vertical-align:top" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
         {% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}
       </td>
-      {% if d.forward_observation | default(false) %}
-      <td class="pred-reason-forward" style="vertical-align:top;white-space:nowrap">
-        {% if r.pred_ret is not none and r.pred_reason_tooltip_html %}
-        <span class="gap-tip pred-reason-tip">
-          <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
-          <div class="gap-tip-popup pred-reason-popup" role="tooltip">
-            <div class="combo-tip-body">{{ r.pred_reason_tooltip_html | safe }}</div>
-          </div>
-        </span>
-        {% else %}—{% endif %}
-      </td>
-      {% endif %}
+      {{ pred_rationale_cell(d, r) }}
       <td style="vertical-align:top">
         {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
         {% if r.cumulative_accuracy_from_hist | default(false) %}—{% else %}{{ "%.2f"|format(r.pred_ret * r.cumulative_accuracy_avg) }}{% endif %}
@@ -1747,6 +1777,9 @@ _DATED_N_TEMPLATE = r"""
     .gap-tip.integrate-tip:focus-within .integrate-tip-popup { display: block !important; }
     .kw-count-tip { display: inline; vertical-align: baseline; margin: 0 1px; }
     .kw-count-tip .gap-tip-trigger { font-size: inherit; font-weight: 700; color: var(--warn); border-bottom-color: var(--warn); }
+    .gap-tip.pred-miss-tip .gap-tip-trigger { color: var(--bad); border-bottom-color: rgba(248,113,113,0.85); }
+    .gap-tip.pred-miss-tip .gap-tip-trigger:hover,
+    .gap-tip.pred-miss-tip .gap-tip-trigger:focus { color: #ffa8a8; border-bottom-color: #ffa8a8; }
     .kw-list-popup { min-width: 280px; max-width: min(520px, 92vw) !important; width: auto !important; max-height: 70vh; z-index: 4100; }
     .integrate-tip-floating .kw-list-popup { z-index: 4100; }
     .integrate-tip-popup.integrate-tip-floating {
@@ -2033,7 +2066,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
           <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
-          {% if day.forward_observation | default(false) %}<th scope="col" title="모델·키워드·모멘텀·섹터 요약 tooltip">예측 근거</th>{% endif %}
+          <th scope="col" title="예측 근거·미적중 시 틀린 이유 tooltip">예측 근거</th>
           <th>보정(%)</th>
           <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
           <th>누적정확도(10~20)</th>
@@ -2062,18 +2095,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
           <td class="num {% if r.pred_high | default(false) %}warn{% endif %}" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
             {% if r.pred_ret is none %}—{% else %}{{ "%.2f"|format(r.pred_ret) }}{% endif %}
           </td>
-          {% if day.forward_observation | default(false) %}
-          <td class="pred-reason-forward" style="vertical-align:top;white-space:nowrap">
-            {% if r.pred_ret is not none and r.pred_reason_tooltip_html %}
-            <span class="gap-tip pred-reason-tip">
-              <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
-              <div class="gap-tip-popup pred-reason-popup" role="tooltip">
-                <div class="combo-tip-body">{{ r.pred_reason_tooltip_html | safe }}</div>
-              </div>
-            </span>
-            {% else %}—{% endif %}
-          </td>
-          {% endif %}
+          {{ pred_rationale_cell(day, r) }}
           <td class="num">
             {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
             {% if r.cumulative_accuracy_from_hist | default(false) %}—{% else %}{{ "%.2f"|format(r.pred_ret * r.cumulative_accuracy_avg) }}{% endif %}

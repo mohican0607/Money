@@ -824,6 +824,93 @@ def explain_return_gap_html(
     return "".join(parts)
 
 
+def format_pred_miss_tooltip_html(
+    row: dict[str, Any],
+    *,
+    miss_hints: list[str] | None = None,
+    t_trading_day: date | None = None,
+) -> str:
+    """
+    장 마감 후 ``pred_high`` 미적중 행의 「틀린 이유」 tooltip HTML.
+
+    갭 분석·진단 힌트·당일 뉴스·공시를 한 패널로 묶습니다.
+    """
+    pred_pct = row.get("pred_ret")
+    act = row.get("actual_ret")
+    parts: list[str] = []
+    tlabel = t_trading_day.isoformat() if t_trading_day is not None else "관측일"
+
+    if pred_pct is not None and act is not None:
+        act_pct = float(act) * 100.0
+        pred_f = float(pred_pct)
+        parts.append(
+            f'<p><strong>미적중 요약</strong> — 예측 <strong>{pred_f:.2f}%</strong> · '
+            f'실제 <strong>{act_pct:.2f}%</strong> · '
+            f'차이 <strong>{pred_f - act_pct:+.2f}</strong>pp ({tlabel})</p>'
+        )
+
+    hints = [str(h).strip() for h in (miss_hints or []) if str(h).strip()]
+    if hints:
+        parts.append(
+            '<p><strong>가능한 원인</strong></p><ul class="nl">'
+            + "".join(f"<li>{html.escape(h, quote=False)}</li>" for h in hints[:6])
+            + "</ul>"
+        )
+
+    gap = str(row.get("gap_analysis_html") or "").strip()
+    if gap:
+        parts.append(
+            f'<div style="margin-top:8px"><strong>예측·실제 차이</strong>{gap}</div>'
+        )
+
+    act_hits = list(row.get("actual_news_hits") or [])
+    if act_hits:
+        parts.append(f'<p style="margin-top:8px"><strong>{tlabel} 전후 뉴스</strong></p><ul class="nl">')
+        for h in act_hits[:5]:
+            title = html.escape(str(h.get("title") or ""), quote=False)
+            matched = html.escape(str(h.get("matched") or ""), quote=False)
+            day_o = h.get("day")
+            day_s = (
+                day_o.isoformat()
+                if isinstance(day_o, date)
+                else html.escape(str(day_o or ""), quote=False)
+            )
+            link = (h.get("link") or "").strip()
+            if link:
+                le = html.escape(link, quote=True)
+                parts.append(
+                    f'<li><span class="pill">{day_s}</span> '
+                    f'<code style="font-size:0.75rem;color:var(--muted)">{matched}</code> '
+                    f'<a href="{le}" target="_blank" rel="noopener">{title}</a></li>'
+                )
+            else:
+                parts.append(
+                    f'<li><span class="pill">{day_s}</span> '
+                    f'<code style="font-size:0.75rem;color:var(--muted)">{matched}</code> {title}</li>'
+                )
+        parts.append("</ul>")
+
+    dh = list(row.get("disclosure_hits") or [])
+    if dh:
+        kinds: list[str] = []
+        for x in dh:
+            k = str(x.get("kind") or "").strip()
+            if k and k not in kinds:
+                kinds.append(html.escape(k, quote=False))
+        parts.append(
+            f'<p style="margin-top:8px"><strong>당일 공시 {len(dh)}건</strong>'
+            + (f" — {', '.join(kinds[:5])}" if kinds else "")
+            + "</p>"
+        )
+
+    if not parts:
+        return (
+            "<p>고예측이었으나 실제 급등 조건에 미달했습니다. "
+            "통합 보기의 예측·실제 차이와 당일 뉴스·공시를 함께 확인하세요.</p>"
+        )
+    return "".join(parts)
+
+
 def explain_rise_reason_html(
     *,
     actual_ret: float | None,
