@@ -7,7 +7,6 @@ from pathlib import Path
 
 from src import (
     config,
-    day_mover_rationale,
     report,
     snapshot_rebuild_learning,
     theme_strong_mover_report,
@@ -274,14 +273,7 @@ def _render_monthly_batch(
                                 news_cutoff_label=cutoff_kst,
                                 threshold_pct=float(config.BIG_MOVE_THRESHOLD) * 100.0,
                             )
-                        )
-                        day_mover_rationale.enrich_day_report_mover_rationale(
-                            dr,
-                            flow_row,
-                            listing_names=po.listing_names,
-                            early_rows=early,
-                            news_by_calendar=po.news_by_calendar or {},
-                        )
+                            )
         report.render_compact_tabbed_report(
             title=f"실제 20%↑ 종목 · 예측 상승률 · {fname.replace('.html', '')}",
             days=batch,

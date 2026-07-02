@@ -165,7 +165,11 @@ python scripts/diag_prediction.py backtest-month --year 2026 --month 6
 | `daily_theme_snapshots.json` | 전일 급등·테마 가중치 | 매 거래일 파이프라인 |
 | `move_ranker_v*.joblib` | ML 랭커 모델 + `news_ctx` bundle | 관측일 T마다 `label_before_exclusive=T` 캐시. **버전·지문 불일치 시 재학습** |
 
-**ML v19 학습 단축(기본값):** 최근 `ML_TRAIN_LOOKBACK_DAYS`(90)거래일만 표본 생성, 일별 음성 상한 `ML_TRAIN_MAX_NEG_PER_DAY`(120), miss 부스트 키·복제 수 제한. 일자당 재학습 **~5~8분**(캐시 미스), 캐시 히트 시 추론 **~6분**(후보 풀 ~900종).
+**ML v21 (정확도):** `ret_cum3`·`sector_breadth_hot`·`limit_up_streak`·`news_x_sector_heat` 피처, 25%↑·상한 라벨 가중(전체 학습 시), ML 랭킹 가중↑.
+
+**일일 실행 속도(기본):** `ML_PIPELINE_ALWAYS_FAST_TRAIN=1` 경량 학습(28거래일·표본 축소), `ML_REUSE_PRIOR_TRADING_DAY_MODEL=1` 로 당일 joblib 없으면 **직전 거래일 모델 재사용**(2일 구간이면 두 번째 날 학습 생략). 캐시 히트 시 추론 ~40s/일.
+
+**ML v19 학습 단축(기본값):**** 최근 `ML_TRAIN_LOOKBACK_DAYS`(90)거래일만 표본 생성, 일별 음성 상한 `ML_TRAIN_MAX_NEG_PER_DAY`(120), miss 부스트 키·복제 수 제한. 일자당 재학습 **~5~8분**(캐시 미스), 캐시 히트 시 추론 **~6분**(후보 풀 ~900종).
 
 ### 4.1 `rebuild_learning` (사후 처리·학습 진단)
 

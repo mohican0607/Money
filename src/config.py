@@ -188,10 +188,10 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 25
+PREDICTION_FREEZE_SCHEMA_VERSION = 26
 
 # --- 다요인(멀티팩터) 랭킹 가중치 (합≈1, 뉴스 최소) ---
-PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.28)
+PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.34)
 PRED_FACTOR_W_MOMENTUM = _float_env("PRED_FACTOR_W_MOMENTUM", 0.20)
 PRED_FACTOR_W_FLOW = _float_env("PRED_FACTOR_W_FLOW", 0.14)
 PRED_FACTOR_W_RELATIVE_STRENGTH = _float_env("PRED_FACTOR_W_RELATIVE_STRENGTH", 0.10)
@@ -206,7 +206,7 @@ PRED_SECTOR_DIVERSITY_MAX_PER_INDUSTRY = _positive_int_env(
 )
 # 최근 거래일 업종 급등 peer 후보·피처 반영 일수
 PRED_INDUSTRY_HEAT_LOOKBACK_DAYS = _positive_int_env("PRED_INDUSTRY_HEAT_LOOKBACK_DAYS", 3)
-PRED_INDUSTRY_LEADER_SLOTS = _positive_int_env("PRED_INDUSTRY_LEADER_SLOTS", 8)
+PRED_INDUSTRY_LEADER_SLOTS = _positive_int_env("PRED_INDUSTRY_LEADER_SLOTS", 10)
 
 # --- 고확신 정밀 게이트(다중 신호 합의) ---
 PRED_PRECISION_GATE_ENABLED = os.getenv("PRED_PRECISION_GATE_ENABLED", "1").strip().lower() in (
@@ -265,7 +265,7 @@ PRED_MID_OUTPUT_MAX = _positive_int_env("PRED_MID_OUTPUT_MAX", 8)
 # 예측 전용일(미래 거래일): 비교표에 최소 이만큼 상위 후보를 노출
 PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 15)
 # 고/중 확신: ML 급등 확률 하한(순위 상위 슬롯에만 적용)
-PRED_ML_HIGH_CONFIDENCE_PROB = max(0.08, _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.12))
+PRED_ML_HIGH_CONFIDENCE_PROB = max(0.08, _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.11))
 PRED_ML_MID_CONFIDENCE_PROB = max(0.04, _float_env("PRED_ML_MID_CONFIDENCE_PROB", 0.07))
 PRED_ML_MIN_OUTPUT_PROB = _float_env("PRED_ML_MIN_OUTPUT_PROB", 0.025)
 # 고확신: 당일 키워드 교집합·종목명 언급 최소(ML 과대확률 오탐 억제)
@@ -305,13 +305,27 @@ ML_TRAIN_FAST_ON_CACHE_MISS = os.getenv("ML_TRAIN_FAST_ON_CACHE_MISS", "1").stri
     "True",
     "yes",
 )
-ML_TRAIN_LOOKBACK_DAYS_FAST = _positive_int_env("ML_TRAIN_LOOKBACK_DAYS_FAST", 42)
+ML_TRAIN_LOOKBACK_DAYS_FAST = _positive_int_env("ML_TRAIN_LOOKBACK_DAYS_FAST", 28)
 # 일별 음성 샘플 상한·miss 부스트(학습 시간 단축)
 ML_TRAIN_MAX_NEG_PER_DAY = _positive_int_env("ML_TRAIN_MAX_NEG_PER_DAY", 140)
-ML_TRAIN_MAX_NEG_PER_DAY_FAST = _positive_int_env("ML_TRAIN_MAX_NEG_PER_DAY_FAST", 65)
-ML_TRAIN_DAY_CANDIDATE_CAP = _positive_int_env("ML_TRAIN_DAY_CANDIDATE_CAP", 180)
+ML_TRAIN_MAX_NEG_PER_DAY_FAST = _positive_int_env("ML_TRAIN_MAX_NEG_PER_DAY_FAST", 40)
+ML_TRAIN_DAY_CANDIDATE_CAP = _positive_int_env("ML_TRAIN_DAY_CANDIDATE_CAP", 110)
 ML_MISS_BOOST_MAX_KEYS = _positive_int_env("ML_MISS_BOOST_MAX_KEYS", 320)
 ML_MISS_BOOST_DUP = _positive_int_env("ML_MISS_BOOST_DUP", 2)
+ML_MISS_BOOST_MAX_KEYS_FAST = _positive_int_env("ML_MISS_BOOST_MAX_KEYS_FAST", 48)
+ML_MISS_BOOST_DUP_FAST = _positive_int_env("ML_MISS_BOOST_DUP_FAST", 0)
+ML_PIPELINE_ALWAYS_FAST_TRAIN = os.getenv("ML_PIPELINE_ALWAYS_FAST_TRAIN", "1").strip().lower() in (
+    "1",
+    "true",
+    "True",
+    "yes",
+)
+ML_REUSE_PRIOR_TRADING_DAY_MODEL = os.getenv("ML_REUSE_PRIOR_TRADING_DAY_MODEL", "1").strip().lower() in (
+    "1",
+    "true",
+    "True",
+    "yes",
+)
 # --weekly 등 날짜 인자 없을 때 관측(리포트) 시작일. 학습 라벨 상한은 관측일 T 직전(워크포워드).
 TEST_START = date(2026, 1, 1)
 

@@ -92,7 +92,6 @@ _CATALYST_EVENTS = (
     "전환사채",
     "배당",
     "자사주",
-    "조회공시",
     "개발",
     "수혜",
     "기대",
@@ -125,6 +124,68 @@ _TECH_RISE_BITS = (
     "변동성",
     "직전 거래일",
     "표준편차",
+)
+
+_RET_ONLY_REASON_RE = re.compile(r"^당일 \+\d+(?:\.\d+)?% 급등$")
+
+# 공시 괄호 안 흔한 메타(실질 내용 아님)
+_DISCLOSURE_PAREN_NOISE = frozenset(
+    {
+        "답변",
+        "답변변경",
+        "기타",
+        "정정",
+        "공시",
+        "해당없음",
+        "없음",
+        "해당사항없음",
+        "해당사항 없음",
+        "상승",
+        "하락",
+        "급등",
+        "급락",
+        "풍문보도",
+        "보도",
+        "언론",
+        "미확정",
+        "확인중",
+    }
+)
+
+# 공시 제목에서 먼저 잡을 고가치 촉매 패턴
+_DISCLOSURE_SUBSTANCE_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"단일판매\s*[·ㆍ.\-]?\s*공급\s*계약\s*체결", "단일판매·공급 계약"),
+    (r"(\d+(?:\.\d+)?(?:억|조|천억))\s*(?:규모\s*)?(?:단일판매|공급|수주|계약)", r"\1 규모 계약·수주"),
+    (r"(\d+(?:\.\d+)?(?:억|조|천억))\s*유상증자", r"\1 유상증자"),
+    (r"유상증자\s*결정", "유상증자 결정"),
+    (r"(\d+(?:\.\d+)?(?:억|조|천억)).*?무상증자", r"\1 규모 무상증자"),
+    (r"무상증자", "무상증자"),
+    (r"(?:영업|분기|반기|연간).*?(?:실적|잠정)", "실적 발표"),
+    (r"(?:M&A|인수|합병|지분\s*취득)", "M&A·인수"),
+    (r"(?:FDA|임상\s*\d+상)", "FDA·임상"),
+    (r"매매거래정지\s*해제", "거래정지 해제"),
+    (r"거래정지\s*해제", "거래정지 해제"),
+)
+
+# 이유 문구와 종목 테마가 명백히 다를 때 걸러낼 업종 토큰
+_MAJOR_SECTOR_TOKENS = (
+    "반도체",
+    "2차전지",
+    "바이오",
+    "조선",
+    "방산",
+    "원전",
+    "건설",
+    "부동산",
+    "게임",
+    "엔터",
+    "화장품",
+    "자동차",
+    "철강",
+    "해운",
+    "방위",
+    "의료",
+    "항공",
 )
 
 
@@ -279,6 +340,8 @@ def _score_news_hit(
     if name_title and not _has_catalyst(blob):
         if any(w in title for w in ("급등", "상한가", "강세", "↑")):
             score += 5
+    if relaxed and not name_title and not name_blob:
+        score = min(score, 24)
     return score
 
 
@@ -303,7 +366,7 @@ def _pick_from_news_hits(
         phrase = _extract_issue_from_title(title, name)
         if not phrase:
             phrase = _clean_phrase(title)
-        if len(phrase) < 3:
+        if len(phrase) < 3 or _is_useless_reason_phrase(phrase, name=name):
             continue
         pick = _ReasonPick(text=phrase, confidence=score, source=source)
         if best is None or pick.confidence > best.confidence:
@@ -331,7 +394,7 @@ def _pick_from_row_list(
         if name and name not in blob:
             continue
         phrase = _extract_issue_from_title(title, name) or _clean_phrase(title)
-        if len(phrase) < 3:
+        if len(phrase) < 3 or _is_useless_reason_phrase(phrase, name=name):
             continue
         score = 78 if _name_in_title(title, name) else 55
         if _has_catalyst(blob):
@@ -361,31 +424,143 @@ def _pick_from_matched_rows(
     )
 
 
-def _disclosure_phrase(kind: str, title: str) -> str:
-    """공시 제목에서 유상증자·계약 등 핵심 구절 추출."""
-    t = _clean_phrase(title)
-    for pat, fmt in (
-        (r"(\d+(?:\.\d+)?억)\s*유상증자", r"\1 유상증자 결정"),
-        (r"유상증자\s*결정", "유상증자 결정"),
-        (r"(\d+(?:\.\d+)?억).*?무상증자", r"\1 규모 무상증자"),
-        (r"무상증자", "무상증자"),
-        (r"단일판매.*?계약", "단일판매·공급 계약"),
-        (r"영업이익", "실적 발표"),
-        (r"조회공시", "조회공시"),
+def _norm_disclosure_text(text: str) -> str:
+    """공시 제목 정규화(공백·특수 구분)."""
+    s = str(text or "").replace("ㆍ", "·")
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _is_disclosure_label_only(phrase: str) -> bool:
+    """조회공시·거래정지 등 라벨만 있고 실질 내용이 없을 때 True."""
+    p = re.sub(r"\s+", "", _norm_disclosure_text(phrase))
+    if len(p) < 2:
+        return True
+    if p in {
+        "조회공시",
+        "조회공시답변",
+        "거래정지",
+        "매매거래정지",
+        "공시",
+        "상한가",
+        "급등",
+    }:
+        return True
+    if re.fullmatch(
+        r"(?:주가(?:및|와)거래량등의급변에관한)?조회공시(?:답변(?:변경)?)?(?:\(.*?\))*",
+        p,
+        flags=re.I,
     ):
-        m = re.search(pat, t)
-        if m:
-            try:
-                return m.expand(fmt)
-            except re.error:
-                return m.group(0)
-    if kind and kind != "기타":
-        return kind
-    return t
+        return True
+    if re.fullmatch(r"(?:매매)?거래정지(?:\(.*?\))?(?:의건)?", p, flags=re.I):
+        return True
+    if p.endswith("조회공시") and len(p) <= 32 and not _has_catalyst(phrase):
+        return True
+    return False
+
+
+def _disclosure_paren_substance(title: str) -> str:
+    """괄호 안 실질 내용(조회공시 답변 등) 추출."""
+    for m in re.finditer(r"\(([^)]{4,})\)", str(title or "")):
+        inner = m.group(1).strip()
+        key = re.sub(r"\s+", "", inner)
+        if key in _DISCLOSURE_PAREN_NOISE or key.endswith("없음"):
+            continue
+        if len(inner) >= 4 and (_has_catalyst(inner) or len(inner) >= 6):
+            phrase = _clean_phrase(inner)
+            if phrase and not _is_disclosure_label_only(phrase):
+                return phrase
+    return ""
+
+
+def _strip_disclosure_boilerplate_one(title: str) -> str:
+    """공시 제목 한 덩어리에서 boilerplate 제거 후 잔여 구절."""
+    s = _norm_disclosure_text(title)
+    for pat in (
+        r"^주가\s*(?:및|와)\s*거래량\s*등?\s*의\s*급(?:변|등)[^\-·|:]*",
+        r"^주가(?:및|와)거래량등의급(?:변|등)[^\-·|:]*",
+        r"^조회\s*공시(?:\s*답변(?:변경)?)?(?:\s*\([^)]*\))?\s*",
+        r"^조회공시(?:답변(?:변경)?)?(?:\([^)]*\))?\s*",
+        r"^매매?\s*거래\s*정지(?:\s*\([^)]*\))?(?:\s*의\s*건)?\s*",
+        r"^매매거래정지(?:\([^)]*\))?(?:의건)?\s*",
+        r"^공\s*시\s*",
+    ):
+        s = re.sub(pat, "", s, flags=re.I).strip(" -·|:,")
+    paren = _disclosure_paren_substance(s)
+    if paren:
+        return paren
+    for m in re.finditer(r"\(([^)]{3,})\)", s):
+        inner = m.group(1).strip()
+        key = re.sub(r"\s+", "", inner)
+        if key in _DISCLOSURE_PAREN_NOISE or key.endswith("없음"):
+            continue
+        if len(inner) >= 4 and (_has_catalyst(inner) or len(inner) >= 6):
+            return _clean_phrase(inner)
+    s = re.sub(r"\([^)]*\)", "", s).strip(" -·|:,")
+    return _clean_phrase(s)
+
+
+def _strip_disclosure_boilerplate(title: str) -> str:
+    """구분자로 나뉜 공시 제목에서 실질 구절(뒤쪽 우선) 추출."""
+    s = _norm_disclosure_text(title)
+    if not s:
+        return ""
+    for sep in (" - ", " · ", " | ", " / ", "-", "·", "|", "/"):
+        if sep in s:
+            for chunk in reversed([c.strip() for c in s.split(sep) if c.strip()]):
+                cleaned = _strip_disclosure_boilerplate_one(chunk)
+                if cleaned and not _is_disclosure_label_only(cleaned):
+                    return cleaned
+    cleaned = _strip_disclosure_boilerplate_one(s)
+    if cleaned and not _is_disclosure_label_only(cleaned):
+        return cleaned
+    return ""
+
+
+def _disclosure_phrase(kind: str, title: str) -> str:
+    """공시 제목에서 상한·급등 원인으로 쓸 **실질 문구** 추출(라벨만이면 '')."""
+    t = _norm_disclosure_text(title)
+    if not t:
+        return ""
+    paren = _disclosure_paren_substance(t)
+    if paren:
+        return paren
+    for pat, fmt in _DISCLOSURE_SUBSTANCE_PATTERNS:
+        m = re.search(pat, t, flags=re.I)
+        if not m:
+            continue
+        try:
+            phrase = m.expand(fmt)
+        except re.error:
+            phrase = m.group(0)
+        phrase = _clean_phrase(phrase)
+        if phrase and not _is_disclosure_label_only(phrase):
+            return phrase
+    stripped = _strip_disclosure_boilerplate(t)
+    if stripped:
+        return stripped
+    return ""
+
+
+def _score_disclosure_reason(phrase: str, kind: str) -> int:
+    """공시에서 추출한 이유의 신뢰 점수."""
+    if not phrase or _is_disclosure_label_only(phrase):
+        return -1
+    score = 62
+    if _has_catalyst(phrase):
+        score += 20
+    if re.search(r"\d+(?:\.\d+)?(?:억|조|천억)", phrase):
+        score += 8
+    if kind in ("단일판매", "실적", "유상증자", "무상증자", "BW/CB"):
+        score += 8
+    if kind == "조회공시" and len(phrase) >= 8:
+        score += 6
+    if "해제" in phrase and "정지" in phrase:
+        score += 4
+    return min(score, 92)
 
 
 def _pick_from_disclosure(hits: list[dict[str, Any]] | None) -> _ReasonPick | None:
-    """공시 hit에서 최고 신뢰 이유 1건."""
+    """공시 hit에서 실질 내용이 있는 최고 이유 1건."""
     best: _ReasonPick | None = None
     for h in hits or []:
         if not isinstance(h, dict):
@@ -395,9 +570,11 @@ def _pick_from_disclosure(hits: list[dict[str, Any]] | None) -> _ReasonPick | No
         if not title:
             continue
         phrase = _shorten(_disclosure_phrase(kind, title))
-        if len(phrase) < 3:
+        if len(phrase) < 3 or _is_useless_reason_phrase(phrase):
             continue
-        conf = 80 if kind and kind != "기타" else 62
+        conf = _score_disclosure_reason(phrase, kind)
+        if conf < 0:
+            continue
         pick = _ReasonPick(text=phrase, confidence=conf, source="disclosure")
         if best is None or pick.confidence > best.confidence:
             best = pick
@@ -462,6 +639,79 @@ def _catalyst_relevant_to_sector(
     if any(al in blob for al in cat_l.split() if len(al) >= 2):
         return True
     return False
+
+
+def _is_useless_reason_phrase(phrase: str, *, name: str = "") -> bool:
+    """등락률 반복·주가 재인용·공시 라벨만 등 정보 없는 문구."""
+    p = str(phrase or "").strip()
+    if not p:
+        return True
+    if _RET_ONLY_REASON_RE.match(p):
+        return True
+    if _is_disclosure_label_only(p):
+        return True
+    if p in ("상한가", "급등"):
+        return True
+    if p.startswith("주가,") or p.startswith("주가 "):
+        return True
+    if "장중" in p and re.search(r"\d+(?:\.\d+)?%", p) and name and name not in p:
+        return True
+    return False
+
+
+def _phrase_conflicts_sector(
+    phrase: str,
+    *,
+    compact: str,
+    aliases: tuple[str, ...],
+) -> bool:
+    """이유에 다른 업종 토큰이 있으면 True(종목 테마와 불일치)."""
+    p = str(phrase or "")
+    if not p:
+        return False
+    alias_blob = f"{compact} {' '.join(aliases)}".lower()
+    for tok in _MAJOR_SECTOR_TOKENS:
+        if tok not in p:
+            continue
+        tl = tok.lower()
+        if tl in alias_blob:
+            continue
+        if compact and tl in compact.lower():
+            continue
+        if any(tl in str(a).lower() for a in aliases):
+            continue
+        return True
+    return False
+
+
+def _reason_pick_usable(
+    pick: _ReasonPick,
+    *,
+    name: str,
+    theme: str,
+    full: str,
+    aliases: tuple[str, ...],
+) -> bool:
+    """최종 채택 가능한 이유인지(인과·업종·정보 가치)."""
+    if _is_useless_reason_phrase(pick.text, name=name):
+        return False
+    name_linked = bool(name and (name in pick.text or _name_in_title(pick.text, name)))
+    if _phrase_conflicts_sector(pick.text, compact=theme, aliases=aliases) and not name_linked:
+        return False
+    indirect_sources = (
+        "actual_news_relaxed",
+        "pred_news_relaxed",
+        "ctx_match",
+        "early_match",
+        "theme_early",
+        "theme_actual",
+    )
+    if pick.source in indirect_sources and not name_linked:
+        if not _catalyst_relevant_to_sector(
+            pick.text, compact=theme, full=full, aliases=aliases
+        ):
+            return False
+    return True
 
 
 def _is_generic_day_theme_phrase(phrase: str, *, aliases: tuple[str, ...]) -> bool:
@@ -653,12 +903,8 @@ def _fallback_reason(
     if theme:
         return _ReasonPick(text=f"{theme} 테마 급등", confidence=18, source="theme_only")
     if is_limit_up:
-        return _ReasonPick(text="당일 상한가(종목 직접 뉴스·공시 미확인)", confidence=10, source="bare")
-    return _ReasonPick(
-        text=f"당일 +{return_pct:.1f}% 급등",
-        confidence=8,
-        source="bare",
-    )
+        return _ReasonPick(text="원인 미확인", confidence=5, source="unknown")
+    return _ReasonPick(text="", confidence=0, source="unknown")
 
 
 def _reason_for_stock(
@@ -680,7 +926,17 @@ def _reason_for_stock(
     """
     keywords = _stock_specific_keywords(code, name, compare_row, early_rows)
     theme, catalyst, aliases = _sector_context(flow_row, code=code, theme_label=theme_label)
+    full = srl._full_sector_label(theme) if theme else ""
     peers = _peer_names(flow_row, code=code, theme=theme)
+    fallback = _fallback_reason(
+        name=name,
+        theme=theme,
+        catalyst=catalyst,
+        keywords=keywords,
+        peers=peers,
+        return_pct=return_pct,
+        is_limit_up=is_limit_up,
+    )
     picks: list[_ReasonPick] = []
 
     if compare_row:
@@ -722,6 +978,19 @@ def _reason_for_stock(
     if p:
         picks.append(p)
 
+    if catalyst:
+        picks.append(
+            _ReasonPick(text=catalyst, confidence=35, source="sector_catalyst")
+        )
+    if theme and peers:
+        picks.append(
+            _ReasonPick(
+                text=f"{theme} 동반 급등({', '.join(peers)} 등)",
+                confidence=28,
+                source="peers",
+            )
+        )
+
     if picks:
         filtered: list[_ReasonPick] = []
         for p in picks:
@@ -730,27 +999,48 @@ def _reason_for_stock(
                     continue
                 if not _name_in_title(p.text, name) and name not in p.text:
                     continue
+            if not _reason_pick_usable(
+                p, name=name, theme=theme, full=full, aliases=aliases
+            ):
+                continue
             filtered.append(p)
         if filtered:
-            return max(filtered, key=lambda p: p.confidence)
-    return _fallback_reason(
-        name=name,
-        theme=theme,
-        catalyst=catalyst,
-        keywords=keywords,
-        peers=peers,
-        return_pct=return_pct,
-        is_limit_up=is_limit_up,
-    )
+            best = max(filtered, key=lambda p: p.confidence)
+            if (
+                fallback.source == "unknown"
+                or fallback.confidence <= 5
+            ) and best.confidence >= 18:
+                return best
+            if fallback.confidence > best.confidence:
+                return fallback
+            if (
+                fallback.source in ("sector_catalyst", "peers")
+                and fallback.confidence >= 28
+                and best.source
+                in (
+                    "actual_news_relaxed",
+                    "pred_news_relaxed",
+                    "ctx_match",
+                    "early_match",
+                    "theme_early",
+                    "theme_actual",
+                )
+                and name not in best.text
+            ):
+                return fallback
+            return best
+    return fallback
 
 
 def _format_bullet_line(name: str, reason: str, *, is_limit_up: bool) -> str:
     """종목명 + 이유 한 줄 ``<li>`` HTML."""
     r = _shorten(reason.strip())
-    if is_limit_up and r and "상한" not in r:
+    if _is_useless_reason_phrase(r, name=name):
+        r = "원인 미확인" if is_limit_up else ""
+    if is_limit_up and r and "상한" not in r and r != "원인 미확인":
         r = f"{r}에 상한가"
     if not r:
-        r = "상한가" if is_limit_up else "급등"
+        return ""
     return (
         f'<li style="margin-bottom:6px;line-height:1.5">'
         f"<strong>{_esc(name)}</strong>: {_esc(r)}</li>"
@@ -963,10 +1253,12 @@ def _stock_reason_text(
         is_limit_up=is_limit_up,
     )
     r = _shorten(pick.text.strip())
-    if is_limit_up and r and "상한" not in r:
+    if _is_useless_reason_phrase(r, name=name):
+        r = "원인 미확인" if is_limit_up else ""
+    if is_limit_up and r and "상한" not in r and r != "원인 미확인":
         r = f"{r}에 상한가"
     if not r:
-        r = "상한가" if is_limit_up else f"당일 +{return_pct:.1f}% 급등"
+        return "—"
     return _esc(r)
 
 
@@ -1119,6 +1411,7 @@ def format_day_mover_rationale_html(
             _format_bullet_line(name, pick.text, is_limit_up=bool(e["is_limit_up"]))
         )
 
+    bullets = [b for b in bullets if b]
     hidden = max(0, total_n - len(entries))
     parts = [
         '<ul class="nl mover-rationale-list" style="margin:0;padding-left:18px">',
@@ -1132,7 +1425,8 @@ def format_day_mover_rationale_html(
     parts.append("</ul>")
     parts.append(
         '<p class="combo-tip-empty" style="margin:8px 0 0;font-size:0.72em;color:var(--muted)">'
-        "뉴스·공시·테마·키워드 순으로 자동 탐색. 직접 기사가 없으면 테마·동반 급등 맥락으로 보완.</p>"
+        "뉴스·공시·테마·동반 급등 순으로 자동 탐색. "
+        "직접 근거가 없으면 섹터 촉매·동반 급등·원인 미확인 순으로 표시.</p>"
     )
     return "".join(parts)
 

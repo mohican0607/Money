@@ -202,6 +202,7 @@ class PredictionRow:
     industry_theme_overlap: float = 0.0
     industry_limit_up_heat: float = 0.0
     prior_industry_hot: float = 0.0
+    sector_breadth_hot: float = 0.0
     vol_surge_ratio: float = 0.0
     ret_lag1: float = 0.0
     investor_flow_score: float = 0.0

@@ -59,11 +59,11 @@ def prior_day_hot_peer_codes(
             if ret + 1e-12 >= min_prev_ret:
                 hot.append((ret, code))
         hot.sort(key=lambda x: (-x[0], x[1]))
-        for _, code in hot[:110]:
+        for _, code in hot[:130]:
             _add(code)
             ic = stocks_mod.industry_code_for_stock(code)
             if ic:
-                for peer in stocks_mod.peers_for_industry(ic)[:20]:
+                for peer in stocks_mod.peers_for_industry(ic)[:24]:
                     _add(peer)
 
     lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
@@ -115,7 +115,7 @@ def prior_day_hot_peer_codes(
             for peer in stocks_mod.peers_for_industry(ic)[:10]:
                 _add(peer)
 
-    return out[:max_codes]
+    return out[: min(max_codes, 480)]
 
 
 def burst_industry_peer_codes(

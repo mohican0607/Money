@@ -746,14 +746,6 @@ __ACTUAL_RET_CELL_MACRO__
 </div>
 {% endif %}
 {%- endmacro %}
-{% macro mover_rationale_panel(d) -%}
-{% if d.mover_rationale_html %}
-<div class="mover-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;background:#1a2838;border:1px solid #3a5a4a;border-radius:8px">
-  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">왜 올랐나 (상한가·급등)</h3>
-  {{ d.mover_rationale_html | safe }}
-</div>
-{% endif %}
-{%- endmacro %}
 {% macro forward_pred_rationale_panel(d, meta) -%}
 {# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 에만 표시 #}
 {%- endmacro %}
@@ -1365,14 +1357,6 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 </div>
 {% endif %}
 {%- endmacro %}
-{% macro mover_rationale_panel(d) -%}
-{% if d.mover_rationale_html %}
-<div class="mover-rationale-ref" style="margin:12px 0 16px;padding:12px 14px;background:#1a2838;border:1px solid #3a5a4a;border-radius:8px">
-  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">왜 올랐나 (상한가·급등)</h3>
-  {{ d.mover_rationale_html | safe }}
-</div>
-{% endif %}
-{%- endmacro %}
 {% macro forward_pred_rationale_panel(d, meta) -%}
 {# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 에만 표시 #}
 {%- endmacro %}
@@ -1546,7 +1530,6 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
         </div>
         {{ day_pred_accuracy_banner(d, meta) }}
         {{ market_theme_panel(d) }}
-        {{ mover_rationale_panel(d) }}
         {{ forward_pred_rationale_panel(d, meta) }}
         {{ hit_at_k_panel(d, meta) }}
         {{ compact_day_table(d, meta) }}

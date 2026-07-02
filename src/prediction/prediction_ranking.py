@@ -470,12 +470,15 @@ def rank_score_for_row(row: PredictionRow) -> float:
     ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
     if ml <= 0:
         return h
-    ml_n = min(1.0, ml / 0.12)
-    s = max(h, 0.50 * h + 0.50 * ml_n)
+    ml_n = min(1.0, ml / 0.11)
+    s = max(h, 0.40 * h + 0.60 * ml_n)
     prior = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
     lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    sec_br = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
     if ml_n + 1e-12 >= 0.55 and (prior + 1e-12 >= 0.18 or lim + 1e-12 >= 0.14):
         s = min(1.0, s + 0.09)
+    if sec_br + 1e-12 >= 0.35 and ml_n + 1e-12 >= 0.40:
+        s = min(1.0, s + 0.07)
     if ml_n + 1e-12 >= 0.72:
         s = min(1.0, s + 0.05)
     return s

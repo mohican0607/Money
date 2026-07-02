@@ -11,7 +11,6 @@ from tqdm import tqdm
 
 from src import (
     config,
-    day_mover_rationale,
     disclosure,
     features,
     investor_flow,
@@ -334,6 +333,8 @@ def _run_pipeline(
     day_reports: list[report.DayReport] = []
     late_below_n = late_below_kw = late_gte_n = late_gte_kw = 0
     krx_movers_unavailable_any = False
+    ml_bundle_prev: dict | None = None
+    ml_bundle_prev_t: date | None = None
     freeze_payload = (
         _load_prediction_freeze_payload() if config.PREDICTION_FREEZE_ENABLED else {}
     )
@@ -389,15 +390,37 @@ def _run_pipeline(
             try:
                 from src import ml_move_rank
 
-                ml_bundle = ml_move_rank.fit_or_load_classifier(
-                    train_events=train_events_t,
-                    returns_ml=returns_ml,
-                    news_by_calendar=news_by_calendar,
-                    listing_names=names,
-                    fp=fp_snap,
-                    label_before_exclusive=T,
-                    force_retrain=train_snapshot_mode == "rebuild",
-                )
+                if (
+                    config.ML_REUSE_PRIOR_TRADING_DAY_MODEL
+                    and ml_bundle_prev is not None
+                    and ml_bundle_prev_t is not None
+                    and train_snapshot_mode != "rebuild"
+                ):
+                    try:
+                        prev_td = trading_calendar.last_trading_day_before(T)
+                        if prev_td == ml_bundle_prev_t and ml_bundle_prev.get(
+                            "pipeline"
+                        ):
+                            ml_bundle = ml_bundle_prev
+                            print(
+                                f"ML 랭커: 동일 실행 내 전일({ml_bundle_prev_t}) 모델 재사용 "
+                                f"(T={T})",
+                                flush=True,
+                            )
+                    except ValueError:
+                        pass
+                if ml_bundle is None:
+                    ml_bundle = ml_move_rank.fit_or_load_classifier(
+                        train_events=train_events_t,
+                        returns_ml=returns_ml,
+                        news_by_calendar=news_by_calendar,
+                        listing_names=names,
+                        fp=fp_snap,
+                        label_before_exclusive=T,
+                        force_retrain=train_snapshot_mode == "rebuild",
+                    )
+                ml_bundle_prev = ml_bundle
+                ml_bundle_prev_t = T
             except Exception as e:
                 print(f"ML 랭커 초기화 실패(휴리스틱만 사용): {e}", flush=True)
                 ml_bundle = None

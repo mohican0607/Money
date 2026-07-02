@@ -21,6 +21,7 @@ from .. import config
 from ..learning import support as snapshot_miss_diagnosis
 from ..learning import support as theme_carryover
 from ..prediction import accuracy_cache as prediction_accuracy_cache
+from .. import trading_calendar
 from ..features import BreakoutEvent, filter_specific_keywords, keyword_set, name_mention_score
 from . import predict
 from .candidate_pool import day_candidate_codes, ml_scoring_candidate_codes
@@ -30,6 +31,7 @@ from .market_features import (
     IndustryFeatureCache,
     investor_flow_feats_row,
     ks11_market_feats,
+    limit_up_streak_norm,
     momentum_for_code,
     ohlcv_lookup,
     ohlcv_row_for_code,
@@ -37,6 +39,7 @@ from .market_features import (
     price_feats_row,
     prior_industry_hot_score,
     prior_return_pct,
+    ret_cum3_norm,
     early_blob_for_trading_day,
 )
 from .news_context import (
@@ -100,9 +103,13 @@ FEATURE_NAMES = (
     "peer_ret_lag1_mean",
     "mom_x_news_hit",
     "vol_mom_interaction",
+    "ret_cum3",
+    "sector_breadth_hot",
+    "limit_up_streak",
+    "news_x_sector_heat",
 )
 
-ML_MODEL_VERSION = 20
+ML_MODEL_VERSION = 21
 MAX_NEG_PER_DAY = 150
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
@@ -256,17 +263,22 @@ def _feat_vector(
         ind_mom, ind_ov, ind_lim = ind_cache.industry_feats(code)
         prior_hot = ind_cache.prior_hot(code)
         peer_lag1 = ind_cache.peer_lag1_mean(code)
+        sector_br = ind_cache.sector_breadth(code)
     else:
         ind_mom, ind_ov, ind_lim = industry_feats(
             code, before_exclusive, ohlcv_idx, kw_news, returns_ml=returns_ml
         )
         prior_hot = prior_industry_hot_score(code, before_exclusive, returns_ml)
         peer_lag1 = peer_ret_lag1_mean(code, before_exclusive, returns_ml)
+        sector_br = 0.0
     investor = investor_flow_feats_row(ohlcv_idx, code, before_exclusive)
     ret_lag2 = prior_return_pct(ohlcv_idx, code, before_exclusive, lag_sessions=2)
     vol_surge = float(price[6]) if len(price) > 6 else 0.0
     mom_news = float(ret_lag1) * math.sqrt(max(0.0, float(n_hit)))
     vol_mom = float(ret_lag1) * min(3.0, max(0.0, vol_surge))
+    ret_cum3 = ret_cum3_norm(ohlcv_idx, code, before_exclusive)
+    lim_streak = limit_up_streak_norm(ohlcv_idx, code, before_exclusive)
+    news_sector = math.sqrt(max(0.0, float(n_hit))) * float(ind_lim)
     return base + price + investor + [float(ret_vs_ks11), float(risk_off)] + ctx_part + [
         float(ind_mom),
         float(ind_ov),
@@ -276,6 +288,10 @@ def _feat_vector(
         float(peer_lag1),
         float(mom_news),
         float(vol_mom),
+        float(ret_cum3),
+        float(sector_br),
+        float(lim_streak),
+        float(news_sector),
     ]
 
 
@@ -328,9 +344,32 @@ def _cheap_prescore_code(
         rl = float(row.get("ret_lag1") or 0.0)
         vs = float(row.get("vol_surge_ratio") or 0.0)
         score += mom * 3.5 + max(0.0, rl) * 10.0 + min(vs, 2.5) * 0.4
+        if rl + 1e-12 >= 0.12:
+            score += 1.2
         if rl <= -0.02 and vs + 1e-12 >= 0.06:
             score += 0.85
     except (KeyError, TypeError, ValueError):
+        pass
+    try:
+        from .. import stocks as stocks_mod
+
+        ic = stocks_mod.industry_code_for_stock(c6)
+        if ic:
+            peers = stocks_mod.peers_for_industry(ic)[:16]
+            hot_peers = 0
+            for p in peers:
+                try:
+                    pr = ohlcv_idx.loc[(target_day, str(p).zfill(6))]
+                    if isinstance(pr, pd.DataFrame):
+                        pr = pr.iloc[-1]
+                    pl = float(pr.get("ret_lag1") or 0.0)
+                    if pl + 1e-12 >= 0.08:
+                        hot_peers += 1
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if hot_peers >= 2:
+                score += 0.6 + 0.15 * min(hot_peers, 6)
+    except Exception:
         pass
     return score
 
@@ -452,6 +491,8 @@ def _build_training_arrays(
     pos_boost = pos_boost_keys or set()
     neg_boost = neg_boost_keys or set()
     boost_cap = int(config.ML_MISS_BOOST_MAX_KEYS)
+    if fast_train:
+        boost_cap = min(boost_cap, int(config.ML_MISS_BOOST_MAX_KEYS_FAST))
     if boost_cap > 0:
         if len(pos_boost) > boost_cap:
             pick = rng.choice(len(pos_boost), size=boost_cap, replace=False)
@@ -459,7 +500,11 @@ def _build_training_arrays(
         if len(neg_boost) > boost_cap:
             pick = rng.choice(len(neg_boost), size=boost_cap, replace=False)
             neg_boost = {list(neg_boost)[i] for i in pick}
-    boost_dup = max(0, int(config.ML_MISS_BOOST_DUP))
+    boost_dup = (
+        int(config.ML_MISS_BOOST_DUP_FAST)
+        if fast_train
+        else max(0, int(config.ML_MISS_BOOST_DUP))
+    )
     if fast_train:
         neg_cap = min(MAX_NEG_PER_DAY, int(config.ML_TRAIN_MAX_NEG_PER_DAY_FAST))
         train_day_cap = int(config.ML_TRAIN_DAY_CANDIDATE_CAP)
@@ -496,6 +541,7 @@ def _build_training_arrays(
     hist_kw_by_code: dict[str, set[str]] = {}
     code_returns: dict[str, list[float]] = {}
     all_returns: list[float] = []
+    ind_cache_by_day: dict[date, IndustryFeatureCache] = {}
 
     def _train_feat(
         code: str,
@@ -508,6 +554,10 @@ def _build_training_arrays(
     ) -> list[float]:
         """학습 행 1건용 ``_feat_vector`` 래퍼(코드 정규화·히스토리 kw 누적)."""
         c6 = str(code).zfill(6)
+        if d not in ind_cache_by_day:
+            ind_cache_by_day[d] = IndustryFeatureCache(
+                d, ohlcv_idx, returns_ml, kw_news
+            )
         return _feat_vector(
             train_events,
             c6,
@@ -526,6 +576,7 @@ def _build_training_arrays(
             code_event_count=len(code_returns.get(c6, [])),
             today_tfidf=today_v,
             returns_ml=returns_ml,
+            ind_cache=ind_cache_by_day[d],
         )
 
     for d in days:
@@ -603,8 +654,19 @@ def _build_training_arrays(
                 pass
             name = str(names.get(code, r.get("Name", "")))
             fv = _train_feat(code, name, blob, kw_news, d, tw, today_v)
+            try:
+                act_ret = float(r.get("return_pct") or 0.0)
+            except (TypeError, ValueError):
+                act_ret = 0.0
             rows_x.append(fv)
             rows_y.append(1)
+            if not fast_train:
+                if act_ret + 1e-12 >= 0.25:
+                    rows_x.append(fv)
+                    rows_y.append(1)
+                if act_ret + 1e-12 >= 0.29:
+                    rows_x.append(fv)
+                    rows_y.append(1)
             if not in_pool:
                 rows_x.append(fv)
                 rows_y.append(1)
@@ -634,22 +696,23 @@ def _build_training_arrays(
                     rows_x.append(fv)
                     rows_y.append(0)
 
-        for t_iso, code6 in neg_boost:
-            if t_iso != d_iso or code6 in neg_seen:
-                continue
-            sub = neg_df[neg_df["Code"].astype(str).str.zfill(6) == code6]
-            if sub.empty:
-                continue
-            rr = sub.iloc[0]
-            name = str(names.get(code6, rr.get("Name", "")))
-            fv = _train_feat(code6, name, blob, kw_news, d, tw, today_v)
-            rows_x.append(fv)
-            rows_y.append(0)
-            if boost_dup > 0:
-                for _ in range(boost_dup):
-                    rows_x.append(fv)
-                    rows_y.append(0)
-            neg_seen.add(code6)
+        if not fast_train:
+            for t_iso, code6 in neg_boost:
+                if t_iso != d_iso or code6 in neg_seen:
+                    continue
+                sub = neg_df[neg_df["Code"].astype(str).str.zfill(6) == code6]
+                if sub.empty:
+                    continue
+                rr = sub.iloc[0]
+                name = str(names.get(code6, rr.get("Name", "")))
+                fv = _train_feat(code6, name, blob, kw_news, d, tw, today_v)
+                rows_x.append(fv)
+                rows_y.append(0)
+                if boost_dup > 0:
+                    for _ in range(boost_dup):
+                        rows_x.append(fv)
+                        rows_y.append(0)
+                neg_seen.add(code6)
 
     if len(rows_y) < MIN_TOTAL_SAMPLES or sum(rows_y) < MIN_POS_SAMPLES:
         return None
@@ -662,6 +725,31 @@ def _model_path(fp: str, label_before_exclusive: date | None = None) -> Path:
         f"_{label_before_exclusive.isoformat()}" if label_before_exclusive is not None else ""
     )
     return config.TRAIN_CACHE_DIR / f"move_ranker_v{ML_MODEL_VERSION}_{fp}{suffix}.joblib"
+
+
+def _try_load_joblib_bundle(path: Path, *, fp: str) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    try:
+        loaded = joblib.load(path)
+    except Exception:
+        return None
+    if (
+        not isinstance(loaded, dict)
+        or loaded.get("fp") != fp
+        or loaded.get("version") != ML_MODEL_VERSION
+        or loaded.get("pipeline") is None
+    ):
+        return None
+    return loaded
+
+
+def _persist_joblib_bundle(path: Path, bundle: dict[str, Any]) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        joblib.dump(bundle, path)
+    except OSError:
+        pass
 
 
 def fit_or_load_classifier(
@@ -691,42 +779,70 @@ def fit_or_load_classifier(
         return None
 
     path = _model_path(fp, label_before_exclusive)
-    fast_train = bool(not force_retrain and config.ML_TRAIN_FAST_ON_CACHE_MISS)
+    fast_train = bool(
+        not force_retrain
+        and (
+            config.ML_PIPELINE_ALWAYS_FAST_TRAIN
+            or config.ML_TRAIN_FAST_ON_CACHE_MISS
+        )
+    )
     bundle: dict[str, Any] = {
         "pipeline": None,
         "fp": fp,
         "feature_names": FEATURE_NAMES,
         "version": ML_MODEL_VERSION,
     }
-    if path.is_file() and not force_retrain:
-        try:
-            loaded = joblib.load(path)
-            if (
-                isinstance(loaded, dict)
-                and loaded.get("fp") == fp
-                and loaded.get("version") == ML_MODEL_VERSION
-                and loaded.get("pipeline") is not None
-            ):
-                bundle["pipeline"] = loaded["pipeline"]
-                bundle["cal_base_rate"] = float(loaded.get("cal_base_rate") or 0.01)
-                bundle["cal_table"] = list(loaded.get("cal_table") or [])
-                bundle["news_ctx"] = loaded.get("news_ctx")
-                if bundle["news_ctx"] is None:
-                    bundle["news_ctx"] = make_news_ctx_bundle(
-                        train_events,
-                        news_by_calendar,
-                        config.TRAIN_START_DEFAULT,
-                        label_before_exclusive,
+    if not force_retrain:
+        loaded = _try_load_joblib_bundle(path, fp=fp)
+        if loaded is not None:
+            bundle["pipeline"] = loaded["pipeline"]
+            bundle["cal_base_rate"] = float(loaded.get("cal_base_rate") or 0.01)
+            bundle["cal_table"] = list(loaded.get("cal_table") or [])
+            bundle["news_ctx"] = loaded.get("news_ctx")
+            if bundle["news_ctx"] is None:
+                bundle["news_ctx"] = make_news_ctx_bundle(
+                    train_events,
+                    news_by_calendar,
+                    config.TRAIN_START_DEFAULT,
+                    label_before_exclusive,
+                )
+            print(f"ML 랭커: 캐시 로드 {path.name}", flush=True)
+            return bundle
+        if config.ML_REUSE_PRIOR_TRADING_DAY_MODEL:
+            try:
+                prev_td = trading_calendar.last_trading_day_before(
+                    label_before_exclusive
+                )
+                prev_path = _model_path(fp, prev_td)
+                prior = _try_load_joblib_bundle(prev_path, fp=fp)
+                if prior is not None:
+                    bundle["pipeline"] = prior["pipeline"]
+                    bundle["cal_base_rate"] = float(
+                        prior.get("cal_base_rate") or 0.01
                     )
-                print(f"ML 랭커: 캐시 로드 {path.name}", flush=True)
-                return bundle
-        except Exception:
-            pass
+                    bundle["cal_table"] = list(prior.get("cal_table") or [])
+                    bundle["news_ctx"] = prior.get("news_ctx")
+                    if bundle["news_ctx"] is None:
+                        bundle["news_ctx"] = make_news_ctx_bundle(
+                            train_events,
+                            news_by_calendar,
+                            config.TRAIN_START_DEFAULT,
+                            label_before_exclusive,
+                        )
+                    _persist_joblib_bundle(path, bundle)
+                    print(
+                        f"ML 랭커: 직전 거래일({prev_td}) 모델 재사용 -> {path.name} "
+                        f"(T={label_before_exclusive} 학습 생략)",
+                        flush=True,
+                    )
+                    return bundle
+            except ValueError:
+                pass
 
     pos_boost, neg_boost = snapshot_miss_diagnosis.load_ml_boost_sets_from_snapshot()
     if pos_boost or neg_boost:
         print(
-            f"ML 랭커: 스냅샷 miss_diagnosis 가중 — 급등 보강 {len(pos_boost)}건·오판 보강 {len(neg_boost)}건",
+            f"ML 랭커: 스냅샷 miss_diagnosis 가중 - 급등 보강 {len(pos_boost)}건·오판 보강 {len(neg_boost)}건",
             flush=True,
         )
 
@@ -763,19 +879,20 @@ def fit_or_load_classifier(
 
     if fast_train:
         print(
-            "ML 랭커: 캐시 미스 — 장마감(15:30) 전 완료용 경량 학습",
+            "ML 랭커: 캐시 미스 - 장마감(15:30) 전 완료용 경량 학습",
             flush=True,
         )
 
     clf = HistGradientBoostingClassifier(
-        max_depth=7 if fast_train else 8,
-        max_iter=90 if fast_train else 220,
-        learning_rate=0.07 if fast_train else 0.05,
+        max_depth=5 if fast_train else 9,
+        max_iter=48 if fast_train else 260,
+        learning_rate=0.08 if fast_train else 0.045,
         random_state=42,
         class_weight="balanced",
         early_stopping=True,
         validation_fraction=0.12,
-        n_iter_no_change=10 if fast_train else 14,
+        n_iter_no_change=8 if fast_train else 16,
+        min_samples_leaf=14 if fast_train else 8,
     )
     pipe: Pipeline = Pipeline(
         [
@@ -786,7 +903,7 @@ def fit_or_load_classifier(
     try:
         pipe.fit(X_tr, y_tr)
     except Exception as e:
-        print(f"ML 랭커: 학습 실패(휴리스틱만) — {e}", flush=True)
+        print(f"ML 랭커: 학습 실패(휴리스틱만) - {e}", flush=True)
         return bundle
     cal_table: list[dict[str, float]] = []
     if X_cal.shape[0] > 0:
@@ -798,10 +915,10 @@ def fit_or_load_classifier(
     )
     bundle["cal_table"] = cal_table
     bundle["news_ctx"] = news_ctx_tr
-    path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(bundle, path)
+    _persist_joblib_bundle(path, bundle)
     print(
-        f"ML 랭커: 학습 완료 표본 {len(y)} (급등 {int(y.sum())}건) → 저장 {path.name}",
+        f"ML 랭커: 학습 완료 표본 {len(y)} (급등 {int(y.sum())}건) -> 저장 {path.name}"
+        f"{' [경량]' if fast_train else ''}",
         flush=True,
     )
     return bundle
@@ -986,6 +1103,7 @@ def rank_predictions_ml(
         pr.industry_theme_overlap = ind_ov
         pr.industry_limit_up_heat = ind_lim
         pr.prior_industry_hot = ind_cache.prior_hot(code)
+        pr.sector_breadth_hot = ind_cache.sector_breadth(code)
         if news_ctx:
             _, nctx = feats_for_code(news_ctx, news_text_blob, code)
             pr.news_context_score = nctx

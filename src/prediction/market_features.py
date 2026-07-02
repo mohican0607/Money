@@ -154,6 +154,41 @@ def price_feats_row(idx: pd.DataFrame | None, code: str, trading_day: date) -> l
     return out
 
 
+def ret_cum3_norm(
+    ohlcv_idx: pd.DataFrame | None,
+    code: str,
+    trading_day: date,
+) -> float:
+    """직전 3거래일 누적 수익률(정규화) — 연속 급등·테마 이어짐."""
+    if ohlcv_idx is None:
+        return 0.0
+    parts: list[float] = []
+    for lag in (1, 2, 3):
+        r = prior_return_pct(ohlcv_idx, code, trading_day, lag_sessions=lag)
+        if r is not None and math.isfinite(float(r)):
+            parts.append(float(r))
+    if not parts:
+        return 0.0
+    cum = sum(parts)
+    return float(min(1.0, max(-1.0, cum / 0.40)))
+
+
+def limit_up_streak_norm(
+    ohlcv_idx: pd.DataFrame | None,
+    code: str,
+    trading_day: date,
+) -> float:
+    """최근 3거래일 중 15%+ 일수 비율 — 상한가·급등 체인."""
+    if ohlcv_idx is None:
+        return 0.0
+    hot = 0
+    for lag in (1, 2, 3):
+        r = prior_return_pct(ohlcv_idx, code, trading_day, lag_sessions=lag)
+        if r is not None and float(r) + 1e-12 >= 0.15:
+            hot += 1
+    return hot / 3.0
+
+
 def blended_hist_return(
     all_returns: list[float],
     code_returns: list[float] | None,
@@ -189,6 +224,7 @@ class IndustryFeatureCache:
         self._mom_lim: dict[str, tuple[float, float]] = {}
         self._prior_hot: dict[str, float] = {}
         self._peer_lag1: dict[str, float] = {}
+        self._sector_breadth: dict[str, float] = {}
         self._sl_by_day: dict[date, pd.DataFrame] = {}
         self._session_days: list[date] = []
         if returns_ml is not None and not returns_ml.empty:
@@ -242,6 +278,7 @@ class IndustryFeatureCache:
             self._mom_lim[k] = self._compute_mom_lim(peers)
             self._prior_hot[k] = self._compute_prior_hot(peers)
             self._peer_lag1[k] = self._compute_peer_lag1(peers)
+            self._sector_breadth[k] = self._compute_sector_breadth(peers)
 
     def industry_feats(self, code: str) -> tuple[float, float, float]:
         from .. import stocks as stocks_mod
@@ -282,6 +319,44 @@ class IndustryFeatureCache:
                 stocks_mod.peers_for_industry(ic)
             )
         return self._peer_lag1[k]
+
+    def sector_breadth(self, code: str) -> float:
+        """동업종 peer 중 직전일 모멘텀(8%+) 비율 — 테마 확산일 리콜."""
+        from .. import stocks as stocks_mod
+
+        ic = stocks_mod.industry_code_for_stock(code)
+        if not ic:
+            return 0.0
+        k = str(ic)
+        if k not in self._sector_breadth:
+            self._sector_breadth[k] = self._compute_sector_breadth(
+                stocks_mod.peers_for_industry(ic)
+            )
+        return self._sector_breadth[k]
+
+    def _compute_sector_breadth(self, peers: list[str]) -> float:
+        if self.ohlcv_idx is None:
+            return 0.0
+        hot = 0
+        n = 0
+        for p in peers[:36]:
+            try:
+                row = self.ohlcv_idx.loc[(self.day, str(p).zfill(6))]
+                if isinstance(row, pd.DataFrame):
+                    row = row.iloc[-1]
+                rl = float(row.get("ret_lag1") or 0.0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not math.isfinite(rl):
+                continue
+            n += 1
+            if rl + 1e-12 >= 0.20:
+                hot += 1.5
+            elif rl + 1e-12 >= 0.08:
+                hot += 1.0
+        if n == 0:
+            return 0.0
+        return min(1.0, hot / max(1, min(n, 12)))
 
     def _compute_mom_lim(self, peer_set: list[str]) -> tuple[float, float]:
         if self.ohlcv_idx is None:
