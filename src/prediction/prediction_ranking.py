@@ -28,6 +28,132 @@ def _clamp01(x: float) -> float:
     return max(0.0, min(1.0, float(x)))
 
 
+def prior_day_exhaustion_penalty(row: PredictionRow) -> float:
+    """전일 급등·과열 후 익일 추격 위험(0~1). ``ret_lag1`` 양수 구간만 사용."""
+    if not config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED:
+        return 0.0
+    lag = float(getattr(row, "ret_lag1", 0.0) or 0.0)
+    if lag <= 0:
+        return 0.0
+    block = float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
+    warn = float(config.PRED_PRIOR_DAY_EXHAUSTION_WARN_RET)
+    if lag + 1e-12 >= block:
+        return 1.0
+    if lag + 1e-12 >= warn:
+        return min(0.9, (lag - warn) / max(1e-9, block - warn))
+    return 0.0
+
+
+def prior_day_exhaustion_blocks_confidence(row: PredictionRow) -> bool:
+    """전일 15%+ 급등(기본) 종목은 고·중 확신 슬롯에서 제외."""
+    if not config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED:
+        return False
+    lag = float(getattr(row, "ret_lag1", 0.0) or 0.0)
+    return lag + 1e-12 >= float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
+
+
+def theme_rotation_score(row: PredictionRow) -> float:
+    """
+    핫 섹터 내 전일 중간 모멘텀(로테이션) 점수(0~1).
+
+    상한가·과열 리더(ret_lag1 높음)보다 익일 +20% 로테이션 후보를 우선합니다.
+    """
+    if not config.PRED_THEME_ROTATION_ENABLED:
+        return 0.0
+    lag = float(getattr(row, "ret_lag1", 0.0) or 0.0)
+    if lag <= 0:
+        return 0.0
+    lag_min = float(config.PRED_THEME_ROTATION_LAG_MIN)
+    lag_max = float(config.PRED_THEME_ROTATION_LAG_MAX)
+    block = float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
+    if lag + 1e-12 < lag_min or lag + 1e-12 >= min(lag_max, block):
+        return 0.0
+    prior_hot = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+    sec = max(
+        float(getattr(row, "industry_momentum", 0.0) or 0.0),
+        float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0),
+        float(getattr(row, "sector_breadth_hot", 0.0) or 0.0),
+    )
+    if prior_hot + 1e-12 < 0.12 and sec + 1e-12 < 0.18:
+        return 0.0
+    sweet = 1.0 - abs(lag - 0.10) / max(0.06, block - lag_min)
+    return _clamp01(0.30 * prior_hot + 0.38 * sec + 0.32 * sweet)
+
+
+def enrich_prediction_rows_from_returns_ml(
+    rows: list[PredictionRow],
+    returns_ml: pd.DataFrame | None,
+    *,
+    target_day: date,
+    ks11_ret_lag1: float | None = None,
+) -> None:
+    """고정 캐시에서 복원한 행에 시세·업종 피처를 다시 채웁니다."""
+    if not rows or returns_ml is None or returns_ml.empty:
+        return
+    from .market_features import IndustryFeatureCache, momentum_for_code, ohlcv_lookup, ohlcv_row_for_code
+
+    ohlcv_idx = ohlcv_lookup(returns_ml)
+    ind_cache = IndustryFeatureCache(target_day, ohlcv_idx, returns_ml, frozenset())
+    ind_cache.prewarm([r.code for r in rows])
+    for row in rows:
+        if ks11_ret_lag1 is not None:
+            row.ks11_ret_lag1 = ks11_ret_lag1
+        row.momentum_score = momentum_for_code(ohlcv_idx, str(row.code), target_day)
+        ohlcv_row = ohlcv_row_for_code(ohlcv_idx, str(row.code), target_day)
+        if ohlcv_row is not None:
+            row.relative_strength_score = relative_strength_from_row(
+                ohlcv_row, ks11_ret_lag1=ks11_ret_lag1
+            )
+            row.vol_surge_ratio = float(ohlcv_row.get("vol_surge_ratio") or 0.0)
+            row.ret_lag1 = max(0.0, float(ohlcv_row.get("ret_lag1") or 0.0))
+            row.investor_flow_score = float(ohlcv_row.get("investor_flow_score") or 0.0)
+            row.foreign_net_vol_ratio = float(
+                ohlcv_row.get("foreign_net_vol_ratio_lag1") or 0.0
+            )
+        ind_mom, ind_ov, ind_lim = ind_cache.industry_feats(str(row.code))
+        row.industry_momentum = ind_mom
+        row.industry_theme_overlap = ind_ov
+        row.industry_limit_up_heat = ind_lim
+        row.prior_industry_hot = ind_cache.prior_hot(str(row.code))
+        row.sector_breadth_hot = ind_cache.sector_breadth(str(row.code))
+
+
+def _promote_theme_rotation_confidence(
+    ranked: list[PredictionRow],
+    *,
+    max_high: int,
+    max_mid: int,
+    high_n: int,
+    mid_n: int,
+) -> tuple[int, int]:
+    """로테이션 후보를 고·중 확신 슬롯에 추가 배정합니다."""
+    if not config.PRED_THEME_ROTATION_ENABLED:
+        return high_n, mid_n
+    tier_min = float(config.PRED_THEME_ROTATION_TIER_MIN)
+    for row in ranked:
+        if high_n >= max_high and mid_n >= max_mid:
+            break
+        if row.confidence_tier in ("high", "mid"):
+            continue
+        if prior_day_exhaustion_blocks_confidence(row):
+            continue
+        rot = theme_rotation_score(row)
+        if rot + 1e-12 < tier_min:
+            continue
+        pillars = compute_pillar_scores(
+            row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
+        )
+        if count_non_news_strong_pillars(pillars, threshold=0.34) < 1:
+            continue
+        if high_n < max_high:
+            row.confidence_tier = "high"
+            high_n += 1
+        elif mid_n < max_mid:
+            row.confidence_tier = "mid"
+            mid_n += 1
+    return high_n, mid_n
+
+
 def market_regime_score(ks11_ret_lag1: float | None) -> float:
     """KOSPI 전일 수익률 기반 리스크온(1)~오프(0)."""
     if ks11_ret_lag1 is None or not math.isfinite(float(ks11_ret_lag1)):
@@ -152,6 +278,12 @@ def multi_factor_rank_score(
         and p["momentum"] + 1e-12 < 0.34
     ):
         s *= 0.72
+    pen = prior_day_exhaustion_penalty(row)
+    if pen > 0:
+        s *= max(0.35, 1.0 - 0.62 * pen)
+    rot = theme_rotation_score(row)
+    if rot > 0:
+        s = min(1.0, s + float(config.PRED_THEME_ROTATION_RANK_BOOST) * rot)
     return _clamp01(s)
 
 
@@ -369,7 +501,9 @@ def recall_presort_score(row: PredictionRow) -> float:
         float(getattr(row, "prior_industry_hot", 0.0) or 0.0),
     )
     blend = 0.36 * ml_n + 0.34 * h + 0.18 * mom + 0.12 * sec
-    return max(h, blend, 0.72 * ml_n + 0.28 * h if ml_n > 0 else h)
+    rot = theme_rotation_score(row)
+    blend = min(1.0, blend + 0.24 * rot)
+    return max(h, blend, 0.72 * ml_n + 0.28 * h if ml_n > 0 else h, blend)
 
 
 def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> bool:
@@ -405,6 +539,8 @@ def assign_hybrid_confidence_tiers(
     for pos, row in enumerate(ranked, start=1):
         h = hybrid_rank_score(row)
         ml = float(row.ml_prob or 0.0)
+        if prior_day_exhaustion_blocks_confidence(row):
+            continue
         # 고확신: 상위 8위 이내 + 하이브리드·이중신호(비뉴스 기둥) 통과
         if high_n < max_high and pos <= 12 and h + 1e-12 >= high_floor and _dual_signal_ok(
             row, hybrid=h, top_hybrid=top_hybrid
@@ -420,17 +556,20 @@ def assign_hybrid_confidence_tiers(
         if (
             mid_n < max_mid
             and mid_ok
+            and not prior_day_exhaustion_blocks_confidence(row)
             and (ml + 1e-12 >= mid_floor * 0.70 or float(row.momentum_score or 0) >= 0.28 or nctx + 1e-12 >= 0.40)
         ):
             row.confidence_tier = "mid"
             mid_n += 1
 
-    if high_n == 0 and mid_n == 0 and ranked:
-        for row in ranked[: min(max_mid, 5)]:
+    if high_n == 0 and mid_n == 0 and ranked and config.PRED_SECTOR_RESCUE_HIGH_ENABLED:
+        for row in ranked[: min(max_mid, 3)]:
+            if prior_day_exhaustion_blocks_confidence(row):
+                continue
             row.confidence_tier = "mid"
             mid_n += 1
 
-    if high_n < max_high:
+    if high_n < max_high and config.PRED_SECTOR_RESCUE_HIGH_ENABLED:
         sector_ranked = sorted(
             ranked,
             key=lambda r: (
@@ -445,6 +584,8 @@ def assign_hybrid_confidence_tiers(
                 break
             if row.confidence_tier == "high":
                 continue
+            if prior_day_exhaustion_blocks_confidence(row):
+                continue
             lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
             sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
             if lim + 1e-12 < 0.12 and sec + 1e-12 < 0.26:
@@ -456,12 +597,31 @@ def assign_hybrid_confidence_tiers(
                 row.confidence_tier = "high"
                 high_n += 1
 
+    rot_ranked = sorted(ranked, key=theme_rotation_score, reverse=True)
+    high_n, mid_n = _promote_theme_rotation_confidence(
+        rot_ranked,
+        max_high=max_high,
+        max_mid=max_mid,
+        high_n=high_n,
+        mid_n=mid_n,
+    )
+
+    for pos, row in enumerate(ranked, start=1):
+        if mid_n >= max_mid or pos > 12:
+            break
+        if row.confidence_tier != "none":
+            continue
+        ml = float(row.ml_prob or 0.0)
+        pillars = compute_pillar_scores(
+            row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
+        )
+        if ml + 1e-12 >= 0.36 and pillars["sector"] + 1e-12 >= 0.42:
+            row.confidence_tier = "mid"
+            mid_n += 1
+
     for pos, row in enumerate(ranked, start=1):
         row.rank_position = pos
         row.rank_score = hybrid_rank_score(row)
-
-if TYPE_CHECKING:
-    from .predict import PredictionRow
 
 
 def rank_score_for_row(row: PredictionRow) -> float:
@@ -479,6 +639,9 @@ def rank_score_for_row(row: PredictionRow) -> float:
         s = min(1.0, s + 0.09)
     if sec_br + 1e-12 >= 0.35 and ml_n + 1e-12 >= 0.40:
         s = min(1.0, s + 0.07)
+    rot = theme_rotation_score(row)
+    if rot + 1e-12 >= 0.28:
+        s = min(1.0, s + 0.14 * rot)
     if ml_n + 1e-12 >= 0.72:
         s = min(1.0, s + 0.05)
     return s
@@ -532,6 +695,8 @@ def _rerank_carryover_industry_leaders(
     returns_ml: pd.DataFrame | None,
 ) -> list[PredictionRow]:
     """전일·전전일 급등 업종 리더를 상위로 끌어올려 테마 이어짐일 Hit@K 를 높입니다."""
+    if not config.PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED:
+        return pool
     if not pool or returns_ml is None or returns_ml.empty:
         return pool
     try:
@@ -564,6 +729,12 @@ def _rerank_carryover_industry_leaders(
         ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
         if ml + 1e-12 >= 0.09 and h + 1e-12 >= 0.25:
             boost += 0.05
+        exh = prior_day_exhaustion_penalty(row)
+        if exh > 0:
+            boost *= max(0.12, 1.0 - 0.88 * exh)
+        rot = theme_rotation_score(row)
+        if rot > 0:
+            boost += 0.16 * rot
         return min(1.0, base + boost)
 
     return sorted(pool, key=_boosted, reverse=True)
@@ -597,7 +768,7 @@ def _rerank_sector_diversity(pool: list[PredictionRow]) -> list[PredictionRow]:
 
 
 def _inject_hot_sector_leaders(pool: list[PredictionRow]) -> list[PredictionRow]:
-    """최근 급등 업종 리더를 상위 슬롯에 끼워 넣어 Hit@K 리콜을 올립니다."""
+    """핫 섹터 로테이션 후보를 상위 슬롯에 끼워 넣어 Hit@K 리콜을 올립니다."""
     slots = int(config.PRED_INDUSTRY_LEADER_SLOTS)
     top_k = min(int(config.PRED_SECTOR_DIVERSITY_TOP_K), len(pool))
     if slots <= 0 or top_k <= 0 or not pool:
@@ -605,25 +776,36 @@ def _inject_hot_sector_leaders(pool: list[PredictionRow]) -> list[PredictionRow]
     ranked = sorted(pool, key=rank_score_for_row, reverse=True)
     head = list(ranked[:top_k])
     head_ids = {id(r) for r in head}
-    leaders = sorted(
-        pool,
-        key=lambda r: (
-            float(getattr(r, "industry_limit_up_heat", 0.0) or 0.0)
-            + 0.75 * float(getattr(r, "industry_momentum", 0.0) or 0.0)
-            + 0.45 * float(getattr(r, "industry_theme_overlap", 0.0) or 0.0),
-            rank_score_for_row(r),
-        ),
-        reverse=True,
-    )
+
+    def _leader_key(r: PredictionRow) -> tuple[float, float]:
+        if prior_day_exhaustion_blocks_confidence(r):
+            return (-1.0, 0.0)
+        rot = theme_rotation_score(r)
+        if rot > 0:
+            return (rot + 0.25, rank_score_for_row(r))
+        lim = float(getattr(r, "industry_limit_up_heat", 0.0) or 0.0)
+        sec = float(getattr(r, "industry_momentum", 0.0) or 0.0)
+        lag = float(getattr(r, "ret_lag1", 0.0) or 0.0)
+        if lag + 1e-12 >= float(config.PRED_PRIOR_DAY_EXHAUSTION_WARN_RET):
+            return (-0.5, 0.0)
+        legacy = lim + 0.55 * sec + 0.30 * float(
+            getattr(r, "industry_theme_overlap", 0.0) or 0.0
+        )
+        return (legacy * 0.55, rank_score_for_row(r))
+
+    leaders = sorted(pool, key=_leader_key, reverse=True)
     injected = 0
     for row in leaders:
         if injected >= slots:
             break
         if id(row) in head_ids:
             continue
+        rot = theme_rotation_score(row)
         lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
         sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
-        if lim + 1e-12 < 0.08 and sec + 1e-12 < 0.16:
+        if rot + 1e-12 < 0.22 and lim + 1e-12 < 0.08 and sec + 1e-12 < 0.16:
+            continue
+        if prior_day_exhaustion_blocks_confidence(row):
             continue
         head.append(row)
         head_ids.add(id(row))
@@ -831,6 +1013,7 @@ def _forward_conviction_score(row: PredictionRow) -> float:
         + 0.10 * pillars["flow"]
         + 0.08 * pillars["relative_strength"]
         + 0.05 * min(pillars["news"], 0.65)
+        + 0.14 * theme_rotation_score(row)
     )
 
 
@@ -858,6 +1041,8 @@ def assign_forward_confidence_tiers(
     for pos, row in enumerate(ranked, start=1):
         if high_n >= max_high:
             break
+        if prior_day_exhaustion_blocks_confidence(row):
+            continue
         pillars = compute_pillar_scores(row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None))
         non_news = count_non_news_strong_pillars(pillars, threshold=0.40)
         mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
@@ -889,7 +1074,31 @@ def assign_forward_confidence_tiers(
             continue
         if mid_n >= max_mid:
             break
+        if prior_day_exhaustion_blocks_confidence(row):
+            continue
         if _forward_conviction_score(row) + 1e-12 >= 0.20:
+            row.confidence_tier = "mid"
+            mid_n += 1
+
+    rot_ranked = sorted(ranked, key=theme_rotation_score, reverse=True)
+    high_n, mid_n = _promote_theme_rotation_confidence(
+        rot_ranked,
+        max_high=max_high,
+        max_mid=max_mid,
+        high_n=high_n,
+        mid_n=mid_n,
+    )
+
+    for pos, row in enumerate(ranked, start=1):
+        if mid_n >= max_mid or pos > 12:
+            break
+        if row.confidence_tier != "none":
+            continue
+        ml = float(row.ml_prob or 0.0)
+        pillars = compute_pillar_scores(
+            row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
+        )
+        if ml + 1e-12 >= 0.36 and pillars["sector"] + 1e-12 >= 0.42:
             row.confidence_tier = "mid"
             mid_n += 1
 
@@ -1138,6 +1347,8 @@ def refine_confidence_tiers(
             row, top_ml=top_ml, rank_position=pos, feedback_ctx=feedback_ctx
         ):
             continue
+        if prior_day_exhaustion_blocks_confidence(row):
+            continue
         promoted.append(str(row.code).zfill(6))
 
     promoted_set = set(promoted)
@@ -1148,7 +1359,7 @@ def refine_confidence_tiers(
         elif str(getattr(row, "confidence_tier", "")) == "high":
             row.confidence_tier = "mid"
 
-    if promoted:
+    if promoted and config.PRED_SECTOR_RESCUE_HIGH_ENABLED:
         # 섹터 열기 상위 1~2종 추가 승격(정밀 게이트 통과분 외 리콜 보강).
         extra_n = max(0, min(2, max_high - len(promoted)))
         if extra_n:
@@ -1176,6 +1387,9 @@ def refine_confidence_tiers(
                 row.confidence_tier = "high"
                 promoted_set.add(code)
                 added += 1
+        return
+
+    if not config.PRED_SECTOR_RESCUE_HIGH_ENABLED:
         return
 
     # 정밀 게이트가 전원 탈락 시: 전일·섹터 모멘텀 상위 1~3종만 고확신 승격(리콜 구제).

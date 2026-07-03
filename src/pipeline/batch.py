@@ -101,7 +101,9 @@ def _supplement_stale_forward_preserved_reports(
         late_gte_n=po.late_gte_n,
         late_gte_kw=po.late_gte_kw,
         movers_data_note=po.movers_data_note,
-        returns_df=extra.returns_df or po.returns_df,
+        returns_df=(
+            extra.returns_df if extra.returns_df is not None else po.returns_df
+        ),
         news_by_calendar=news_map,
         listing_names=extra.listing_names or po.listing_names,
     )
@@ -173,6 +175,7 @@ def _render_monthly_batch(
     for ym in sorted_months:
         batch = sorted(month_batches[ym], key=lambda x: x.trading_day)
         y, m = ym
+        now_kst = datetime.now(trading_calendar.KST)
         fname = f"report_{y}.{m:02d}.html"
         out_month = config.OUTPUT_DIR / fname
         preserved_day_html: dict[date, str] = {}
@@ -183,6 +186,9 @@ def _render_monthly_batch(
                 d: html
                 for d, html in existing_sections.items()
                 if d not in update_days
+                and not report.preserved_day_section_is_stale_intraday_closed_ui(
+                    html, d, now_kst=now_kst
+                )
             }
             if existing_sections:
                 n_keep = len(preserved_day_html)
@@ -205,7 +211,6 @@ def _render_monthly_batch(
         cutoff_kst = (
             f"{config.NEWS_CUTOFF_KST_HOUR:02d}:{config.NEWS_CUTOFF_KST_MINUTE:02d}"
         )
-        now_kst = datetime.now(trading_calendar.KST)
         if preserved_day_html and po.returns_df is not None and po.listing_names:
             news_map = dict(po.news_by_calendar or {})
             need_news_days = [

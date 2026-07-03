@@ -206,7 +206,19 @@ PRED_SECTOR_DIVERSITY_MAX_PER_INDUSTRY = _positive_int_env(
 )
 # 최근 거래일 업종 급등 peer 후보·피처 반영 일수
 PRED_INDUSTRY_HEAT_LOOKBACK_DAYS = _positive_int_env("PRED_INDUSTRY_HEAT_LOOKBACK_DAYS", 3)
-PRED_INDUSTRY_LEADER_SLOTS = _positive_int_env("PRED_INDUSTRY_LEADER_SLOTS", 10)
+PRED_INDUSTRY_LEADER_SLOTS = _positive_int_env("PRED_INDUSTRY_LEADER_SLOTS", 5)
+# 핫 섹터 내 전일 과열 리더 대신 중간 모멘텀(로테이션) 종목 우선
+PRED_THEME_ROTATION_ENABLED = os.getenv("PRED_THEME_ROTATION_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+PRED_THEME_ROTATION_LAG_MIN = _float_env("PRED_THEME_ROTATION_LAG_MIN", 0.04)
+PRED_THEME_ROTATION_LAG_MAX = _float_env("PRED_THEME_ROTATION_LAG_MAX", 0.19)
+PRED_THEME_ROTATION_RANK_BOOST = _float_env("PRED_THEME_ROTATION_RANK_BOOST", 0.22)
+PRED_THEME_ROTATION_TIER_MIN = _float_env("PRED_THEME_ROTATION_TIER_MIN", 0.32)
+PRED_THEME_ROTATION_ENRICH_MAX = _positive_int_env("PRED_THEME_ROTATION_ENRICH_MAX", 48)
 
 # --- 고확신 정밀 게이트(다중 신호 합의) ---
 PRED_PRECISION_GATE_ENABLED = os.getenv("PRED_PRECISION_GATE_ENABLED", "1").strip().lower() in (
@@ -215,7 +227,7 @@ PRED_PRECISION_GATE_ENABLED = os.getenv("PRED_PRECISION_GATE_ENABLED", "1").stri
     "yes",
     "on",
 )
-PRED_PRECISION_MAX_HIGH = _positive_int_env("PRED_PRECISION_MAX_HIGH", 6)
+PRED_PRECISION_MAX_HIGH = _positive_int_env("PRED_PRECISION_MAX_HIGH", 4)
 PRED_PRECISION_MIN_CONVICTION = _float_env("PRED_PRECISION_MIN_CONVICTION", 0.48)
 PRED_PRECISION_MIN_PILLARS = _positive_int_env("PRED_PRECISION_MIN_PILLARS", 1)
 PRED_PRECISION_MAX_RANK = _positive_int_env("PRED_PRECISION_MAX_RANK", 20)
@@ -259,9 +271,25 @@ PRED_CHRONIC_MISS_BLOCK_ENABLED = os.getenv(
     "PRED_CHRONIC_MISS_BLOCK_ENABLED", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
 PRED_CHRONIC_MISS_MIN_SAMPLES = _positive_int_env("PRED_CHRONIC_MISS_MIN_SAMPLES", 10)
-PRED_CHRONIC_MISS_RATIO_MAX = _float_env("PRED_CHRONIC_MISS_RATIO_MAX", 0.18)
-PRED_OUTPUT_MAX = _positive_int_env("PRED_OUTPUT_MAX", 6)
-PRED_MID_OUTPUT_MAX = _positive_int_env("PRED_MID_OUTPUT_MAX", 8)
+PRED_CHRONIC_MISS_RATIO_MAX = _float_env("PRED_CHRONIC_MISS_RATIO_MAX", 0.22)
+# 전일 급등·상한가 직후 익일 추격 진입 억제 (7/2 테마 소진 오판 방지)
+PRED_PRIOR_DAY_EXHAUSTION_ENABLED = os.getenv(
+    "PRED_PRIOR_DAY_EXHAUSTION_ENABLED", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+PRED_PRIOR_DAY_EXHAUSTION_WARN_RET = _float_env("PRED_PRIOR_DAY_EXHAUSTION_WARN_RET", 0.08)
+PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET = _float_env(
+    "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET", 0.18
+)
+# 전일 업종 급등 테마 캐리오버 리랭크 (연속 테마일만 켜기)
+PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED = os.getenv(
+    "PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+# 정밀 게이트 탈락 시 섹터 열기로 고확신 승격(리콜 구제) — 기본 끔
+PRED_SECTOR_RESCUE_HIGH_ENABLED = os.getenv(
+    "PRED_SECTOR_RESCUE_HIGH_ENABLED", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+PRED_OUTPUT_MAX = _positive_int_env("PRED_OUTPUT_MAX", 4)
+PRED_MID_OUTPUT_MAX = _positive_int_env("PRED_MID_OUTPUT_MAX", 4)
 # 예측 전용일(미래 거래일): 비교표에 최소 이만큼 상위 후보를 노출
 PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 15)
 # 고/중 확신: ML 급등 확률 하한(순위 상위 슬롯에만 적용)

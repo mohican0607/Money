@@ -24,7 +24,7 @@ from ..prediction import accuracy_cache as prediction_accuracy_cache
 from .. import trading_calendar
 from ..features import BreakoutEvent, filter_specific_keywords, keyword_set, name_mention_score
 from . import predict
-from .candidate_pool import day_candidate_codes, ml_scoring_candidate_codes
+from .candidate_pool import day_candidate_codes, ml_scoring_candidate_codes, theme_rotation_peer_codes
 from .market_features import (
     blended_hist_return,
     industry_feats,
@@ -346,6 +346,13 @@ def _cheap_prescore_code(
         score += mom * 3.5 + max(0.0, rl) * 10.0 + min(vs, 2.5) * 0.4
         if rl + 1e-12 >= 0.12:
             score += 1.2
+        if config.PRED_THEME_ROTATION_ENABLED:
+            lag_min = float(config.PRED_THEME_ROTATION_LAG_MIN)
+            lag_max = float(config.PRED_THEME_ROTATION_LAG_MAX)
+            block = float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
+            if lag_min <= rl + 1e-12 < min(lag_max, block):
+                sweet = 1.0 - abs(rl - 0.10) / max(0.06, block - lag_min)
+                score += 2.2 + 6.5 * sweet
         if rl <= -0.02 and vs + 1e-12 >= 0.06:
             score += 0.85
     except (KeyError, TypeError, ValueError):
@@ -973,6 +980,20 @@ def rank_predictions_ml(
         news_blob=news_text_blob,
         listing_names=listing_names,
     )
+    rotation_must: list[str] = []
+    if config.PRED_THEME_ROTATION_ENABLED:
+        rotation_must = theme_rotation_peer_codes(
+            returns_ml,
+            target_day,
+            listing_codes,
+            max_codes=int(config.PRED_THEME_ROTATION_ENRICH_MAX),
+        )
+        have_sc = {str(c).zfill(6) for c in score_codes}
+        for c in rotation_must:
+            c6 = str(c).zfill(6)
+            if c6 not in have_sc:
+                score_codes.append(c6)
+                have_sc.add(c6)
     news_only = set(
         ml_scoring_candidate_codes(
             listing_codes,
@@ -1058,11 +1079,32 @@ def rank_predictions_ml(
     )
     order = np.argsort(-proba)
     enrich_order = order[:enrich_n]
+    rotation_code_set = {str(c).zfill(6) for c in rotation_must}
+    if config.PRED_THEME_ROTATION_ENABLED and rotation_must:
+        ix_by_code = {
+            str(listing_codes[i]).zfill(6): pos for pos, i in enumerate(cand_ix)
+        }
+        rot_extra: list[int] = []
+        for c in rotation_must:
+            c6 = str(c).zfill(6)
+            pos = ix_by_code.get(c6)
+            if pos is not None:
+                rot_extra.append(pos)
+        if rot_extra:
+            merged = list(enrich_order)
+            seen_enrich = set(merged)
+            for p in rot_extra:
+                if p not in seen_enrich:
+                    merged.append(p)
+                    seen_enrich.add(p)
+            enrich_order = np.asarray(merged, dtype=int)
 
     buf: list[predict.PredictionRow] = []
     for fi in enrich_order:
         i = cand_ix[int(fi)]
         code = listing_codes[i]
+        c6 = str(code).zfill(6)
+        is_rotation = c6 in rotation_code_set
         pr = predict.prediction_row_for_code(
             code,
             listing_names,
@@ -1072,9 +1114,9 @@ def rank_predictions_ml(
             int(config.PRED_ML_POOL_MIN_KEYWORD_HITS),
             feedback_ctx=feedback_ctx,
             theme_weights=tw,
-            allow_momentum_only=code in mom_only and code not in news_only,
-            allow_news_context_only=code in news_ctx_only,
-            allow_investor_flow_only=code in flow_only,
+            allow_momentum_only=(code in mom_only and code not in news_only) or is_rotation,
+            allow_news_context_only=code in news_ctx_only or is_rotation,
+            allow_investor_flow_only=code in flow_only or is_rotation,
         )
         if pr is None:
             continue

@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 REPORT_TABLE_INTERACTION_MARKER = "money-report-table-interaction"
+# 비교표 정렬·필터·차트 tooltip·장중 실시간 등락률 갱신 스크립트(리포트 </body> 직전 삽입).
 REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
 <style>
 .stock-chart-popup.stock-chart-popup-floating {
@@ -16,23 +17,36 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
   overflow: auto !important;
   box-sizing: border-box;
 }
+.pred-live-intraday-pct.live-pct-flash,
+.stock-ret-line[data-live-intraday] .stock-ret-pct.live-pct-flash {
+  text-decoration: underline;
+  text-decoration-color: #e6c07b;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+  text-decoration-skip-ink: none;
+}
 </style>
 <script>
 (function () {
+  // --- 비교표 정렬·시장/상승률 필터 ---
+  // 정렬: data-sort-value 를 숫자로 파싱(null 허용).
   function numKey(v) {
     if (v == null || v === "") return null;
     var n = parseFloat(String(v), 10);
     return isNaN(n) ? null : n;
   }
+  // 정렬: 종목명 등 문자열 키(소문자).
   function textKey(v) {
     if (v == null) return "";
     return String(v).toLowerCase();
   }
+  // 행·열에서 정렬용 data-sort-value 추출.
   function cellSortValue(tr, col) {
     var el = tr.querySelector('[data-sort-col="' + col + '"]');
     if (!el) return null;
     return el.getAttribute("data-sort-value");
   }
+  // 비교표 헤더 클릭 정렬(숫자·종목명).
   function bindSortTable(table) {
     var tbody = table.querySelector("tbody");
     if (!tbody) return;
@@ -72,6 +86,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       });
     });
   }
+  // 일자 블록별 시장(KOSPI/KOSDAQ)·상승률 구간 라디오 필터.
   function bindMarketRowFilters(root) {
     root.querySelectorAll(".day-market-block").forEach(function (block) {
       var table = block.querySelector("table.rows-compare");
@@ -81,6 +96,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       var marketRadios = block.querySelectorAll(".market-filter-radios input[type=radio]");
       var riseRadios = block.querySelectorAll(".rise-filter-radios input[type=radio]");
       if (!marketRadios.length && !riseRadios.length) return;
+      // 라디오 선택에 따라 tbody 행 표시/숨김.
       function apply() {
         var marketSel = "all";
         for (var i = 0; i < marketRadios.length; i++) {
@@ -121,9 +137,11 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       apply();
     });
   }
+  // 「통합 보기」 popup 고정 위치·호버 바인딩.
   function bindIntegrateTips(root) {
     var scope = root || document;
 
+    // 통합 보기 popup 을 뷰포트 안에 맞게 fixed 배치.
     function positionIntegratePopup(tip) {
       var popup = tip.querySelector(".integrate-tip-popup");
       var anchor = tip.querySelector(".gap-tip-trigger");
@@ -147,6 +165,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       popup.style.setProperty("top", top + "px", "important");
     }
 
+    // 통합 보기 popup 스타일·위치 초기화.
     function resetIntegratePopup(tip) {
       var popup = tip.querySelector(".integrate-tip-popup");
       if (!popup) return;
@@ -156,6 +175,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       popup.style.removeProperty("display");
     }
 
+    // 열린 통합 보기 popup 위치 재계산(resize/scroll).
     function refreshOpenIntegrateTips() {
       scope.querySelectorAll(".integrate-tip").forEach(function (tip) {
         if (tip.matches(":hover") || tip.matches(":focus-within")) {
@@ -182,6 +202,33 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     window.addEventListener("resize", refreshOpenIntegrateTips);
     window.addEventListener("scroll", refreshOpenIntegrateTips, true);
   }
+  // --- 장중 등락률 API / live_quotes.js ---
+  // html data-live-quotes-base 또는 기본 127.0.0.1:8765.
+  function liveQuotesBase() {
+    var html = document.documentElement;
+    var base = html && html.getAttribute("data-live-quotes-base");
+    return (base && String(base).trim()) || "http://127.0.0.1:8765";
+  }
+  // output/live_quotes.js 재로드(API 실패 시 폴백).
+  function reloadLiveQuotesJs(cb) {
+    var s = document.getElementById("money-live-quotes-js");
+    if (!s) {
+      s = document.createElement("script");
+      s.id = "money-live-quotes-js";
+      document.head.appendChild(s);
+    }
+    s.onload = function () { if (cb) cb(); };
+    s.onerror = function () { if (cb) cb(); };
+    s.src = "live_quotes.js?t=" + Date.now();
+  }
+  // live_quotes.js 의 window.__MONEY_LIVE_QUOTES__ 에서 종목 등락률 읽기.
+  function readLiveQuoteFromJs(code) {
+    var q = window.__MONEY_LIVE_QUOTES__;
+    if (!q || q[code] == null) return null;
+    var v = parseFloat(q[code]);
+    return isNaN(v) ? null : v;
+  }
+  // --- 종목 차트 tooltip(N 마커·장중 N %) ---
   function bindStockChartTips(root) {
     var NAVER_DAY_CHART_BARS = 72;
     var NAVER_CHART_PLOT_LEFT = 0.075;
@@ -189,6 +236,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     var NAVER_CHART_MARKER_TOP = "4%";
     var NAVER_CHART_MARKER_BOTTOM = "16%";
     var NAVER_CHART_LABEL_TOP = "1%";
+    // ISO 날짜 문자열 → Date(로컬).
     function parseYmd(s) {
       var p = String(s || "").split("-");
       if (p.length < 3) return null;
@@ -198,12 +246,14 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       if (isNaN(y) || isNaN(m) || isNaN(d)) return null;
       return new Date(y, m, d);
     }
+    // Date → ISO YYYY-MM-DD.
     function formatYmd(d) {
       var y = d.getFullYear();
       var m = String(d.getMonth() + 1).padStart(2, "0");
       var day = String(d.getDate()).padStart(2, "0");
       return y + "-" + m + "-" + day;
     }
+    // KST 시·분·요일 등 Intl 파트.
     function kstParts(now) {
       var parts = {};
       new Intl.DateTimeFormat("en-GB", {
@@ -216,6 +266,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       });
       return parts;
     }
+    // 직전 평일(주말 건너뜀).
     function prevWeekday(d) {
       var x = new Date(d.getTime());
       do {
@@ -223,6 +274,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       } while (x.getDay() === 0 || x.getDay() === 6);
       return x;
     }
+    // 네이버 일봉 차트 우측 끝 거래일(KST·정규장 기준).
     function liveChartAxisEndYmdKst() {
       var p = kstParts();
       var d = parseYmd(p.year + "-" + p.month + "-" + p.day);
@@ -231,14 +283,26 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       var isWeekday = wd !== "Sat" && wd !== "Sun";
       var hour = parseInt(p.hour, 10);
       var minute = parseInt(p.minute, 10);
-      if (isWeekday && (hour < 15 || (hour === 15 && minute < 30))) {
+      if (isWeekday) {
+        // 정규장(09:00~15:30): 네이버 일봉 차트 우측 = 당일 봉
+        if (hour > 9 || (hour === 9 && minute >= 0)) {
+          if (hour < 15 || (hour === 15 && minute < 30)) {
+            return formatYmd(d);
+          }
+        }
+        if (hour < 9) {
+          d = prevWeekday(d);
+        }
+      } else {
         d = prevWeekday(d);
       }
       return formatYmd(d);
     }
+    // 차트 프레임용 축 끝일(현재는 liveChartAxisEndYmdKst 와 동일).
     function chartAxisEndYmdKst(frame) {
       return liveChartAxisEndYmdKst();
     }
+    // 캡션에 차트 반영 종료일(~MM/DD까지) 접미사 갱신.
     function updateChartCaption(frame) {
       if (!frame || !frame.parentElement) return;
       var cap = frame.parentElement.querySelector(".stock-chart-caption");
@@ -255,6 +319,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       }
       cap.textContent = base + suffix;
     }
+    // startYmd 다음 거래일부터 endYmd 까지 평일 수(N 봉 offset 계산용).
     function tradingSessionsAfterExclusive(startYmd, endYmd) {
       var start = parseYmd(startYmd);
       var end = parseYmd(endYmd);
@@ -268,13 +333,28 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       }
       return n;
     }
+    // 차트 우측 끝 대비 N 봉 offset(0=최우측 봉).
     function resolveNBarOffset(frame) {
       var nDay = frame.getAttribute("data-n-day");
       if (!nDay) return null;
       var chartEnd = chartAxisEndYmdKst(frame);
       if (!chartEnd) return null;
-      return tradingSessionsAfterExclusive(nDay, chartEnd);
+      var nDt = parseYmd(nDay);
+      var endDt = parseYmd(chartEnd);
+      if (!nDt || !endDt) return null;
+      if (endDt < nDt) return null;
+      var live = tradingSessionsAfterExclusive(nDay, chartEnd);
+      if (live !== null && live >= 0 && live < NAVER_DAY_CHART_BARS) {
+        return live;
+      }
+      var attr = frame.getAttribute("data-n-offset");
+      if (attr !== null && attr !== "") {
+        var v = parseInt(attr, 10);
+        if (!isNaN(v) && v >= 0 && v < NAVER_DAY_CHART_BARS) return v;
+      }
+      return null;
     }
+    // N 봉 세로 마커·라벨 위치.
     function positionStockChartNMarker(frame) {
       if (!frame) return;
       var nDay = frame.getAttribute("data-n-day");
@@ -301,6 +381,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       }
       frame.classList.add("has-n-marker");
     }
+    // 종목 차트 popup 을 뷰포트 안 fixed 배치.
     function positionStockChartPopup(tip) {
       var popup = tip.querySelector(".stock-chart-popup");
       var anchor = tip.querySelector(".stock");
@@ -323,6 +404,49 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       popup.style.setProperty("left", left + "px", "important");
       popup.style.setProperty("top", top + "px", "important");
     }
+    // tooltip 내 N(장중) 등락률 DOM 반영.
+    function applyLiveIntradayPct(tip, pct) {
+      var line = tip.querySelector(".stock-ret-line[data-live-intraday]");
+      if (!line) return;
+      var pctEl = line.querySelector(".stock-ret-pct");
+      if (pct === null || pct === undefined || isNaN(pct)) {
+        if (pctEl) pctEl.textContent = "—";
+        line.classList.remove("ok", "bad");
+        return;
+      }
+      if (pctEl) pctEl.textContent = Number(pct).toFixed(2) + "%";
+      line.classList.remove("ok", "bad");
+      line.classList.add(pct >= 0 ? "ok" : "bad");
+    }
+    // tooltip 호버 시 N 장중 등락률 API/JS 폴백 조회.
+    function refreshLiveIntradayLine(tip) {
+      var line = tip.querySelector(".stock-ret-line[data-live-intraday]");
+      if (!line) return;
+      var code = tip.getAttribute("data-stock-code");
+      if (!code) return;
+      var pctEl = line.querySelector(".stock-ret-pct");
+      if (pctEl) pctEl.textContent = "…";
+      line.classList.remove("ok", "bad");
+      // 조회 완료 후에도 tooltip 이 열려 있을 때만 DOM 반영.
+      function done(v) {
+        if (!tip.matches(":hover") && !tip.matches(":focus-within")) return;
+        applyLiveIntradayPct(tip, v);
+      }
+      var proxyUrl = liveQuotesBase().replace(/\/$/, "")
+        + "/api/quotes?codes=" + encodeURIComponent(code);
+      fetch(proxyUrl, { credentials: "omit", cache: "no-store" })
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (obj) {
+          var quotes = obj && obj.quotes;
+          var v = quotes && quotes[code] != null ? parseFloat(quotes[code]) : NaN;
+          if (!isNaN(v)) { done(v); return; }
+          reloadLiveQuotesJs(function () { done(readLiveQuoteFromJs(code)); });
+        })
+        .catch(function () {
+          reloadLiveQuotesJs(function () { done(readLiveQuoteFromJs(code)); });
+        });
+    }
+    // 차트 popup floating 스타일 해제.
     function resetStockChartPopup(tip) {
       var popup = tip.querySelector(".stock-chart-popup");
       if (!popup) return;
@@ -331,6 +455,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       popup.style.removeProperty("top");
       popup.style.removeProperty("display");
     }
+    // 열린 차트 popup 위치 재계산.
     function refreshOpenStockChartTips() {
       var s = root || document;
       s.querySelectorAll(".stock-chart-tip").forEach(function (tip) {
@@ -352,8 +477,10 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
         img.setAttribute("data-chart-base", base);
         img.removeAttribute("src");
       }
+      // 호버 시 차트 이미지·캡션·N 마커·장중 % 동시 갱신.
       function refreshChart() {
         positionStockChartPopup(tip);
+        refreshLiveIntradayLine(tip);
         var bust = Date.now() + "-" + Math.random().toString(36).slice(2, 10);
         var url = base + "?sidcode=" + bust;
         img.addEventListener("load", function onChartLoad() {
@@ -389,10 +516,208 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     window.addEventListener("resize", refreshOpenStockChartTips);
     window.addEventListener("scroll", refreshOpenStockChartTips, true);
   }
+  // --- 표 내 실시간 상승률(예측 옆·N일봉 열) ---
+  function fetchLiveQuotesMap(codes, cb) {
+    if (!codes.length) { cb({}); return; }
+    var url = liveQuotesBase().replace(/\/$/, "")
+      + "/api/quotes?codes=" + encodeURIComponent(codes.join(","));
+    fetch(url, { credentials: "omit", cache: "no-store" })
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (obj) {
+        if (obj && obj.quotes) { cb(obj.quotes); return; }
+        reloadLiveQuotesJs(function () {
+          var q = window.__MONEY_LIVE_QUOTES__ || {};
+          var out = {};
+          codes.forEach(function (c) { if (q[c] != null) out[c] = q[c]; });
+          cb(out);
+        });
+      })
+      .catch(function () {
+        reloadLiveQuotesJs(function () {
+          var q = window.__MONEY_LIVE_QUOTES__ || {};
+          var out = {};
+          codes.forEach(function (c) { if (q[c] != null) out[c] = q[c]; });
+          cb(out);
+        });
+      });
+  }
+  // N일봉 열 표시용 등락률 문자열(숫자와 % 사이 공백).
+  function formatStockRetPct(pct) {
+    return Number(pct).toFixed(2) + " %";
+  }
+  var livePctFlashTimers = new WeakMap();
+  // 셀 텍스트에서 등락률 숫자 파싱(…/— 는 null).
+  function parseLivePctText(text) {
+    var s = String(text || "").replace(/%/g, "").trim();
+    if (!s || s === "…" || s === "—") return null;
+    var v = parseFloat(s);
+    return isNaN(v) ? null : v;
+  }
+  // 실시간 % 변경 시 노란 밑줄 하이라이트(3초).
+  function flashLivePctEl(el) {
+    if (!el) return;
+    el.classList.add("live-pct-flash");
+    var prev = livePctFlashTimers.get(el);
+    if (prev) clearTimeout(prev);
+    livePctFlashTimers.set(el, setTimeout(function () {
+      el.classList.remove("live-pct-flash");
+      livePctFlashTimers.delete(el);
+    }, 3000));
+  }
+  // 아직 유효한 등락률이 없어 로딩(…) 표시가 필요한지.
+  function livePctNeedsLoading(el) {
+    if (!el) return true;
+    var t = (el.textContent || "").trim();
+    return !t || t === "…" || t === "—";
+  }
+  // 예측 상승률 옆 실시간 % span 갱신·변경 하이라이트.
+  function applyPredLiveIntradayPct(el, pct) {
+    if (!el) return;
+    if (pct === null || pct === undefined || isNaN(pct)) {
+      if (!livePctNeedsLoading(el)) return;
+      el.textContent = "—";
+      el.classList.remove("ok", "bad");
+      return;
+    }
+    var next = Number(pct).toFixed(2);
+    if (el.textContent === next) return;
+    var prev = (el.textContent || "").trim();
+    var hadPrior = parseLivePctText(prev) !== null;
+    el.textContent = next;
+    el.classList.remove("ok", "bad");
+    el.classList.add(pct >= 0 ? "ok" : "bad");
+    if (hadPrior && prev !== next) flashLivePctEl(el);
+  }
+  // 실시간 상승률 토글 버튼이 속한 일자 section 찾기.
+  function dayRootForLiveToggle(btn) {
+    var scopeId = btn.getAttribute("data-live-scope");
+    if (scopeId) {
+      var byId = document.getElementById(scopeId);
+      if (byId) return byId;
+    }
+    var ref = btn.closest(".market-theme-ref");
+    if (ref) {
+      var sec = ref.closest("section[id^='day-']");
+      if (sec) return sec;
+    }
+    return btn.closest(".day-market-block, .day-stack, section.day-forward-obs");
+  }
+  // N일봉(%) 열 N(당일) 실시간 % 갱신·변경 하이라이트.
+  function applyStockRetIntradayPct(el, pct) {
+    if (!el) return;
+    var line = el.closest(".stock-ret-line");
+    if (pct === null || pct === undefined || isNaN(pct)) {
+      if (!livePctNeedsLoading(el)) return;
+      el.textContent = "…";
+      if (line) line.classList.remove("ok", "bad");
+      return;
+    }
+    var next = formatStockRetPct(pct);
+    var cls = pct >= 0 ? "ok" : "bad";
+    if (el.textContent === next && line && line.classList.contains(cls)) return;
+    var prev = (el.textContent || "").trim();
+    var hadPrior = parseLivePctText(prev) !== null;
+    el.textContent = next;
+    if (line) {
+      line.classList.remove("ok", "bad");
+      line.classList.add(cls);
+    }
+    if (hadPrior && prev !== next) flashLivePctEl(el);
+  }
+  // 실시간 갱신 대상 요소에서 6자리 종목코드 추출.
+  function stockCodeForLiveEl(el) {
+    if (!el) return "";
+    var c = el.getAttribute("data-stock-code");
+    if (c) return c;
+    var host = el.closest("[data-stock-code]");
+    return host ? host.getAttribute("data-stock-code") || "" : "";
+  }
+  // 일자 블록 내 예측 옆·N일봉 실시간 % 일괄 조회(showLoading 시 … 표시).
+  function refreshPredLiveIntradayInScope(dayRoot, options) {
+    options = options || {};
+    var showLoading = !!options.showLoading;
+    if (!dayRoot) return;
+    var predSpans = dayRoot.querySelectorAll(".pred-live-intraday-pct");
+    var retPcts = dayRoot.querySelectorAll(".stock-ret-line[data-live-intraday] .stock-ret-pct");
+    var codes = [];
+    predSpans.forEach(function (el) {
+      var c = stockCodeForLiveEl(el);
+      if (c) codes.push(c);
+      if (showLoading || livePctNeedsLoading(el)) el.textContent = "…";
+    });
+    retPcts.forEach(function (el) {
+      var c = stockCodeForLiveEl(el);
+      if (c) codes.push(c);
+      if (showLoading || livePctNeedsLoading(el)) el.textContent = "…";
+    });
+    codes = codes.filter(function (c, i, a) { return a.indexOf(c) === i; });
+    fetchLiveQuotesMap(codes, function (quotes) {
+      predSpans.forEach(function (el) {
+        var c = stockCodeForLiveEl(el);
+        var v = c && quotes[c] != null ? parseFloat(quotes[c]) : NaN;
+        applyPredLiveIntradayPct(el, isNaN(v) ? null : v);
+      });
+      retPcts.forEach(function (el) {
+        var c = stockCodeForLiveEl(el);
+        var v = c && quotes[c] != null ? parseFloat(quotes[c]) : NaN;
+        applyStockRetIntradayPct(el, isNaN(v) ? null : v);
+      });
+    });
+  }
+  var columnIntradayTimers = {};
+  // 예측 전용 일자: N일봉 열 장중 % 자동 폴링(7초).
+  function bindForwardColumnIntradayRefresh(root) {
+    var sc = root || document;
+    sc.querySelectorAll("section[id^='day-']").forEach(function (sec) {
+      if (!sec.querySelector(".stock-ret-col-lines [data-live-intraday]")) return;
+      var tid = sec.id || "day";
+      refreshPredLiveIntradayInScope(sec, { showLoading: true });
+      if (columnIntradayTimers[tid]) return;
+      columnIntradayTimers[tid] = setInterval(function () {
+        refreshPredLiveIntradayInScope(sec);
+      }, 7000);
+    });
+  }
+  var predLiveTimers = {};
+  // 「실시간 상승률」 토글·예측 열 옆 % 폴링.
+  function bindLiveIntradayToggles(root) {
+    var sc = root || document;
+    sc.querySelectorAll(".live-intraday-toggle").forEach(function (btn) {
+      if (btn.getAttribute("data-live-bound")) return;
+      btn.setAttribute("data-live-bound", "1");
+      btn.addEventListener("click", function () {
+        var on = btn.getAttribute("aria-pressed") !== "true";
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+        btn.classList.toggle("active", on);
+        btn.textContent = on ? "실시간 상승률 숨기기" : "실시간 상승률";
+        var dayRoot = dayRootForLiveToggle(btn);
+        if (!dayRoot) return;
+        dayRoot.querySelectorAll(".pred-live-intraday").forEach(function (span) {
+          span.hidden = !on;
+          if (on) span.removeAttribute("aria-hidden");
+          else span.setAttribute("aria-hidden", "true");
+        });
+        var tid = dayRoot.id || btn.getAttribute("data-live-scope") || "day";
+        if (on) {
+          refreshPredLiveIntradayInScope(dayRoot, { showLoading: true });
+          if (predLiveTimers[tid]) clearInterval(predLiveTimers[tid]);
+          predLiveTimers[tid] = setInterval(function () {
+            if (btn.getAttribute("aria-pressed") !== "true") return;
+            refreshPredLiveIntradayInScope(dayRoot);
+          }, 7000);
+        } else if (predLiveTimers[tid]) {
+          clearInterval(predLiveTimers[tid]);
+          delete predLiveTimers[tid];
+        }
+      });
+    });
+  }
   document.querySelectorAll("table.rows-compare").forEach(bindSortTable);
   bindMarketRowFilters(document);
   bindIntegrateTips(document);
   bindStockChartTips(document);
+  bindLiveIntradayToggles(document);
+  bindForwardColumnIntradayRefresh(document);
 })();
 </script>"""
 
@@ -421,7 +746,7 @@ def _actual_ret_cell_macro(name: str) -> str:
 
 _TEMPLATE = r"""
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="ko" data-live-quotes-base="http://127.0.0.1:8765">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -591,6 +916,12 @@ _TEMPLATE = r"""
     table.rows-compare th .sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
     td.forward-actual-ret { white-space: nowrap; }
     .forward-ret-chain { white-space: nowrap; }
+    .live-intraday-toggle { cursor: pointer; border: 1px solid #3d6a9e; background: #1a2838; color: var(--accent); font-size: 0.78rem; }
+    .live-intraday-toggle:hover { border-color: var(--accent); }
+    .live-intraday-toggle.active { background: var(--accent); color: #0f1419; border-color: var(--accent); }
+    .pred-live-intraday { margin-left: 2px; font-size: 0.92em; color: var(--muted); white-space: nowrap; }
+    .pred-live-intraday-pct.ok { color: var(--ok); font-weight: 600; }
+    .pred-live-intraday-pct.bad { color: var(--bad); font-weight: 600; }
     .cumulative-accuracy-td { position: relative; }
     .cumulative-accuracy-td .cumulative-sort-keys { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; overflow: hidden; }
     .gap-tip.cumulative-hist-tip { margin-top: 0; vertical-align: middle; }
@@ -644,14 +975,22 @@ _TEMPLATE = r"""
     .stock-ret-line.ok .stock-ret-pct { color: var(--ok); }
     .stock-ret-line.bad .stock-ret-pct { color: var(--bad); }
     .stock-ret-dt { color: var(--muted); }
+    .stock-ret-col-lines {
+      display: flex; flex-direction: column; gap: 3px;
+      font-size: 0.74rem; font-variant-numeric: tabular-nums; line-height: 1.35;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      min-width: 8.5rem;
+    }
+    .stock-ret-col-lines .stock-ret-line { display: flex; justify-content: space-between; gap: 10px; }
+    .pred-reason-inline { font-size: 0.82rem; line-height: 1.45; white-space: normal; max-width: 28rem; }
   </style>
 </head>
 <body>
 {% macro stock_name_link(code, name, r=none) -%}
-<span class="stock-chart-tip" tabindex="0">
+<span class="stock-chart-tip" tabindex="0"{% if code %} data-stock-code="{{ (code|string).zfill(6) }}"{% endif %}>
   <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}"{# title="클릭: 네이버 차트 · 호버: 일봉·최근 등락률" #}>{{ name }}</a>
   <span class="stock-chart-popup" role="tooltip">
-    {% if r %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
+    {% if r and not (r.forward_observation | default(false)) %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
     {% set chart_n_day = stock_chart_n_day_iso(r) if r else "" %}
     {% set chart_n_off = stock_chart_n_bar_offset(r) if r else none %}
     <div class="stock-chart-frame"{% if chart_n_day %} data-n-day="{{ chart_n_day }}"{% endif %}{% if chart_n_off is not none %} data-n-offset="{{ chart_n_off }}"{% endif %}>
@@ -741,42 +1080,61 @@ __ACTUAL_RET_CELL_MACRO__
   </div>
 </span>
 {%- endmacro %}
+{% macro pred_ret_cell(d, r) -%}
+{% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}{% if d.forward_observation | default(false) %}<span class="pred-live-intraday" hidden aria-hidden="true"> · <span class="pred-live-intraday-pct" data-stock-code="{{ (r.code|string).zfill(6) }}">…</span>%</span>{% endif %}
+{%- endmacro %}
 {% macro market_theme_panel(d) -%}
-{% if d.market_theme_html %}
+{% if d.market_theme_html or (d.forward_observation | default(false)) %}
 <div class="market-theme-ref" style="margin:12px 0 16px;padding:12px 14px;background:#152232;border:1px solid #2a4a6a;border-radius:8px">
-  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">당일 테마 요약</h3>
-  {{ d.market_theme_html | safe }}
+  <div class="market-theme-heading-row" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 8px">
+    <h3 style="font-size:0.95rem;color:var(--ok);margin:0">당일 테마 요약</h3>
+    {% if d.forward_observation | default(false) %}
+    <button type="button" class="pill live-intraday-toggle" data-live-scope="day-{{ d.trading_day.isoformat() }}" aria-pressed="false" title="클릭 시 예측 상승률 옆에 장중 실시간 등락률을 표시합니다">실시간 상승률</button>
+    {% endif %}
+  </div>
+  {% if d.market_theme_html %}{{ d.market_theme_html | safe }}{% endif %}
 </div>
 {% endif %}
 {%- endmacro %}
 {% macro forward_pred_rationale_panel(d, meta) -%}
-{# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 으로만 표시 #}
+{# 장 마감 전 관측일: 예측 근거는 표 ``예측 근거`` 열에 전문 표시 #}
+{%- endmacro %}
+{% macro stock_ret_chain_cell(d, r) -%}
+{% if d.forward_observation | default(false) %}
+<td class="stock-ret-chain-col" style="vertical-align:top">{{ format_stock_ret_column_lines(r) | safe }}</td>
+{% endif %}
 {%- endmacro %}
 {% macro pred_rationale_cell(d, r) -%}
-<td class="pred-reason-forward" style="vertical-align:top;white-space:nowrap">
+<td class="pred-reason-forward" style="vertical-align:top;{% if d.forward_observation | default(false) %}white-space:normal;max-width:28rem;line-height:1.45{% else %}white-space:nowrap{% endif %}">
   {% if r.pred_ret is not none %}
     {% set pred_reason_body = r.pred_reason_tooltip_html or r.pred_reason_detail_html %}
-    {% if pred_reason_body and pred_reason_body != '—' %}
-    <span class="gap-tip pred-reason-tip">
-      <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
-      <div class="gap-tip-popup pred-reason-popup" role="tooltip">
-        <div class="combo-tip-body">{{ pred_reason_body | safe }}</div>
-      </div>
-    </span>
-    {% else %}—{% endif %}
-    {% if not (d.forward_observation | default(false)) and r.pred_miss_tooltip_html %}
-    <span class="gap-tip pred-miss-tip" style="margin-left:8px">
-      <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="틀린 이유">틀린 이유</span>
-      <div class="gap-tip-popup pred-miss-popup" role="tooltip">
-        <div class="combo-tip-body">{{ r.pred_miss_tooltip_html | safe }}</div>
-      </div>
-    </span>
+    {% if d.forward_observation | default(false) %}
+      {% if pred_reason_body and pred_reason_body != '—' %}
+      <div class="pred-reason-inline">{{ pred_reason_body | safe }}</div>
+      {% else %}—{% endif %}
+    {% else %}
+      {% if pred_reason_body and pred_reason_body != '—' %}
+      <span class="gap-tip pred-reason-tip">
+        <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+        <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+          <div class="combo-tip-body">{{ pred_reason_body | safe }}</div>
+        </div>
+      </span>
+      {% else %}—{% endif %}
+      {% if r.pred_miss_tooltip_html %}
+      <span class="gap-tip pred-miss-tip" style="margin-left:8px">
+        <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="틀린 이유">틀린 이유</span>
+        <div class="gap-tip-popup pred-miss-popup" role="tooltip">
+          <div class="combo-tip-body">{{ r.pred_miss_tooltip_html | safe }}</div>
+        </div>
+      </span>
+      {% endif %}
     {% endif %}
   {% else %}—{% endif %}
 </td>
 {%- endmacro %}
 {% macro hit_at_k_panel(d, meta) -%}
-{% if d.hit_at_k_metrics %}
+{% if d.hit_at_k_metrics and not (d.forward_observation | default(false)) %}
 <div class="hit-at-k-panel" style="margin:8px 0 14px;padding:10px 12px;background:#1a2433;border:1px solid #334;border-radius:8px;font-size:0.88rem">
   <strong style="color:var(--ok)">순위 평가 Hit@K</strong>
   <span class="sub" style="margin-left:8px">실제 {{ meta.threshold }} {{ d.hit_at_k_metrics.actual_big_count }}종 · 무작위 대비 lift</span>
@@ -820,17 +1178,22 @@ __ACTUAL_RET_CELL_MACRO__
       {% endfor %}
     </p>
 
-    <h3 style="font-size:1rem;color:var(--ok);margin:16px 0 8px;">실제·예측 10% 이상 포함 종목</h3>
-    <p class="sub" style="margin-top:0">당일 <strong>실제</strong> 10% 이상 상승 종목과, 모델 <strong>예측 상승률</strong> 10% 이상 후보(중복 제거)를 함께 표시합니다. 위 라디오로 20%이상 / 10~20% 구간을 전환할 수 있습니다.</p>
+    <h3 style="font-size:1rem;color:var(--ok);margin:16px 0 8px;">{% if d.forward_observation | default(false) %}예측 10% 이상 후보{% else %}실제·예측 10% 이상 포함 종목{% endif %}</h3>
+    <p class="sub" style="margin-top:0">{% if d.forward_observation | default(false) %}모델 <strong>예측 상승률</strong> 10% 이상 후보입니다. 장 마감 전이므로 실제 상승률은 표시하지 않습니다.{% else %}당일 <strong>실제</strong> 10% 이상 상승 종목과, 모델 <strong>예측 상승률</strong> 10% 이상 후보(중복 제거)를 함께 표시합니다.{% endif %} 위 라디오로 20%이상 / 10~20% 구간을 전환할 수 있습니다.</p>
     {% if d.rows_compare %}
     <table class="rows-compare">
       <thead>
         <tr>
           <th class="sortable-col" data-sort="group" scope="col" title="구분 우선순위 정렬: 실제+예측 > 실제만 > 예측만">구분</th>
           <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
-          <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 일봉 확정 전이므로 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
+          {% if not (d.forward_observation | default(false)) %}
+          <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준">실제 상승률(%)</th>
+          {% endif %}
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
-          <th scope="col" title="모델·키워드·모멘텀·섹터 요약 tooltip">예측 근거</th>
+          {% if d.forward_observation | default(false) %}
+          <th scope="col" title="N-3·N-2·N-1·N 일봉 등락률">N일봉(%)</th>
+          {% endif %}
+          <th scope="col" title="{% if d.forward_observation | default(false) %}모델·키워드·모멘텀·섹터 요약{% else %}모델·키워드·모멘텀·섹터 요약 tooltip{% endif %}">예측 근거</th>
           <th>보정(%)</th>
           <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
           <th>누적정확도(10~20)</th>
@@ -843,19 +1206,22 @@ __ACTUAL_RET_CELL_MACRO__
         {% for r in d.rows_compare %}
         <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
           <td style="white-space:nowrap;vertical-align:top" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
-            {% if r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
+            {% if not (d.forward_observation | default(false)) and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측≥{{ meta.threshold }}{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
           </td>
           <td data-sort-col="stock" data-sort-value="{{ r.name }} {{ r.code }}">
             {{ stock_name_link(r.code, r.name, r) }}
             {# <div class="pill">{{ r.code }}</div> #}
           </td>
-          <td class="{% if d.forward_observation | default(false) %}forward-actual-ret {% endif %}{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
+          {% if not (d.forward_observation | default(false)) %}
+          <td class="{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
             {{ actual_ret_cell(r, d.forward_observation | default(false)) }}
           </td>
+          {% endif %}
           <td class="{% if r.pred_high | default(false) %}warn{% endif %}" style="vertical-align:top;{% if r.pred_high | default(false) %}color:var(--warn);font-weight:600{% endif %}" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
-            {% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}
+            {{ pred_ret_cell(d, r) }}
           </td>
+          {{ stock_ret_chain_cell(d, r) }}
           {{ pred_rationale_cell(d, r) }}
           <td style="vertical-align:top">
             {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
@@ -1054,7 +1420,7 @@ __ACTUAL_RET_CELL_MACRO__
 
 _COMPACT_TEMPLATE = r"""
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="ko" data-live-quotes-base="http://127.0.0.1:8765">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -1217,6 +1583,12 @@ _COMPACT_TEMPLATE = r"""
     table.rows-compare th .sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
     td.forward-actual-ret { white-space: nowrap; }
     .forward-ret-chain { white-space: nowrap; }
+    .live-intraday-toggle { cursor: pointer; border: 1px solid #3d6a9e; background: #1a2838; color: var(--accent); font-size: 0.78rem; }
+    .live-intraday-toggle:hover { border-color: var(--accent); }
+    .live-intraday-toggle.active { background: var(--accent); color: #0f1419; border-color: var(--accent); }
+    .pred-live-intraday { margin-left: 2px; font-size: 0.92em; color: var(--muted); white-space: nowrap; }
+    .pred-live-intraday-pct.ok { color: var(--ok); font-weight: 600; }
+    .pred-live-intraday-pct.bad { color: var(--bad); font-weight: 600; }
     .cumulative-accuracy-td { position: relative; }
     .cumulative-accuracy-td .cumulative-sort-keys { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; overflow: hidden; }
     .gap-tip.cumulative-hist-tip { margin-top: 0; vertical-align: middle; }
@@ -1270,14 +1642,22 @@ _COMPACT_TEMPLATE = r"""
     .stock-ret-line.ok .stock-ret-pct { color: var(--ok); }
     .stock-ret-line.bad .stock-ret-pct { color: var(--bad); }
     .stock-ret-dt { color: var(--muted); }
+    .stock-ret-col-lines {
+      display: flex; flex-direction: column; gap: 3px;
+      font-size: 0.74rem; font-variant-numeric: tabular-nums; line-height: 1.35;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      min-width: 8.5rem;
+    }
+    .stock-ret-col-lines .stock-ret-line { display: flex; justify-content: space-between; gap: 10px; }
+    .pred-reason-inline { font-size: 0.82rem; line-height: 1.45; white-space: normal; max-width: 28rem; }
   </style>
 </head>
 <body>
 {% macro stock_name_link(code, name, r=none) -%}
-<span class="stock-chart-tip" tabindex="0">
+<span class="stock-chart-tip" tabindex="0"{% if code %} data-stock-code="{{ (code|string).zfill(6) }}"{% endif %}>
   <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}"{# title="클릭: 네이버 차트 · 호버: 일봉·최근 등락률" #}>{{ name }}</a>
   <span class="stock-chart-popup" role="tooltip">
-    {% if r %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
+    {% if r and not (r.forward_observation | default(false)) %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
     {% set chart_n_day = stock_chart_n_day_iso(r) if r else "" %}
     {% set chart_n_off = stock_chart_n_bar_offset(r) if r else none %}
     <div class="stock-chart-frame"{% if chart_n_day %} data-n-day="{{ chart_n_day }}"{% endif %}{% if chart_n_off is not none %} data-n-offset="{{ chart_n_off }}"{% endif %}>
@@ -1367,42 +1747,61 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
   </div>
 </span>
 {%- endmacro %}
+{% macro pred_ret_cell(d, r) -%}
+{% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}{% if d.forward_observation | default(false) %}<span class="pred-live-intraday" hidden aria-hidden="true"> · <span class="pred-live-intraday-pct" data-stock-code="{{ (r.code|string).zfill(6) }}">…</span>%</span>{% endif %}
+{%- endmacro %}
 {% macro market_theme_panel(d) -%}
-{% if d.market_theme_html %}
+{% if d.market_theme_html or (d.forward_observation | default(false)) %}
 <div class="market-theme-ref" style="margin:12px 0 16px;padding:12px 14px;background:#152232;border:1px solid #2a4a6a;border-radius:8px">
-  <h3 style="font-size:0.95rem;color:var(--ok);margin:0 0 8px">당일 테마 요약</h3>
-  {{ d.market_theme_html | safe }}
+  <div class="market-theme-heading-row" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 8px">
+    <h3 style="font-size:0.95rem;color:var(--ok);margin:0">당일 테마 요약</h3>
+    {% if d.forward_observation | default(false) %}
+    <button type="button" class="pill live-intraday-toggle" data-live-scope="day-{{ d.trading_day.isoformat() }}" aria-pressed="false" title="클릭 시 예측 상승률 옆에 장중 실시간 등락률을 표시합니다">실시간 상승률</button>
+    {% endif %}
+  </div>
+  {% if d.market_theme_html %}{{ d.market_theme_html | safe }}{% endif %}
 </div>
 {% endif %}
 {%- endmacro %}
 {% macro forward_pred_rationale_panel(d, meta) -%}
-{# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 으로만 표시 #}
+{# 장 마감 전 관측일: 예측 근거는 표 ``예측 근거`` 열에 전문 표시 #}
+{%- endmacro %}
+{% macro stock_ret_chain_cell(d, r) -%}
+{% if d.forward_observation | default(false) %}
+<td class="stock-ret-chain-col" style="vertical-align:top">{{ format_stock_ret_column_lines(r) | safe }}</td>
+{% endif %}
 {%- endmacro %}
 {% macro pred_rationale_cell(d, r) -%}
-<td class="pred-reason-forward" style="vertical-align:top;white-space:nowrap">
+<td class="pred-reason-forward" style="vertical-align:top;{% if d.forward_observation | default(false) %}white-space:normal;max-width:28rem;line-height:1.45{% else %}white-space:nowrap{% endif %}">
   {% if r.pred_ret is not none %}
     {% set pred_reason_body = r.pred_reason_tooltip_html or r.pred_reason_detail_html %}
-    {% if pred_reason_body and pred_reason_body != '—' %}
-    <span class="gap-tip pred-reason-tip">
-      <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
-      <div class="gap-tip-popup pred-reason-popup" role="tooltip">
-        <div class="combo-tip-body">{{ pred_reason_body | safe }}</div>
-      </div>
-    </span>
-    {% else %}—{% endif %}
-    {% if not (d.forward_observation | default(false)) and r.pred_miss_tooltip_html %}
-    <span class="gap-tip pred-miss-tip" style="margin-left:8px">
-      <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="틀린 이유">틀린 이유</span>
-      <div class="gap-tip-popup pred-miss-popup" role="tooltip">
-        <div class="combo-tip-body">{{ r.pred_miss_tooltip_html | safe }}</div>
-      </div>
-    </span>
+    {% if d.forward_observation | default(false) %}
+      {% if pred_reason_body and pred_reason_body != '—' %}
+      <div class="pred-reason-inline">{{ pred_reason_body | safe }}</div>
+      {% else %}—{% endif %}
+    {% else %}
+      {% if pred_reason_body and pred_reason_body != '—' %}
+      <span class="gap-tip pred-reason-tip">
+        <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+        <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+          <div class="combo-tip-body">{{ pred_reason_body | safe }}</div>
+        </div>
+      </span>
+      {% else %}—{% endif %}
+      {% if r.pred_miss_tooltip_html %}
+      <span class="gap-tip pred-miss-tip" style="margin-left:8px">
+        <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="틀린 이유">틀린 이유</span>
+        <div class="gap-tip-popup pred-miss-popup" role="tooltip">
+          <div class="combo-tip-body">{{ r.pred_miss_tooltip_html | safe }}</div>
+        </div>
+      </span>
+      {% endif %}
     {% endif %}
   {% else %}—{% endif %}
 </td>
 {%- endmacro %}
 {% macro hit_at_k_panel(d, meta) -%}
-{% if d.hit_at_k_metrics %}
+{% if d.hit_at_k_metrics and not (d.forward_observation | default(false)) %}
 <div class="hit-at-k-panel" style="margin:8px 0 14px;padding:10px 12px;background:#1a2433;border:1px solid #334;border-radius:8px;font-size:0.88rem">
   <strong style="color:var(--ok)">순위 평가 Hit@K</strong>
   <span class="sub" style="margin-left:8px">실제 {{ meta.threshold }} {{ d.hit_at_k_metrics.actual_big_count }}종 · 무작위 대비 lift</span>
@@ -1446,9 +1845,14 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
     <tr>
       <th class="sortable-col" data-sort="group" scope="col" title="구분 우선순위 정렬: 실제+예측 > 실제만 > 예측만">구분</th>
       <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
-      <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
+      {% if not (d.forward_observation | default(false)) %}
+      <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준">실제 상승률(%)</th>
+      {% endif %}
       <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
-      <th scope="col" title="예측 근거·미적중 시 틀린 이유 tooltip">예측 근거</th>
+      {% if d.forward_observation | default(false) %}
+      <th scope="col" title="N-3·N-2·N-1·N 일봉 등락률">N일봉(%)</th>
+      {% endif %}
+      <th scope="col" title="{% if d.forward_observation | default(false) %}예측 근거 전문{% else %}예측 근거·미적중 시 틀린 이유 tooltip{% endif %}">예측 근거</th>
       <th>보정(%)</th>
       <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.65rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
       <th>누적정확도(10~20)</th>
@@ -1461,19 +1865,22 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
     {% for r in d.rows_compare %}
     <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
       <td style="white-space:nowrap;vertical-align:top" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
-        {% if r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제</span>{% endif %}
+        {% if not (d.forward_observation | default(false)) and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제</span>{% endif %}
         {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
       </td>
       <td data-sort-col="stock" data-sort-value="{{ r.name }} {{ r.code }}">
         {{ stock_name_link(r.code, r.name, r) }}
         {# <div class="pill">{{ r.code }}</div> #}
       </td>
-      <td class="{% if d.forward_observation | default(false) %}forward-actual-ret {% endif %}{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
+      {% if not (d.forward_observation | default(false)) %}
+      <td class="{% if r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
         {{ actual_ret_cell_monthly(r, d.forward_observation | default(false)) }}
       </td>
+      {% endif %}
       <td class="{% if r.pred_high | default(false) %}warn{% endif %}" style="vertical-align:top" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
-        {% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}
+        {{ pred_ret_cell(d, r) }}
       </td>
+      {{ stock_ret_chain_cell(d, r) }}
       {{ pred_rationale_cell(d, r) }}
       <td style="vertical-align:top">
         {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}
@@ -1670,7 +2077,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 
 _INDEX_TEMPLATE = r"""
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="ko" data-live-quotes-base="http://127.0.0.1:8765">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -1704,7 +2111,7 @@ _INDEX_TEMPLATE = r"""
 
 _DATED_N_TEMPLATE = r"""
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="ko" data-live-quotes-base="http://127.0.0.1:8765">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -1880,6 +2287,12 @@ _DATED_N_TEMPLATE = r"""
     table.rows-compare th .sortable-col.sort-desc::after { content: " ▼"; font-size: 0.65em; opacity: 0.85; }
     td.forward-actual-ret { white-space: nowrap; }
     .forward-ret-chain { white-space: nowrap; }
+    .live-intraday-toggle { cursor: pointer; border: 1px solid #3d6a9e; background: #1a2838; color: var(--accent); font-size: 0.78rem; }
+    .live-intraday-toggle:hover { border-color: var(--accent); }
+    .live-intraday-toggle.active { background: var(--accent); color: #0f1419; border-color: var(--accent); }
+    .pred-live-intraday { margin-left: 2px; font-size: 0.92em; color: var(--muted); white-space: nowrap; }
+    .pred-live-intraday-pct.ok { color: var(--ok); font-weight: 600; }
+    .pred-live-intraday-pct.bad { color: var(--bad); font-weight: 600; }
     .cumulative-accuracy-td { position: relative; }
     .cumulative-accuracy-td .cumulative-sort-keys { position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; overflow: hidden; }
     .gap-tip.cumulative-hist-tip { margin-top: 0; vertical-align: middle; }
@@ -1933,6 +2346,14 @@ _DATED_N_TEMPLATE = r"""
     .stock-ret-line.ok .stock-ret-pct { color: var(--ok); }
     .stock-ret-line.bad .stock-ret-pct { color: var(--bad); }
     .stock-ret-dt { color: var(--muted); }
+    .stock-ret-col-lines {
+      display: flex; flex-direction: column; gap: 3px;
+      font-size: 0.74rem; font-variant-numeric: tabular-nums; line-height: 1.35;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      min-width: 8.5rem;
+    }
+    .stock-ret-col-lines .stock-ret-line { display: flex; justify-content: space-between; gap: 10px; }
+    .pred-reason-inline { font-size: 0.82rem; line-height: 1.45; white-space: normal; max-width: 28rem; }
   </style>
 </head>
 <body>
@@ -1995,13 +2416,63 @@ _DATED_N_TEMPLATE = r"""
 {% endif %}
 {%- endmacro %}
 {% macro forward_pred_rationale_panel(d, meta) -%}
-{# 장 미개장 관측일: 종목별 예측 근거는 표 ``예측 근거`` 열 tooltip 에만 표시 #}
+{# 장 마감 전 관측일: 예측 근거는 표 ``예측 근거`` 열에 전문 표시 #}
+{%- endmacro %}
+{% macro pred_ret_cell(d, r) -%}
+{% if r.pred_ret is not none %}{{ "%.2f"|format(r.pred_ret) }}{% else %}—{% endif %}{% if d.forward_observation | default(false) %}<span class="pred-live-intraday" hidden aria-hidden="true"> · <span class="pred-live-intraday-pct" data-stock-code="{{ (r.code|string).zfill(6) }}">…</span>%</span>{% endif %}
+{%- endmacro %}
+{% macro market_theme_panel(d) -%}
+{% if d.market_theme_html or (d.forward_observation | default(false)) %}
+<div class="market-theme-ref" style="margin:12px 0 16px;padding:12px 14px;background:#152232;border:1px solid #2a4a6a;border-radius:8px">
+  <div class="market-theme-heading-row" style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:0 0 8px">
+    <h3 style="font-size:0.95rem;color:var(--ok);margin:0">당일 테마 요약</h3>
+    {% if d.forward_observation | default(false) %}
+    <button type="button" class="pill live-intraday-toggle" data-live-scope="day-{{ d.trading_day.isoformat() }}" aria-pressed="false" title="클릭 시 예측 상승률 옆에 장중 실시간 등락률을 표시합니다">실시간 상승률</button>
+    {% endif %}
+  </div>
+  {% if d.market_theme_html %}{{ d.market_theme_html | safe }}{% endif %}
+</div>
+{% endif %}
+{%- endmacro %}
+{% macro stock_ret_chain_cell(d, r) -%}
+{% if d.forward_observation | default(false) %}
+<td class="stock-ret-chain-col" style="vertical-align:top">{{ format_stock_ret_column_lines(r) | safe }}</td>
+{% endif %}
+{%- endmacro %}
+{% macro pred_rationale_cell(d, r) -%}
+<td class="pred-reason-forward" style="vertical-align:top;{% if d.forward_observation | default(false) %}white-space:normal;max-width:28rem;line-height:1.45{% else %}white-space:nowrap{% endif %}">
+  {% if r.pred_ret is not none %}
+    {% set pred_reason_body = r.pred_reason_tooltip_html or r.pred_reason_detail_html %}
+    {% if d.forward_observation | default(false) %}
+      {% if pred_reason_body and pred_reason_body != '—' %}
+      <div class="pred-reason-inline">{{ pred_reason_body | safe }}</div>
+      {% else %}—{% endif %}
+    {% else %}
+      {% if pred_reason_body and pred_reason_body != '—' %}
+      <span class="gap-tip pred-reason-tip">
+        <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+        <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+          <div class="combo-tip-body">{{ pred_reason_body | safe }}</div>
+        </div>
+      </span>
+      {% else %}—{% endif %}
+      {% if r.pred_miss_tooltip_html %}
+      <span class="gap-tip pred-miss-tip" style="margin-left:8px">
+        <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="틀린 이유">틀린 이유</span>
+        <div class="gap-tip-popup pred-miss-popup" role="tooltip">
+          <div class="combo-tip-body">{{ r.pred_miss_tooltip_html | safe }}</div>
+        </div>
+      </span>
+      {% endif %}
+    {% endif %}
+  {% else %}—{% endif %}
+</td>
 {%- endmacro %}
 {% macro stock_name_link(code, name, r=none) -%}
-<span class="stock-chart-tip" tabindex="0">
+<span class="stock-chart-tip" tabindex="0"{% if code %} data-stock-code="{{ (code|string).zfill(6) }}"{% endif %}>
   <a class="stock" target="_blank" rel="noopener" href="{{ naver_chart_url(code) }}"{# title="클릭: 네이버 차트 · 호버: 일봉·최근 등락률" #}>{{ name }}</a>
   <span class="stock-chart-popup" role="tooltip">
-    {% if r %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
+    {% if r and not (r.forward_observation | default(false)) %}{{ format_stock_ret_tooltip_lines(r) | safe }}{% endif %}
     {% set chart_n_day = stock_chart_n_day_iso(r) if r else "" %}
     {% set chart_n_off = stock_chart_n_bar_offset(r) if r else none %}
     <div class="stock-chart-frame"{% if chart_n_day %} data-n-day="{{ chart_n_day }}"{% endif %}{% if chart_n_off is not none %} data-n-offset="{{ chart_n_off }}"{% endif %}>
@@ -2050,8 +2521,9 @@ __ACTUAL_RET_CELL_MACRO_DATED__
 
   {{ day_pred_accuracy_banner(day, meta) }}
   {{ forward_pred_rationale_panel(day, meta) }}
+  {{ market_theme_panel(day) }}
 
-  <section class="day-market-block">
+  <section class="day-market-block" id="day-{{ day.trading_day.isoformat() }}">
     <div class="day-heading-row">
       <h2>종목별 상세 <span style="font-size:0.82rem;font-weight:500;color:var(--muted)">(관측일 {{ t_day.isoformat() }})</span></h2>
       {{ market_filter_radios(n_day.strftime("%Y%m%d")) }}
@@ -2064,9 +2536,14 @@ __ACTUAL_RET_CELL_MACRO_DATED__
         <tr>
           <th class="sortable-col" data-sort="group" scope="col" title="구분 우선순위 정렬: 실제+예측 > 실제만 > 예측만">구분</th>
           <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
-          <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준. 금일 장 마감 전(15:30 KST 전)에는 — 뒤 괄호에 pykrx·네이버 실시간 등락률(리포트 생성 시점)을 둡니다.">실제 상승률(%)<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted)">(장중·참고)</span></th>
+          {% if not (day.forward_observation | default(false)) %}
+          <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준">실제 상승률(%)</th>
+          {% endif %}
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
-          <th scope="col" title="예측 근거·미적중 시 틀린 이유 tooltip">예측 근거</th>
+          {% if day.forward_observation | default(false) %}
+          <th scope="col" title="N-3·N-2·N-1·N 일봉 등락률">N일봉(%)</th>
+          {% endif %}
+          <th scope="col" title="{% if day.forward_observation | default(false) %}예측 근거 전문{% else %}예측 근거·미적중 시 틀린 이유 tooltip{% endif %}">예측 근거</th>
           <th>보정(%)</th>
           <th scope="col" title="예측≥임계 후보만. 앞: 예측≥임계·실적 확정 건 중 실제≥임계 적중 비율(a/d). vs: 예측≥임계·실적 확정 건 중 실제 0% 이상 비율. 괄호: a=실제≥임계, b=0&lt;실제&lt;임계, c=실제&lt;0, d=예측≥임계·실적 확정 전체 (a b c / d)">누적 정확도<br/><span style="font-size:0.68rem;font-weight:500;color:var(--muted);line-height:1.35;display:block;margin-top:2px">(<span class="sortable-col" data-sort="cumulative_a" title="적중% 정렬">A%</span> <span style="color:var(--muted)">vs</span> <span class="sortable-col" data-sort="cumulative_b" title="실제 0%+ 비율 정렬">B%</span> · a b c / d)</span></th>
           <th>누적정확도(10~20)</th>
@@ -2089,12 +2566,15 @@ __ACTUAL_RET_CELL_MACRO_DATED__
             {{ stock_name_link(r.code, r.name, r) }}
             {# <div class="pill">{{ r.code }}</div> #}
           </td>
-          <td class="num {% if day.forward_observation | default(false) %}forward-actual-ret {% endif %}{% if not meta.prediction_only and r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
+          {% if not (day.forward_observation | default(false)) %}
+          <td class="num {% if not meta.prediction_only and r.actual_big %}ok{% elif r.actual_ret is not none and r.actual_ret < 0 %}bad{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none and r.actual_ret_intraday_pct < 0 %}bad{% endif %}" data-sort-col="actual" data-sort-value="{% if r.actual_cell_pre_close_snapshot | default(false) and r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% elif r.actual_ret is not none %}{{ r.actual_ret }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}{{ r.actual_ret_intraday_pct / 100.0 }}{% endif %}">
             {{ actual_ret_cell_dated(r, day.forward_observation | default(false)) }}
           </td>
+          {% endif %}
           <td class="num {% if r.pred_high | default(false) %}warn{% endif %}" data-sort-col="pred" data-sort-value="{% if r.pred_ret is not none %}{{ r.pred_ret }}{% endif %}">
-            {% if r.pred_ret is none %}—{% else %}{{ "%.2f"|format(r.pred_ret) }}{% endif %}
+            {{ pred_ret_cell(day, r) }}
           </td>
+          {{ stock_ret_chain_cell(day, r) }}
           {{ pred_rationale_cell(day, r) }}
           <td class="num">
             {% if r.pred_ret is not none and r.cumulative_accuracy_avg is defined and r.cumulative_accuracy_avg is not none %}

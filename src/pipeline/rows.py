@@ -80,6 +80,54 @@ def _compare_row_is_prediction_candidate(r: dict) -> bool:
     return bool(r.get("pred_high") or r.get("pred_mid"))
 
 
+def _compare_row_belongs_in_closed_day_table(r: dict) -> bool:
+    """장 마감 확정일: 예측 후보 또는 당일 실제 20%↑ 급등."""
+    return _compare_row_is_prediction_candidate(r) or bool(r.get("actual_big"))
+
+
+def _merge_actual_big_movers_into_rows_compare(
+    rows_compare: list[dict],
+    actual_big_movers: list[dict],
+    *,
+    market_by_code: dict[str, str],
+) -> None:
+    """비교 표에 없는 당일 실제 20%↑ 종목을 추가(예측 후보가 아니어도 표시)."""
+    if not actual_big_movers:
+        return
+    seen = {str(r.get("code", "")).zfill(6) for r in rows_compare if r.get("code")}
+    for m in actual_big_movers:
+        code = str(m.get("code", "")).zfill(6)
+        if not code or code in seen:
+            continue
+        act = float(m.get("ret_pct", 0)) / 100.0
+        rows_compare.append(
+            {
+                "code": code,
+                "market_segment": market_by_code.get(code, "other"),
+                "name": str(m.get("name") or code),
+                "reasons_html": "당일 20%↑ 실제 급등 (14:30 예측 후보 아님)",
+                "keywords": [],
+                "keyword_hits": 0,
+                "mention_score": 0.0,
+                "pred_ret": None,
+                "ml_prob": None,
+                "rank_position": None,
+                "confidence_tier": "none",
+                "actual_ret": act,
+                "actual_big": True,
+                "pred_high": False,
+                "pred_mid": False,
+                "rise_band": _rise_band_for_row(None, act),
+                "gap_analysis_html": "",
+                "late_news_hit": None,
+                "pred_reason_summary": "",
+                "pred_reason_hit_line": "",
+                "pred_reason_has_tooltip": False,
+            }
+        )
+        seen.add(code)
+
+
 def _sync_forward_day_rows_from_predictions(
     rows_compare: list[dict],
     preds: list[predict.PredictionRow],
@@ -658,16 +706,17 @@ def _enrich_rows_stock_ret_tooltip(
     now_kst: datetime | None = None,
 ) -> None:
     """
-    종목별 tooltip: N·N-1·N-2 일봉 등락률(%).
+    종목별 tooltip: N·N-1·N-2·N-3 일봉 등락률(%).
 
-    - 관측일 ``T`` 실적이 확정된 구간: **N = T**(당일 급등·실제%와 같은 날짜).
-    - 예측 전용(``forward_observation``): **N = T 직전 거래일**(기준일).
-  """
+    **N = 관측일 ``T``**(``main.py`` 구간·일자 인자, KST 오늘과 무관).
+    N-1·N-2·N-3 은 ``T`` 직전 연속 거래일로 채웁니다(``T`` 가 휴장일이면 N 라벨만 캘린더 ``T``).
+    ``T`` 가 KST 오늘 거래일이고 장 마감 전이면 N(``T``) % 는 브라우저에서 실시간 조회합니다.
+    """
+    now = now_kst or datetime.now(trading_calendar.KST)
+    today = now.date()
     try:
         if n_day is not None:
             n_basis = n_day
-        elif forward_observation:
-            n_basis = trading_calendar.last_trading_day_before(t_day)
         else:
             n_basis = t_day
     except ValueError:
@@ -679,41 +728,40 @@ def _enrich_rows_stock_ret_tooltip(
 
     day_chain: list[tuple[str, date]] = []
     d = n_basis
-    for label in ("N", "N-1", "N-2"):
+    for label in ("N", "N-1", "N-2", "N-3"):
         day_chain.append((label, d))
         try:
             d = trading_calendar.last_trading_day_before(d)
         except ValueError:
             break
 
-    today = (now_kst or datetime.now(trading_calendar.KST)).date()
-    intraday_map: dict[str, float] = {}
-    if (
-        n_basis == today
-        and trading_calendar.is_trading_day(n_basis)
-        and not trading_calendar.is_krx_daily_bar_effective_closed(n_basis, now_kst=now_kst)
-    ):
-        codes = sorted({str(r.get("code", "")).zfill(6) for r in rows if r.get("code")})
-        if codes:
-            snap = stocks.best_effort_intraday_pct_by_code(n_basis, codes, returns_df=returns)
-            if snap:
-                intraday_map = snap
+    n_is_live_intraday = (
+        n_basis == t_day
+        and t_day == today
+        and trading_calendar.is_trading_day(t_day)
+        and not trading_calendar.is_krx_daily_bar_effective_closed(t_day, now_kst=now)
+    )
 
-    chart_end = trading_calendar.ohlcv_request_end_cap(now_kst=now_kst)
-    n_bar_offset = trading_calendar.trading_sessions_after_exclusive(n_basis, chart_end)
+    chart_end = trading_calendar.naver_chart_axis_end_kst(now_kst=now)
+    if chart_end < n_basis:
+        n_bar_offset: int | None = None
+    else:
+        n_bar_offset = trading_calendar.trading_sessions_after_exclusive(n_basis, chart_end)
 
     for r in rows:
         code = str(r.get("code", "")).zfill(6)
         r["report_n_day"] = n_basis.isoformat()
-        r["stock_chart_n_bar_offset"] = n_bar_offset
+        if n_bar_offset is not None:
+            r["stock_chart_n_bar_offset"] = n_bar_offset
+        else:
+            r.pop("stock_chart_n_bar_offset", None)
         tips: list[dict[str, object]] = []
         for label, td in day_chain:
             ret = stocks.actual_return_on_date(returns, code, td) if code else None
-            intraday = False
+            intraday = label == "N" and n_is_live_intraday
             pct: float | None = float(ret) * 100.0 if ret is not None else None
-            if label == "N" and pct is None and code and code in intraday_map:
-                pct = float(intraday_map[code])
-                intraday = True
+            if intraday:
+                pct = None
             tips.append(
                 {
                     "label": label,
@@ -733,11 +781,7 @@ def _enrich_forward_day_actual_display_rows(
     now_kst: datetime | None = None,
 ) -> None:
     """
-    장 미개장 관측일 ``T``: 실제 상승률 칸은 T 미확정 참고만 표기.
-
-    - ``T`` 가 오늘이고 장중이면 ``— (장중%)`` 한 번만
-    - 그 외에는 기준일 N(=T 직전 거래일) ``N%, N-1%, N-2%`` 형식(한 줄)
-    - ``actual_ret_prev_day`` 괄호 중복 표기는 쓰지 않음
+    장 미개장 관측일 ``T``: 실제 상승률 칸은 항상 미확정(—).
 
     ``DayReport.forward_observation`` 과 동일 조건(미래 거래일·당일 장 시작 전)에서만 적용됩니다.
     """
@@ -749,30 +793,6 @@ def _enrich_forward_day_actual_display_rows(
         n_basis = trading_calendar.last_trading_day_before(t_day)
     except ValueError:
         n_basis = None
-    t_is_today_open = (
-        t_day == today
-        and trading_calendar.is_trading_day(t_day)
-        and not trading_calendar.is_krx_daily_bar_effective_closed(t_day, now_kst=now)
-    )
-    t_intraday: dict[str, float] = {}
-    if t_is_today_open:
-        codes = sorted({str(r.get("code", "")).zfill(6) for r in rows if r.get("code")})
-        if codes:
-            snap = stocks.best_effort_intraday_pct_by_code(t_day, codes, returns_df=returns)
-            if snap:
-                t_intraday = snap
-    n_intraday: dict[str, float] = {}
-    if (
-        n_basis is not None
-        and n_basis == today
-        and trading_calendar.is_trading_day(n_basis)
-        and not trading_calendar.is_krx_daily_bar_effective_closed(n_basis, now_kst=now)
-    ):
-        codes = sorted({str(r.get("code", "")).zfill(6) for r in rows if r.get("code")})
-        if codes:
-            snap = stocks.best_effort_intraday_pct_by_code(n_basis, codes, returns_df=returns)
-            if snap:
-                n_intraday = snap
     for r in rows:
         r["forward_observation"] = True
         r["actual_ret_prev_day"] = None
@@ -780,23 +800,8 @@ def _enrich_forward_day_actual_display_rows(
         r.pop("actual_ret_n_day_pct", None)
         r.pop("actual_ret_intraday_pct", None)
         r.pop("actual_cell_pre_close_snapshot", None)
-        code = str(r.get("code", "")).zfill(6)
-        if not code:
-            continue
-        if t_is_today_open and code in t_intraday:
-            r["actual_ret_intraday_pct"] = float(t_intraday[code])
-            r["actual_cell_pre_close_snapshot"] = True
-            continue
-        if n_basis is None:
-            continue
-        ret = stocks.actual_return_on_date(returns, code, n_basis)
-        if ret is not None and math.isfinite(float(ret)):
-            r["actual_ret_n_day_pct"] = float(ret) * 100.0
-            r["actual_ret_forward_n_ref"] = True
-            continue
-        if code in n_intraday:
-            r["actual_ret_n_day_pct"] = float(n_intraday[code])
-            r["actual_ret_forward_n_ref"] = True
+        r.pop("actual_ret", None)
+        r["actual_big"] = False
 
 
 def _build_rebuild_learning_payload(
@@ -1232,8 +1237,13 @@ def _reconcile_closed_day_report(
         ):
             r.pop(k, None)
 
+    _merge_actual_big_movers_into_rows_compare(
+        dr.rows_compare,
+        dr.actual_big_movers or [],
+        market_by_code=market_by_code,
+    )
     dr.rows_compare = [
-        r for r in dr.rows_compare if _compare_row_is_prediction_candidate(r)
+        r for r in dr.rows_compare if _compare_row_belongs_in_closed_day_table(r)
     ]
     dr.rows_compare.sort(key=lambda r: (not r["actual_big"], not r["pred_high"], r["code"]))
 

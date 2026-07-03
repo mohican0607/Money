@@ -75,50 +75,31 @@ def _fmt_pct_span_html(pct: float | None) -> str:
 
 
 def format_forward_actual_ret_cell(row: dict[str, Any] | None) -> str:
-    """
-    장 미개장 관측일 실제 상승률 칸: ``N%, N-1%, N-2%`` (한 줄, 줄바꿈 없음).
-    """
-    if not row:
-        return "—"
-    if (
-        row.get("actual_cell_pre_close_snapshot")
-        and row.get("actual_ret_intraday_pct") is not None
-    ):
-        inner = _fmt_pct_span_html(float(row["actual_ret_intraday_pct"]))
-        return f'<span class="forward-ret-chain" style="white-space:nowrap">— ({inner}%)</span>'
-
-    items = row.get("stock_ret_tooltip") or []
-    if items:
-        by_label = {str(it.get("label") or ""): it for it in items}
-        pcts: list[str] = []
-        for label in ("N", "N-1", "N-2"):
-            it = by_label.get(label)
-            if it is None or it.get("pct") is None:
-                pcts.append("—")
-            else:
-                pcts.append(f"{_fmt_pct_span_html(float(it['pct']))}%")
-        return (
-            f'<span class="forward-ret-chain" style="white-space:nowrap">'
-            f"{', '.join(pcts)}</span>"
-        )
-
-    if (
-        row.get("actual_ret_forward_n_ref")
-        and row.get("actual_ret_n_day_pct") is not None
-    ):
-        inner = _fmt_pct_span_html(float(row["actual_ret_n_day_pct"]))
-        return f'<span class="forward-ret-chain" style="white-space:nowrap">{inner}%</span>'
+    """예측 전용(장 마감 전) 관측일: 실제 상승률 칸은 항상 미확정(—)."""
     return "—"
 
 
-def format_stock_ret_tooltip_lines(row: dict[str, Any] | None) -> str:
-    """종목명 호버 popup 상단 — N-2·N-1·N 일봉 등락률(%) HTML."""
+def _format_stock_ret_pct(pv: float, *, spaced: bool = False) -> str:
+    """일봉 등락률 표시 문자열(``spaced`` 이면 ``12.34 %``)."""
+    s = f"{pv:.2f}"
+    return f"{s} %" if spaced else f"{s}%"
+
+
+def _stock_ret_lines_html(
+    row: dict[str, Any] | None,
+    *,
+    wrapper_class: str,
+    empty: str,
+    spaced_percent: bool = False,
+) -> str:
+    """N-3·N-2·N-1·N 등락률 HTML 블록( tooltip·표 열 공통 생성 )."""
     if not row:
-        return ""
+        return empty
     items = row.get("stock_ret_tooltip") or []
     if not items:
-        return ""
-    parts = ['<div class="stock-ret-lines" aria-label="N-2·N-1·N 일봉 등락률">']
+        return empty
+    code = str(row.get("code", "")).zfill(6)
+    parts = [f'<div class="{wrapper_class}" aria-label="N-3·N-2·N-1·N 일봉 등락률">']
     for it in reversed(items):
         label = str(it.get("label") or "").strip()
         dt = str(it.get("date") or "")
@@ -127,28 +108,47 @@ def format_stock_ret_tooltip_lines(row: dict[str, Any] | None) -> str:
         lbl_base = "N" if label == "N" else label
         mmdd = f"{dt[5:7]}{dt[8:10]}" if len(dt) >= 10 else ""
         if mmdd:
-            mmdd_bit = f"{mmdd}·장중" if intraday else mmdd
-            lbl = f"{lbl_base}({mmdd_bit})"
+            lbl = f"{lbl_base}({mmdd})"
         else:
             lbl = lbl_base
         cls = ""
-        if pct is not None:
+        live_attr = (
+            f' data-live-intraday="1" data-stock-code="{code}"' if intraday else ""
+        )
+        if intraday and pct is None:
+            pct_s = "…"
+        elif pct is not None:
             try:
                 pv = float(pct)
                 cls = " ok" if pv >= 0 else " bad"
-                pct_s = f"{pv:.2f}%"
+                pct_s = _format_stock_ret_pct(pv, spaced=spaced_percent)
             except (TypeError, ValueError):
                 pct_s = "—"
         else:
             pct_s = "—"
         parts.append(
-            f'<span class="stock-ret-line{cls}">'
+            f'<span class="stock-ret-line{cls}"{live_attr}>'
             f'<span class="stock-ret-lbl">{lbl}</span>: '
             f'<span class="stock-ret-pct">{pct_s}</span>'
             f"</span>"
         )
     parts.append("</div>")
     return "".join(parts)
+
+
+def format_stock_ret_tooltip_lines(row: dict[str, Any] | None) -> str:
+    """종목명 호버 popup 상단 — N-3·N-2·N-1·N 일봉 등락률(%) HTML."""
+    return _stock_ret_lines_html(row, wrapper_class="stock-ret-lines", empty="")
+
+
+def format_stock_ret_column_lines(row: dict[str, Any] | None) -> str:
+    """표 전용 N-3·N-2·N-1·N 일봉 등락률(예측 전용·장중)."""
+    return _stock_ret_lines_html(
+        row,
+        wrapper_class="stock-ret-col-lines",
+        empty="—",
+        spaced_percent=True,
+    )
 
 
 def stock_chart_n_day_iso(row: dict[str, Any] | None) -> str:
@@ -218,6 +218,32 @@ def inject_market_theme_into_day_section(section_html: str, theme_inner_html: st
         pos = m.end()
         return section_html[:pos] + "\n        " + block + section_html[pos:]
     return block + "\n" + section_html
+
+
+def preserved_day_section_is_stale_intraday_closed_ui(
+    section_html: str,
+    t_day: date,
+    *,
+    now_kst: datetime | None = None,
+) -> bool:
+    """
+    월간 병합 유지 블록이 **오늘 장중**인데 마감 확정 UI(실제 상승률 등)로 남아 있으면 True.
+    """
+    if not trading_calendar.is_trading_day(t_day):
+        return False
+    now = now_kst or datetime.now(trading_calendar.KST)
+    if t_day != now.date():
+        return False
+    if trading_calendar.is_krx_daily_bar_effective_closed(t_day, now_kst=now):
+        return False
+    html = section_html or ""
+    if "day-forward-obs" in html:
+        return False
+    if re.search(r"실제\s*상승률", html):
+        return True
+    if re.search(r"실제≥", html):
+        return True
+    return False
 
 
 def preserved_day_section_is_stale_forward_observation(
@@ -343,6 +369,24 @@ from .templates import (
     _TEMPLATE,
 )
 
+_LIVE_QUOTES_SCRIPT = '<script src="live_quotes.js" id="money-live-quotes-js"></script>'
+
+
+def _inject_live_quotes_script(html: str) -> str:
+    if "live_quotes.js" in html:
+        return html
+    return html.replace("</head>", f"  {_LIVE_QUOTES_SCRIPT}\n</head>", 1)
+
+
+def _after_report_written(out_path: Path, days: list[DayReport]) -> None:
+    from .live_quotes import (
+        collect_stock_codes_from_day_reports,
+        ensure_live_quotes_for_report,
+    )
+
+    codes = collect_stock_codes_from_day_reports(days)
+    ensure_live_quotes_for_report(out_path.parent, codes)
+
 
 def render_report(
     title: str,
@@ -373,12 +417,14 @@ def render_report(
         interaction_snippet=REPORT_TABLE_INTERACTION_SNIPPET,
         format_prediction_signal_cell=format_prediction_signal_cell,
         format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
+        format_stock_ret_column_lines=format_stock_ret_column_lines,
         format_forward_actual_ret_cell=format_forward_actual_ret_cell,
         stock_chart_n_day_iso=stock_chart_n_day_iso,
         stock_chart_n_bar_offset=stock_chart_n_bar_offset,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(html, encoding="utf-8")
+    out_path.write_text(_ensure_report_interaction_script(html), encoding="utf-8")
+    _after_report_written(out_path, days)
 
 
 _DAY_SECTION_RE = re.compile(
@@ -580,12 +626,14 @@ def render_compact_tabbed_report(
         interaction_snippet=REPORT_TABLE_INTERACTION_SNIPPET,
         format_prediction_signal_cell=format_prediction_signal_cell,
         format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
+        format_stock_ret_column_lines=format_stock_ret_column_lines,
         format_forward_actual_ret_cell=format_forward_actual_ret_cell,
         stock_chart_n_day_iso=stock_chart_n_day_iso,
         stock_chart_n_bar_offset=stock_chart_n_bar_offset,
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(html, encoding="utf-8")
+    out_path.write_text(_ensure_report_interaction_script(html), encoding="utf-8")
+    _after_report_written(out_path, days)
 
 _m_dated_style = re.search(r"<style>\s*(.*?)\s*</style>", _DATED_N_TEMPLATE, re.DOTALL)
 _DATED_N_CSS_INNER = _m_dated_style.group(1) if _m_dated_style else ""
@@ -656,6 +704,7 @@ def _rollup_html_shell() -> str:
   <style>
 {inner}
   </style>
+  {_LIVE_QUOTES_SCRIPT}
 </head>
 <body>
   <header class="rollup-page-header">
@@ -695,10 +744,18 @@ def _insert_into_money_dated_main(html: str, wrapped_block: str) -> str:
     return html[:insert_at] + wrapped_block + html[insert_at:]
 
 
+_INTERACTION_BLOCK_RE = re.compile(
+    r"<!-- money-report-table-interaction -->.*?</script>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
 def _ensure_report_interaction_script(html: str) -> str:
-    """정렬·시장 필터 등 인터랙션 스크립트가 없으면 마지막 ``</body>`` 앞에 삽입(구버전 누적 HTML 보강)."""
-    if REPORT_TABLE_INTERACTION_MARKER in html:
-        return html
+    """인터랙션 스크립트를 보강·교체(구버전 누적 HTML의 stale JS 갱신)."""
+    html = _inject_live_quotes_script(html)
+    if _INTERACTION_BLOCK_RE.search(html):
+        snippet = REPORT_TABLE_INTERACTION_SNIPPET.strip()
+        return _INTERACTION_BLOCK_RE.sub(lambda _m: snippet, html, count=1)
     lower = html.lower()
     idx = lower.rfind("</body>")
     if idx == -1:
@@ -779,9 +836,11 @@ def render_dated_n_report(
         naver_disclosure_url=naver_disclosure_url,
         format_prediction_signal_cell=format_prediction_signal_cell,
         format_stock_ret_tooltip_lines=format_stock_ret_tooltip_lines,
+        format_stock_ret_column_lines=format_stock_ret_column_lines,
         format_forward_actual_ret_cell=format_forward_actual_ret_cell,
         stock_chart_n_day_iso=stock_chart_n_day_iso,
         stock_chart_n_bar_offset=stock_chart_n_bar_offset,
     )
     body_inner = _strip_html_body_inner(html)
     merge_dated_n_rollup(rollup_path=out_rollup, n_compact=n_compact, body_inner=body_inner)
+    _after_report_written(out_rollup, [day])

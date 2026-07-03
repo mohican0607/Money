@@ -357,11 +357,11 @@ def _run_pipeline(
                 f"관측일 T={T.isoformat()}: 예측 전용(KST 오늘={today_kst} 이후 거래일)",
                 flush=True,
             )
-        elif day_forward and T == today_kst and trading_calendar.is_before_krx_regular_open_kst(
+        elif day_forward and T == today_kst and trading_calendar.is_before_krx_regular_close_kst(
             T, now_kst=now_kst_pipe
         ):
             print(
-                f"관측일 T={T.isoformat()}: 장 시작 전 - 예측 전용"
+                f"관측일 T={T.isoformat()}: 장 마감 전 - 예측 전용"
                 f"(실제 상승률·당일 테마·적중 통계 미확정)",
                 flush=True,
             )
@@ -451,6 +451,7 @@ def _run_pipeline(
         )
         use_frozen = (
             config.PREDICTION_FREEZE_ENABLED
+            and day_forward
             and not ignore_freeze_for_t
             and isinstance(frozen_items, list)
             and _freeze_entry_usable(frozen_items)
@@ -499,7 +500,10 @@ def _run_pipeline(
             )
             if config.PREDICTION_FREEZE_ENABLED and (
                 ignore_freeze_for_t
-                or not _freeze_entry_usable(freeze_payload.get(t_key) or [])
+                or (
+                    day_forward
+                    and not _freeze_entry_usable(freeze_payload.get(t_key) or [])
+                )
             ):
                 freeze_payload[t_key] = _prediction_rows_to_frozen_items(
                     _display_prediction_rows_for_freeze(preds)
@@ -512,12 +516,19 @@ def _run_pipeline(
         if kospi_r is not None:
             kospi_hint = f"당일 KOSPI 지수 전일대비 약 {kospi_r*100:.2f}%였습니다."
 
-        if day_forward and use_frozen and preds:
+        if use_frozen and preds:
+            prediction_ranking.enrich_prediction_rows_from_returns_ml(
+                preds,
+                returns_ml,
+                target_day=T,
+                ks11_ret_lag1=kospi_r,
+            )
             preds = prediction_ranking.finalize_ranked_predictions(
                 preds,
                 target_day=T,
                 ks11_ret_lag1=kospi_r,
-                forward_observation=True,
+                forward_observation=day_forward,
+                returns_ml=returns_ml,
             )
 
         now_kst_td = datetime.now(trading_calendar.KST)
@@ -525,24 +536,7 @@ def _run_pipeline(
         actual_big_movers: list[dict] = []
         actual_big_decliners: list[dict] = []
         krx_pct_by_code: dict[str, float] | None = None
-        if day_forward:
-            # 예측 전용: 장 시작 전에는 실적·급등 목록 없음. 개장 후 당일(T)만 참고용 pykrx.
-            if is_today_t and not trading_calendar.is_before_krx_regular_open_kst(
-                T, now_kst=now_kst_td
-            ):
-                krx_pct_by_code = stocks.try_krx_change_pct_by_code(T, returns_df=returns)
-                if not krx_pct_by_code:
-                    krx_pct_by_code = stocks.best_effort_intraday_pct_by_code(
-                        T, codes, returns_df=returns
-                    )
-                if krx_pct_by_code:
-                    actual_big_movers = stocks.big_movers_from_krx_pct_map(
-                        krx_pct_by_code, config.BIG_MOVE_THRESHOLD, names
-                    )
-                    actual_big_decliners = stocks.big_movers_from_krx_pct_map(
-                        krx_pct_by_code, config.BIG_MOVE_THRESHOLD, names, direction="down"
-                    )
-        else:
+        if not day_forward:
             krx_pct_by_code = stocks.try_krx_change_pct_by_code(T, returns_df=returns)
             # 오늘(T) 장중에는 일봉이 아직 없을 수 있어 best-effort 실시간 맵으로 한 번 더 보강.
             if (
@@ -640,9 +634,13 @@ def _run_pipeline(
                 str(x.get("code", "")).zfill(6): x for x in actual_10dn_rows if x.get("code")
             }
 
-        if not day_forward:
+        if (
+            not day_forward
+            and config.INCLUDE_ACTUAL_BIG_MOVERS_IN_ROWS_COMPARE
+            and actual_10up_by_code
+        ):
             preds_by_code: dict[str, predict.PredictionRow] = {pr.code: pr for pr in preds}
-            # 비교 표: 당일 실제 10%↑(상승) + 예측 후보만. 10%↓ 급락은 theme 스냅샷용으로만 씀.
+            # (옵션) 당일 실제 10%↑ 종목을 비교 표에 추가 — 기본 끔.
             for m in list(actual_10up_by_code.values()):
                 code = m["code"]
                 act = float(m["ret_pct"]) / 100.0
@@ -760,7 +758,7 @@ def _run_pipeline(
                 }
             )
 
-        if day_forward and preds:
+        if preds:
             _sync_forward_day_rows_from_predictions(
                 rows_compare,
                 preds,
@@ -770,15 +768,18 @@ def _run_pipeline(
                 blob=blob,
                 kospi_hint=kospi_hint,
                 late_blob=late_blob,
+                actual_ret_for_code=None if day_forward else _actual_ret_for_code,
             )
 
-        rows_compare = [
-            r
-            for r in rows_compare
-            if r.get("actual_big")
-            or r.get("pred_high")
-            or r.get("pred_mid")
-        ]
+        if day_forward:
+            rows_compare = [
+                r for r in rows_compare if _compare_row_is_prediction_candidate(r)
+            ]
+            for r in rows_compare:
+                r["actual_ret"] = None
+                r["actual_big"] = False
+                r.pop("actual_ret_intraday_pct", None)
+                r.pop("actual_cell_pre_close_snapshot", None)
         if day_forward and not rows_compare and preds:
             top_show = min(int(config.PRED_FORWARD_SHOW_MAX), len(preds))
             for pr in preds[:top_show]:

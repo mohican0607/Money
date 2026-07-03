@@ -5,7 +5,7 @@ import json
 import math
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 import requests
 from tqdm import tqdm
@@ -306,6 +306,37 @@ def _resolve_pipeline_ohlcv_end(
     return min(ohlcv_end, end_date)
 
 
+def validate_range_n_plus_one(
+    n_day: date,
+    t_day: date,
+    *,
+    now_kst: datetime | None = None,
+) -> str | None:
+    from src.pipeline.early_validate import validate_range_n_plus_one as _validate
+
+    return _validate(n_day, t_day, now_kst=now_kst)
+
+
+def validate_dated_n_day(
+    n_day: date,
+    *,
+    now_kst: datetime | None = None,
+) -> str | None:
+    from src.pipeline.early_validate import validate_dated_n_day as _validate
+
+    return _validate(n_day, now_kst=now_kst)
+
+
+def validate_dated_t_day(
+    t_day: date,
+    *,
+    now_kst: datetime | None = None,
+) -> str | None:
+    from src.pipeline.early_validate import validate_dated_t_day as _validate
+
+    return _validate(t_day, now_kst=now_kst)
+
+
 def _observation_day_forward_mode(
     t: date,
     *,
@@ -316,8 +347,8 @@ def _observation_day_forward_mode(
     """
     관측일 ``T`` 를 예측 전용(실적·당일 테마 미확정)으로 볼지.
 
-    - ``T > today`` (미래 거래일)
-    - ``T == today`` 이고 **정규장 개장(09:00 KST) 전** — 장 시작 전 실행
+    - ``T > today`` (미래 캘린더 관측일)
+    - ``T == today`` 거래일이고 **정규장 마감(15:30 KST) 전**
     - ``pipeline_forward_only`` (레거시 일괄 플래그; dated/daily 경로는 아래 규칙 우선)
     """
     if now_kst is None:
@@ -329,7 +360,7 @@ def _observation_day_forward_mode(
     if (
         t == today
         and trading_calendar.is_trading_day(t)
-        and trading_calendar.is_before_krx_regular_open_kst(t, now_kst=now_kst)
+        and trading_calendar.is_before_krx_regular_close_kst(t, now_kst=now_kst)
     ):
         return True
     if pipeline_forward_only:

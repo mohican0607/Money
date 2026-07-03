@@ -8,13 +8,13 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
     → 거래일 14:30 자동 실행·리포트 열기: scripts/run_daily_1500.ps1 (등록 예: scripts/register_task_scheduler_example.ps1)
 
   python main.py 20260401
-    → 관측일 T=2026-04-01 지정, 기준일 N은 T 직전 거래일로 자동 계산.
-      output/report_dated_by_0401.html 에 해당 T 블록 추가·재실행 시 해당 블록만 갱신
+    → 관측일 T=2026-04-01, 기준일 N=T-1 캘린더일. N일 14:30(KST)부터 실행.
+      output/report_dated_by_MMDD.html 에 해당 T 블록 추가·재실행 시 해당 블록만 갱신
     → T가 오늘/미래면 예측 후보 중심, T가 과거면 pykrx로 시장 20%↑와 예측을 함께 표시(OHLCV 샘플 밖 급등 포함).
 
   python main.py 20260102 20260410
-    → 관측 거래일 T가 위 구간(From~To)에 있는 날만 예측·계산, 월별 HTML·목차 (--weekly 와 동일 형식)
-    → 같은 달 report_YYYY.MM.html 이 있으면 From~To 일자만 갱신·추가하고, 그 밖의 기존 일자 HTML은 유지(기본). 끄려면 --no-report-expand
+    → 기준일 N=2026-01-02, 관측일 T=N+1(2026-01-03)만 허용. N일 14:30(KST)부터 실행.
+      월별 HTML·목차 (--weekly 와 동일 형식). --no-report-expand 로 병합 끔
 
   python main.py --weekly
     → config REPORT_TEST_DAY_START~END 구간을 달력 월 단위로 묶어
@@ -32,23 +32,15 @@ from __future__ import annotations
 import os
 import sys
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from src import config, prediction_accuracy_cache, report, trading_calendar
-from src.pipeline import (
-    observation_day_forward_mode,
-    omit_target_calendar_before_close,
-    open_report_outputs,
-    parse_cli,
-    print_usage,
-    render_monthly_batch,
-    run_pipeline,
-    should_skip_ohlcv_right_gap,
-)
+_KST = ZoneInfo("Asia/Seoul")
+
 
 def main() -> None:
     """
@@ -56,6 +48,17 @@ def main() -> None:
 
     환경 변수 ``NO_AUTO_OPEN_OUTPUT`` 이 설정되지 않았으면 Windows/macOS에서 이번에 생성한 리포트 HTML 중 최신 파일 하나만 연다.
     """
+    from src import config, prediction_accuracy_cache, report, trading_calendar
+    from src.pipeline import (
+        observation_day_forward_mode,
+        omit_target_calendar_before_close,
+        open_report_outputs,
+        parse_cli,
+        print_usage,
+        render_monthly_batch,
+        run_pipeline,
+        should_skip_ohlcv_right_gap,
+    )
     if sys.platform == "win32":
         for stream in (sys.stdout, sys.stderr):
             try:
@@ -67,6 +70,16 @@ def main() -> None:
     if mode == "usage":
         print_usage()
         sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 2)
+
+    if mode == "serve_live_quotes":
+        from src.report.live_quotes import run_live_quotes_server
+
+        run_live_quotes_server()
+        return
+
+    from src.report.live_quotes import ensure_live_quotes_server_running
+
+    ensure_live_quotes_server_running()
 
     now_kst = datetime.now(trading_calendar.KST)
     today = now_kst.date()
@@ -121,10 +134,9 @@ def main() -> None:
         assert arg_date is not None and range_end is not None
         d_from, d_to = arg_date, range_end
         end_date = min(date(2026, 12, 31), d_to)
-        sessions = trading_calendar.trading_sessions_in_range(train_start, end_date)
-        test_days = [t for t in sessions if d_from <= t <= d_to]
+        test_days = trading_calendar.calendar_days_inclusive(d_from, d_to)
         if not test_days:
-            print(f"구간 {d_from} ~ {d_to} 에 포함되는 거래일이 없습니다. (데이터 상한 {end_date})")
+            print(f"구간 {d_from} ~ {d_to} 에 포함되는 관측일이 없습니다.")
             return
         merge_monthly = "--no-report-expand" not in sys.argv[1:]
         if not merge_monthly:
@@ -137,7 +149,7 @@ def main() -> None:
         if future_td:
             print(
                 f"구간 {d_from.isoformat()}~{d_to.isoformat()}: "
-                f"KST 오늘({today}) 이후 거래일 {len(future_td)}일 "
+                f"KST 오늘({today}) 이후 관측일 {len(future_td)}일 "
                 f"({future_td[0].isoformat()}~{future_td[-1].isoformat()})은 "
                 "예측 전용(실제 상승률·누적 정확도는 확정 후 갱신)으로 처리합니다.",
                 flush=True,
@@ -194,7 +206,7 @@ def main() -> None:
         return
 
     # daily: N=today → T=next trading day
-    # dated: argv YYYYMMDD 를 관측일 T로 해석, 기준일 N은 T 직전 거래일
+    # dated: argv YYYYMMDD 를 관측일 T로 해석, 기준일 N=T-1 캘린더일
     if mode == "daily":
         n_day = today
         if not trading_calendar.is_trading_day(n_day):
@@ -207,21 +219,14 @@ def main() -> None:
             return
     else:
         assert arg_date is not None
-        t_day = arg_date  # dated: target observation day
-        if not trading_calendar.is_trading_day(t_day):
-            print(f"지정한 관측일 T={t_day} 은(는) 거래일이 아닙니다.")
-            return
-        try:
-            n_day = trading_calendar.last_trading_day_before(t_day)
-        except ValueError as e:
-            print(e)
-            return
+        t_day = arg_date
+        n_day = t_day - timedelta(days=1)
 
     end_date = max(today, t_day)
     end_date = min(end_date, date(2026, 12, 31))
 
     test_days = [t_day]
-    if t_day not in trading_calendar.trading_sessions_in_range(train_start, end_date):
+    if t_day < train_start or t_day > end_date:
         print(f"관측일 {t_day} 이(가) 캘린더 범위에 없습니다. end_date={end_date}")
         return
 
@@ -280,12 +285,6 @@ def main() -> None:
         )
         t_day = actual_t
 
-    try:
-        n_day = trading_calendar.last_trading_day_before(t_day)
-    except ValueError as e:
-        print(e)
-        return
-
     meta_compact = {
         "train_range": (
             f"{po.train_start} ~ 각 관측일 T 직전까지(워크포워드, "
@@ -330,14 +329,23 @@ def main() -> None:
 
 if __name__ == "__main__":
     _t0 = time.perf_counter()
-    _started_kst = datetime.now(trading_calendar.KST)
+    _started_kst = datetime.now(_KST)
     try:
+        from src.pipeline.cli import _parse_cli
+        from src.pipeline.early_validate import validate_cli_or_none
+
+        _mode, _arg_date, _range_end, _, _ = _parse_cli()
+        _cli_err = validate_cli_or_none(_mode, _arg_date, _range_end)
+        if _cli_err:
+            print(_cli_err, file=sys.stderr)
+            sys.exit(2)
         main()
     finally:
-        _ended_kst = datetime.now(trading_calendar.KST)
+        _ended_kst = datetime.now(_KST)
         _sec = time.perf_counter() - _t0
-        _total_s = int(round(_sec))
-        _min, _srem = divmod(_total_s, 60)
-        _t_start = f"{_started_kst.hour:02d}시 {_started_kst.minute:02d}분"
-        _t_end = f"{_ended_kst.hour:02d}시 {_ended_kst.minute:02d}분"
-        print(f"총 소요시간: {_min:02d}분 {_srem:02d}초 ({_t_start} ~ {_t_end})")
+        if _sec >= 60:
+            _total_s = int(round(_sec))
+            _min, _srem = divmod(_total_s, 60)
+            _t_start = f"{_started_kst.hour:02d}시 {_started_kst.minute:02d}분"
+            _t_end = f"{_ended_kst.hour:02d}시 {_ended_kst.minute:02d}분"
+            print(f"총 소요시간: {_min:02d}분 {_srem:02d}초 ({_t_start} ~ {_t_end})")

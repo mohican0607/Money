@@ -184,6 +184,98 @@ def burst_industry_peer_codes(
     return out
 
 
+def theme_rotation_peer_codes(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+    listing_codes: list[str],
+    *,
+    max_codes: int = 280,
+) -> list[str]:
+    """
+    핫 업종 내 전일 중간 모멘텀(로테이션) 종목·동업종 peer 를 후보에 넣습니다.
+
+    7/2처럼 전일 건설·전력 테마가 이어지되 상한가 직후 리더가 아닌
+    전일 +5~18% 구간 종목(신원종합개발·진흥기업 등)이 급등하는 패턴을 풀에 포함.
+    """
+    if not config.PRED_THEME_ROTATION_ENABLED:
+        return []
+    from .. import stocks as stocks_mod
+
+    allowed = {str(c).zfill(6) for c in listing_codes}
+    lag_min = float(config.PRED_THEME_ROTATION_LAG_MIN)
+    lag_max = float(config.PRED_THEME_ROTATION_LAG_MAX)
+    block = float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
+    lookback = max(1, int(config.PRED_INDUSTRY_HEAT_LOOKBACK_DAYS))
+    session_days: list[date] = []
+    d: date | None = target_day
+    for _ in range(lookback + 1):
+        if d is None:
+            break
+        try:
+            d = trading_calendar.last_trading_day_before(d)
+        except ValueError:
+            break
+        session_days.append(d)
+    industry_hits: dict[str, int] = defaultdict(int)
+    industry_best: dict[str, float] = defaultdict(float)
+    for sess in session_days:
+        sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(sess)]
+        for _, r in sl.iterrows():
+            try:
+                rp = float(r.get("return_pct") or 0.0)
+            except (TypeError, ValueError):
+                continue
+            if rp + 1e-12 < 0.10:
+                continue
+            ic = stocks_mod.industry_code_for_stock(str(r["Code"]))
+            if not ic:
+                continue
+            k = str(ic)
+            industry_hits[k] += 1
+            industry_best[k] = max(industry_best[k], rp)
+    hot_ind_keys = {
+        k
+        for k in industry_hits
+        if industry_hits[k] >= 2 or industry_best[k] + 1e-12 >= 0.18
+    }
+
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(code: str) -> None:
+        c6 = str(code).zfill(6)
+        if c6 in allowed and c6 not in seen:
+            seen.add(c6)
+            out.append(c6)
+
+    sl_t = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
+    scored: list[tuple[float, str]] = []
+    for _, r in sl_t.iterrows():
+        code = str(r["Code"]).zfill(6)
+        if code not in allowed:
+            continue
+        try:
+            rl = float(r.get("ret_lag1") or 0.0)
+            vs = float(r.get("vol_surge_ratio") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if rl + 1e-12 < lag_min or rl + 1e-12 >= min(lag_max, block):
+            continue
+        ic = stocks_mod.industry_code_for_stock(code)
+        if not ic or str(ic) not in hot_ind_keys:
+            continue
+        sweet = 1.0 - abs(rl - 0.10) / max(0.06, block - lag_min)
+        scored.append((sweet + 0.10 * min(vs, 2.5), code))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    for _, code in scored[: max_codes // 2]:
+        _add(code)
+        ic = stocks_mod.industry_code_for_stock(code)
+        if ic:
+            for peer in stocks_mod.peers_for_industry(ic)[:16]:
+                _add(peer)
+    return out[:max_codes]
+
+
 def oversold_bounce_candidate_codes(
     returns_ml: pd.DataFrame,
     target_day: date,
@@ -329,6 +421,7 @@ def day_candidate_codes(
     hot_peers = prior_day_hot_peer_codes(returns_ml, target_day, listing_codes)
     burst_peers = burst_industry_peer_codes(returns_ml, target_day, listing_codes)
     bounce_codes = oversold_bounce_candidate_codes(returns_ml, target_day, listing_codes)
+    rotation_codes = theme_rotation_peer_codes(returns_ml, target_day, listing_codes)
     rs_codes = pred_hybrid.relative_strength_candidate_codes(
         returns_ml, target_day, listing_codes
     )
@@ -340,6 +433,7 @@ def day_candidate_codes(
             + flow_codes
             + hot_peers
             + burst_peers
+            + rotation_codes
             + bounce_codes
             + rs_codes
         )

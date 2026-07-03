@@ -8,8 +8,6 @@ from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
-from src import config, trading_calendar
-
 def _parse_yyyymmdd(s: str) -> date | None:
     """``YYYYMMDD`` 8자리 숫자 문자열을 ``date`` 로 파싱. 형식 오류 시 None."""
     s = s.strip()
@@ -59,6 +57,8 @@ def _parse_cli() -> tuple[str, date | None, date | None, str, bool]:
         return "daily", None, None, snap_mode, use_freeze
     if argv[0] in ("--weekly", "--weekly-report", "-w"):
         return "weekly", None, None, snap_mode, use_freeze
+    if argv[0] in ("--serve-live-quotes", "--live-quotes"):
+        return "serve_live_quotes", None, None, snap_mode, use_freeze
     if argv[0] in ("-h", "--help"):
         return "usage", None, None, snap_mode, use_freeze
     if len(argv) >= 2:
@@ -82,13 +82,15 @@ def _print_usage() -> None:
   python main.py
       오늘(N) 기준 → N+1 거래일(T) 후보, output/report_dated_by_MMDD.html (해당 N 블록)
   python main.py YYYYMMDD
-      지정 관측일 T(YYYYMMDD), 기준일 N은 T 직전 거래일로 자동 계산.
+      관측일 T(YYYYMMDD), 기준일 N=T-1 캘린더일. N일 14:30(KST)부터 실행.
       output/report_dated_by_MMDD.html 에 해당 T 블록만 추가·갱신
   python main.py YYYYMMDD YYYYMMDD
-      From~To 거래일만 예측·계산, report_YYYY.MM.html 및 report_index_monthly.html
-      (같은 달 HTML이 있으면 From~To 일자만 갱신·추가, 그 외 일자는 기존 HTML 유지 — 기본)
+      기준일 N(첫 인자) · 관측일 T=N+1 캘린더일(둘째 인자). N일 14:30(KST)부터 실행.
+      report_YYYY.MM.html 및 report_index_monthly.html (같은 달 HTML이 있으면 해당 일자만 갱신·추가)
   python main.py --weekly
       월간 배치 (config REPORT_TEST_DAY_START ~ END, --weekly 이름은 호환용)
+  python main.py --serve-live-quotes
+      리포트 tooltip 장중 등락률용 로컬 프록시(127.0.0.1:8765). 리포트 열기 전 자동 기동되기도 함.
 
   학습 스냅샷 (급등-뉴스 BreakoutEvent 풀, breakout_train_snapshot.json):
   (플래그 없음, 기본)
@@ -122,8 +124,8 @@ def _print_usage() -> None:
       --rebuild-train-snapshot 구간에서도 prediction_freeze_by_t.json 을 재사용합니다.
       (일반 From~To 는 기본적으로 freeze 재사용)
 
-  예: python main.py 20260401 20260414
-  예: python main.py --append-rebuild-learning --no-report-expand 20260516 20260601
+  예: python main.py 20260703 20260704
+  예: python main.py --append-rebuild-learning --no-report-expand 20260703 20260704
 """
     )
 def _open_report_outputs(html_paths: Sequence[Path]) -> None:
@@ -136,6 +138,12 @@ def _open_report_outputs(html_paths: Sequence[Path]) -> None:
 
     Windows: ``os.startfile`` — macOS: ``open``.
     """
+    try:
+        from src.report.live_quotes import ensure_live_quotes_server_running
+
+        ensure_live_quotes_server_running()
+    except Exception:
+        pass
     if os.getenv("NO_AUTO_OPEN_OUTPUT", "").strip().lower() in ("1", "true", "yes"):
         return
     existing = [Path(p).resolve() for p in html_paths if Path(p).is_file()]

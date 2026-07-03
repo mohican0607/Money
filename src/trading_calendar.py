@@ -131,6 +131,24 @@ def ohlcv_request_end_cap_today() -> date:
     return ohlcv_request_end_cap()
 
 
+def naver_chart_axis_end_kst(*, now_kst: datetime | None = None) -> date:
+    """
+    네이버 일봉 차트 이미지 우측 끝 봉 날짜(리포트 N 마커 정렬용).
+
+    정규장(09:00~15:30 KST) 중에는 당일 봉이 차트 우측에 표시되므로 오늘 거래일을 반환합니다.
+    그 외에는 ``ohlcv_request_end_cap`` 과 동일합니다.
+    """
+    now = now_kst or datetime.now(KST)
+    today_ = now.date()
+    if (
+        is_trading_day(today_)
+        and not is_before_krx_regular_open_kst(today_, now_kst=now)
+        and is_before_krx_regular_close_kst(today_, now_kst=now)
+    ):
+        return today_
+    return ohlcv_request_end_cap(now_kst=now)
+
+
 def trading_sessions_after_exclusive(start: date, end: date) -> int:
     """
     ``(start, end]`` 구간 거래일 수.
