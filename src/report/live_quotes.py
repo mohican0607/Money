@@ -18,7 +18,7 @@ from src import stocks
 DEFAULT_PORT = 8765
 MANIFEST_NAME = "live_quotes_manifest.json"
 JS_NAME = "live_quotes.js"
-_POLL_SEC = 7.0
+_POLL_SEC = 10.0
 
 
 def _fetch_quotes(codes: list[str]) -> dict[str, float]:

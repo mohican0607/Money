@@ -562,7 +562,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     livePctFlashTimers.set(el, setTimeout(function () {
       el.classList.remove("live-pct-flash");
       livePctFlashTimers.delete(el);
-    }, 3000));
+    }, 5000));
   }
   // 아직 유효한 등락률이 없어 로딩(…) 표시가 필요한지.
   function livePctNeedsLoading(el) {
@@ -665,7 +665,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     });
   }
   var columnIntradayTimers = {};
-  // 예측 전용 일자: N일봉 열 장중 % 자동 폴링(7초).
+  // 예측 전용 일자: N일봉 열 장중 % 자동 폴링(10초).
   function bindForwardColumnIntradayRefresh(root) {
     var sc = root || document;
     sc.querySelectorAll("section[id^='day-']").forEach(function (sec) {
@@ -675,7 +675,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       if (columnIntradayTimers[tid]) return;
       columnIntradayTimers[tid] = setInterval(function () {
         refreshPredLiveIntradayInScope(sec);
-      }, 7000);
+      }, 10000);
     });
   }
   var predLiveTimers = {};
@@ -704,7 +704,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
           predLiveTimers[tid] = setInterval(function () {
             if (btn.getAttribute("aria-pressed") !== "true") return;
             refreshPredLiveIntradayInScope(dayRoot);
-          }, 7000);
+          }, 10000);
         } else if (predLiveTimers[tid]) {
           clearInterval(predLiveTimers[tid]);
           delete predLiveTimers[tid];
