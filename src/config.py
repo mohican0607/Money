@@ -42,6 +42,29 @@ def _positive_int_env(key: str, default: int) -> int:
         return default
 
 
+def _non_negative_int_env(key: str, default: int) -> int:
+    """환경 변수 정수(0 이상). 비어 있거나 잘못되면 default."""
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default
+    try:
+        n = int(raw)
+        return n if n >= 0 else default
+    except ValueError:
+        return default
+
+
+def _date_env(key: str, default: date) -> date:
+    """``YYYYMMDD`` 또는 ``YYYY-MM-DD`` 환경 변수 → ``date``. 비어 있거나 잘못되면 default."""
+    raw = _env_str(key).replace("-", "").replace("/", "")
+    if len(raw) != 8 or not raw.isdigit():
+        return default
+    try:
+        return date(int(raw[:4]), int(raw[4:6]), int(raw[6:8]))
+    except ValueError:
+        return default
+
+
 def _float_env(key: str, default: float) -> float:
     """환경 변수 실수. 비어 있거나 잘못되면 default."""
     raw = os.getenv(key, "").strip()
@@ -323,9 +346,9 @@ PRED_EVAL_HIT_AT_K: tuple[int, ...] = tuple(
         }
     )
 ) or (5, 10, 20, 40)
-TRAIN_START_DEFAULT = date(2025, 4, 11)  # 급등–뉴스 이벤트·스냅샷 수집 시작
+TRAIN_START_DEFAULT = _date_env("TRAIN_START", date(2025, 4, 11))  # 급등–뉴스 이벤트·스냅샷 수집 시작
 # ML 랭커 학습: 관측일 T 직전 최근 N거래일만 사용(0=전구간). 표본·시간 폭증 방지.
-ML_TRAIN_LOOKBACK_DAYS = _positive_int_env("ML_TRAIN_LOOKBACK_DAYS", 120)
+ML_TRAIN_LOOKBACK_DAYS = _non_negative_int_env("ML_TRAIN_LOOKBACK_DAYS", 120)
 # 캐시 미스 시 일일 추론용 경량 학습(``--rebuild-train-snapshot`` 제외)
 ML_TRAIN_FAST_ON_CACHE_MISS = os.getenv("ML_TRAIN_FAST_ON_CACHE_MISS", "1").strip().lower() in (
     "1",
@@ -333,7 +356,7 @@ ML_TRAIN_FAST_ON_CACHE_MISS = os.getenv("ML_TRAIN_FAST_ON_CACHE_MISS", "1").stri
     "True",
     "yes",
 )
-ML_TRAIN_LOOKBACK_DAYS_FAST = _positive_int_env("ML_TRAIN_LOOKBACK_DAYS_FAST", 28)
+ML_TRAIN_LOOKBACK_DAYS_FAST = _non_negative_int_env("ML_TRAIN_LOOKBACK_DAYS_FAST", 28)
 # 일별 음성 샘플 상한·miss 부스트(학습 시간 단축)
 ML_TRAIN_MAX_NEG_PER_DAY = _positive_int_env("ML_TRAIN_MAX_NEG_PER_DAY", 140)
 ML_TRAIN_MAX_NEG_PER_DAY_FAST = _positive_int_env("ML_TRAIN_MAX_NEG_PER_DAY_FAST", 40)

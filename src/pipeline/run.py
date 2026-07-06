@@ -66,6 +66,7 @@ from .support import (
     _freeze_entry_usable,
     _ignore_freeze_for_trading_day,
     _load_prediction_freeze_payload,
+    _should_reuse_prediction_freeze,
     _prediction_rows_from_frozen_items,
     _prediction_rows_to_frozen_items,
     _save_prediction_freeze_payload,
@@ -449,12 +450,9 @@ def _run_pipeline(
             cal_scope=train_snapshot_cal_scope,
             respect_prediction_freeze=respect_prediction_freeze,
         )
-        use_frozen = (
-            config.PREDICTION_FREEZE_ENABLED
-            and day_forward
-            and not ignore_freeze_for_t
-            and isinstance(frozen_items, list)
-            and _freeze_entry_usable(frozen_items)
+        use_frozen = _should_reuse_prediction_freeze(
+            ignore_freeze_for_trading_day=ignore_freeze_for_t,
+            frozen_items=frozen_items,
         )
         if use_frozen:
             preds = _prediction_rows_from_frozen_items(frozen_items)
@@ -523,6 +521,11 @@ def _run_pipeline(
                 target_day=T,
                 ks11_ret_lag1=kospi_r,
             )
+            # 14:30 freeze: tier·예측%·순위 고정. finalize 는 장마감 후 tier 를 바꿔 표에서 빠질 수 있음.
+            for pos, row in enumerate(preds, start=1):
+                if getattr(row, "rank_position", None) is None:
+                    row.rank_position = pos
+        elif preds:
             preds = prediction_ranking.finalize_ranked_predictions(
                 preds,
                 target_day=T,

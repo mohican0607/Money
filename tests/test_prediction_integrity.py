@@ -7,7 +7,10 @@ from src.pipeline.rows import (
     _compare_row_is_prediction_candidate,
     _merge_actual_big_movers_into_rows_compare,
 )
-from src.pipeline.support import _display_prediction_rows_for_freeze
+from src.pipeline.support import (
+    _display_prediction_rows_for_freeze,
+    _should_reuse_prediction_freeze,
+)
 from src.prediction.predict import PredictionRow
 from src.prediction import prediction_ranking as prk
 
@@ -34,6 +37,22 @@ def test_merge_actual_big_movers_adds_missing_rows() -> None:
     extra = next(r for r in rows if r["code"] == "000002")
     assert extra["actual_big"] is True
     assert extra["pred_ret"] is None
+
+
+def test_reuse_prediction_freeze_after_market_close() -> None:
+    items = [{"code": "000001", "name": "A", "predicted_return_pct": 22.0}]
+    assert _should_reuse_prediction_freeze(
+        ignore_freeze_for_trading_day=False,
+        frozen_items=items,
+    )
+    assert not _should_reuse_prediction_freeze(
+        ignore_freeze_for_trading_day=True,
+        frozen_items=items,
+    )
+    assert not _should_reuse_prediction_freeze(
+        ignore_freeze_for_trading_day=False,
+        frozen_items=None,
+    )
 
 
 def test_freeze_keeps_display_candidates_only() -> None:

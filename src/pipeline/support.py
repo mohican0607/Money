@@ -163,6 +163,25 @@ def _freeze_entry_usable(items: list[dict]) -> bool:
     return False
 
 
+def _should_reuse_prediction_freeze(
+    *,
+    ignore_freeze_for_trading_day: bool,
+    frozen_items: list[dict] | None,
+) -> bool:
+    """
+    14:30에 확정·저장된 예측 후보를 다시 계산하지 않고 재사용할지.
+
+    장 마감 후(``day_forward=False``)에도 freeze 가 있으면 True — actual·테마만 갱신합니다.
+    """
+    if not config.PREDICTION_FREEZE_ENABLED:
+        return False
+    if ignore_freeze_for_trading_day:
+        return False
+    if not isinstance(frozen_items, list):
+        return False
+    return _freeze_entry_usable(frozen_items)
+
+
 def _ignore_freeze_for_trading_day(
     T: date,
     *,
