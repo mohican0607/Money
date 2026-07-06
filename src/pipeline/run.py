@@ -1008,6 +1008,7 @@ def _run_pipeline(
                 news_highlight_terms=hl_terms,
                 actual_big_movers=actual_big_movers,
                 forward_observation=day_forward,
+                show_stock_ret_column=day_forward,
                 hit_at_k_metrics=hit_at_k_metrics,
                 pred_accuracy_summary=pred_accuracy_summary,
                 forward_pred_rationale_html=forward_pred_rationale_html,

@@ -151,6 +151,16 @@ def test_forward_future_t_n_chain_uses_observation_day_as_n(monkeypatch) -> None
     assert rows[0]["report_n_day"] == "2026-07-04"
 
 
+def test_trading_sessions_in_range_skips_weekend() -> None:
+    days = trading_calendar.trading_sessions_in_range(date(2026, 7, 1), date(2026, 7, 6))
+    assert days == [
+        date(2026, 7, 1),
+        date(2026, 7, 2),
+        date(2026, 7, 3),
+        date(2026, 7, 6),
+    ]
+
+
 def test_calendar_range_includes_non_trading_end() -> None:
     days = trading_calendar.calendar_days_inclusive(date(2026, 7, 3), date(2026, 7, 4))
     assert days == [date(2026, 7, 3), date(2026, 7, 4)]

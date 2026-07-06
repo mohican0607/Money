@@ -1225,6 +1225,7 @@ def _reconcile_closed_day_report(
 
     dr.forward_observation = False
     dr.forward_pred_rationale_html = ""
+    dr.show_stock_ret_column = True
     _backfill_day_actuals_from_returns(dr, returns=returns, threshold=threshold)
 
     for r in dr.rows_compare:

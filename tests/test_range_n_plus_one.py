@@ -1,70 +1,88 @@
-"""``python main.py N N+1`` · ``python main.py T`` 구간·단일 인자 검증."""
+"""``python main.py From To`` · ``python main.py T`` CLI 검증."""
 from __future__ import annotations
 
 from datetime import date, datetime
 
 from src import trading_calendar
-from src.pipeline.early_validate import validate_dated_n_day, validate_dated_t_day, validate_range_n_plus_one
+from src.pipeline.early_validate import (
+    current_n_and_n_plus_one,
+    validate_dated_t_day,
+    validate_range_from_to,
+)
 
 
-def test_validate_ok_at_n_cutoff() -> None:
-    n, t = date(2026, 7, 3), date(2026, 7, 4)
-    now = datetime(2026, 7, 3, 14, 30, tzinfo=trading_calendar.KST)
-    assert validate_range_n_plus_one(n, t, now_kst=now) is None
+def test_current_n_plus_one_on_weekend() -> None:
+    # 2026-07-04 토 → N=07-03(금), N+1=07-06(월)
+    now = datetime(2026, 7, 4, 16, 0, tzinfo=trading_calendar.KST)
+    n, t = current_n_and_n_plus_one(now_kst=now)
+    assert n == date(2026, 7, 3)
+    assert t == date(2026, 7, 6)
 
 
-def test_validate_ok_after_n_cutoff() -> None:
-    n, t = date(2026, 7, 3), date(2026, 7, 4)
-    now = datetime(2026, 7, 3, 14, 31, tzinfo=trading_calendar.KST)
-    assert validate_range_n_plus_one(n, t, now_kst=now) is None
+def test_range_ok_through_current_n_plus_one() -> None:
+    now = datetime(2026, 7, 4, 16, 0, tzinfo=trading_calendar.KST)
+    assert validate_range_from_to(
+        date(2026, 7, 1), date(2026, 7, 6), now_kst=now
+    ) is None
 
 
-def test_validate_ok_on_later_calendar_day() -> None:
-    n, t = date(2026, 7, 3), date(2026, 7, 4)
-    now = datetime(2026, 7, 4, 9, 0, tzinfo=trading_calendar.KST)
-    assert validate_range_n_plus_one(n, t, now_kst=now) is None
+def test_range_ok_historical_only() -> None:
+    now = datetime(2026, 7, 4, 16, 0, tzinfo=trading_calendar.KST)
+    assert validate_range_from_to(
+        date(2026, 7, 1), date(2026, 7, 3), now_kst=now
+    ) is None
 
 
-def test_validate_rejects_wrong_t() -> None:
-    n = date(2026, 7, 3)
-    now = datetime(2026, 7, 3, 15, 0, tzinfo=trading_calendar.KST)
-    assert validate_range_n_plus_one(n, date(2026, 7, 6), now_kst=now) == (
-        "N+1일은 20260704일 입니다."
-    )
+def test_range_rejects_beyond_current_n_plus_one() -> None:
+    now = datetime(2026, 7, 4, 16, 0, tzinfo=trading_calendar.KST)
+    assert validate_range_from_to(
+        date(2026, 7, 1), date(2026, 7, 7), now_kst=now
+    ) == "현재 기준으로 N+1일은 20260706 입니다."
 
 
-def test_validate_dated_t_ok() -> None:
-    t = date(2026, 7, 4)
-    now = datetime(2026, 7, 3, 14, 30, tzinfo=trading_calendar.KST)
-    assert validate_dated_t_day(t, now_kst=now) is None
-
-
-def test_validate_dated_n_ok() -> None:
-    n = date(2026, 7, 3)
-    now = datetime(2026, 7, 3, 14, 30, tzinfo=trading_calendar.KST)
-    assert validate_dated_n_day(n, now_kst=now) is None
-
-
-def test_validate_dated_t_rejects_before_cutoff() -> None:
-    t = date(2026, 7, 4)
+def test_range_rejects_before_n_cutoff_when_includes_n_plus_one() -> None:
+    # N=07-03, N+1=07-06, 14:30 전
     now = datetime(2026, 7, 3, 14, 29, tzinfo=trading_calendar.KST)
-    err = validate_dated_t_day(t, now_kst=now)
-    assert err is not None
-    assert "14:30" in err
-
-
-def test_validate_dated_n_rejects_before_cutoff() -> None:
-    n = date(2026, 7, 3)
-    now = datetime(2026, 7, 3, 14, 29, tzinfo=trading_calendar.KST)
-    err = validate_dated_n_day(n, now_kst=now)
-    assert err is not None
-    assert "14:30" in err
-
-
-def test_validate_rejects_before_n_cutoff() -> None:
-    n, t = date(2026, 7, 3), date(2026, 7, 4)
-    now = datetime(2026, 7, 3, 14, 29, tzinfo=trading_calendar.KST)
-    err = validate_range_n_plus_one(n, t, now_kst=now)
+    err = validate_range_from_to(date(2026, 7, 1), date(2026, 7, 6), now_kst=now)
     assert err is not None
     assert "14:30" in err
     assert "2026-07-03" in err
+
+
+def test_range_ok_historical_before_cutoff() -> None:
+    # 미래 N+1 미포함이면 14:30 전에도 과거 구간 허용
+    now = datetime(2026, 7, 3, 10, 0, tzinfo=trading_calendar.KST)
+    assert validate_range_from_to(
+        date(2026, 7, 1), date(2026, 7, 2), now_kst=now
+    ) is None
+
+
+def test_dated_t_ok_past_trading_day() -> None:
+    now = datetime(2026, 7, 4, 16, 0, tzinfo=trading_calendar.KST)
+    assert validate_dated_t_day(date(2026, 7, 3), now_kst=now) is None
+
+
+def test_dated_t_ok_current_n_plus_one() -> None:
+    now = datetime(2026, 7, 4, 16, 0, tzinfo=trading_calendar.KST)
+    assert validate_dated_t_day(date(2026, 7, 6), now_kst=now) is None
+
+
+def test_dated_t_rejects_beyond_n_plus_one() -> None:
+    now = datetime(2026, 7, 4, 16, 0, tzinfo=trading_calendar.KST)
+    assert validate_dated_t_day(date(2026, 7, 7), now_kst=now) == (
+        "현재 기준으로 N+1일은 20260706 입니다."
+    )
+
+
+def test_dated_t_rejects_non_trading() -> None:
+    now = datetime(2026, 7, 4, 16, 0, tzinfo=trading_calendar.KST)
+    assert validate_dated_t_day(date(2026, 7, 4), now_kst=now) == (
+        "관측일 T=2026-07-04 은(는) 거래일이 아닙니다."
+    )
+
+
+def test_dated_t_rejects_before_cutoff_for_forward() -> None:
+    now = datetime(2026, 7, 3, 14, 29, tzinfo=trading_calendar.KST)
+    err = validate_dated_t_day(date(2026, 7, 6), now_kst=now)
+    assert err is not None
+    assert "14:30" in err

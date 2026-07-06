@@ -1100,7 +1100,7 @@ __ACTUAL_RET_CELL_MACRO__
 {# 장 마감 전 관측일: 예측 근거는 표 ``예측 근거`` 열에 전문 표시 #}
 {%- endmacro %}
 {% macro stock_ret_chain_cell(d, r) -%}
-{% if d.forward_observation | default(false) %}
+{% if d.forward_observation | default(false) or d.show_stock_ret_column | default(false) %}
 <td class="stock-ret-chain-col" style="vertical-align:top">{{ format_stock_ret_column_lines(r) | safe }}</td>
 {% endif %}
 {%- endmacro %}
@@ -1190,7 +1190,7 @@ __ACTUAL_RET_CELL_MACRO__
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준">실제 상승률(%)</th>
           {% endif %}
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
-          {% if d.forward_observation | default(false) %}
+          {% if d.forward_observation | default(false) or d.show_stock_ret_column | default(false) %}
           <th scope="col" title="N-3·N-2·N-1·N 일봉 등락률">N일봉(%)</th>
           {% endif %}
           <th scope="col" title="{% if d.forward_observation | default(false) %}모델·키워드·모멘텀·섹터 요약{% else %}모델·키워드·모멘텀·섹터 요약 tooltip{% endif %}">예측 근거</th>
@@ -1767,7 +1767,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 {# 장 마감 전 관측일: 예측 근거는 표 ``예측 근거`` 열에 전문 표시 #}
 {%- endmacro %}
 {% macro stock_ret_chain_cell(d, r) -%}
-{% if d.forward_observation | default(false) %}
+{% if d.forward_observation | default(false) or d.show_stock_ret_column | default(false) %}
 <td class="stock-ret-chain-col" style="vertical-align:top">{{ format_stock_ret_column_lines(r) | safe }}</td>
 {% endif %}
 {%- endmacro %}
@@ -1849,7 +1849,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
       <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준">실제 상승률(%)</th>
       {% endif %}
       <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
-      {% if d.forward_observation | default(false) %}
+      {% if d.forward_observation | default(false) or d.show_stock_ret_column | default(false) %}
       <th scope="col" title="N-3·N-2·N-1·N 일봉 등락률">N일봉(%)</th>
       {% endif %}
       <th scope="col" title="{% if d.forward_observation | default(false) %}예측 근거 전문{% else %}예측 근거·미적중 시 틀린 이유 tooltip{% endif %}">예측 근거</th>
@@ -2435,7 +2435,7 @@ _DATED_N_TEMPLATE = r"""
 {% endif %}
 {%- endmacro %}
 {% macro stock_ret_chain_cell(d, r) -%}
-{% if d.forward_observation | default(false) %}
+{% if d.forward_observation | default(false) or d.show_stock_ret_column | default(false) %}
 <td class="stock-ret-chain-col" style="vertical-align:top">{{ format_stock_ret_column_lines(r) | safe }}</td>
 {% endif %}
 {%- endmacro %}
@@ -2540,7 +2540,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준">실제 상승률(%)</th>
           {% endif %}
           <th class="sortable-col" data-sort="pred" scope="col">예측 상승률(%)</th>
-          {% if day.forward_observation | default(false) %}
+          {% if day.forward_observation | default(false) or day.show_stock_ret_column | default(false) %}
           <th scope="col" title="N-3·N-2·N-1·N 일봉 등락률">N일봉(%)</th>
           {% endif %}
           <th scope="col" title="{% if day.forward_observation | default(false) %}예측 근거 전문{% else %}예측 근거·미적중 시 틀린 이유 tooltip{% endif %}">예측 근거</th>

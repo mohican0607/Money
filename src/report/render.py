@@ -35,6 +35,7 @@ class DayReport:
     news_highlight_terms: list[str]
     actual_big_movers: list[dict]
     forward_observation: bool = False
+    show_stock_ret_column: bool = False
     market_theme_html: str = ""
     mover_rationale_html: str = ""
     forward_pred_rationale_html: str = ""
@@ -142,7 +143,7 @@ def format_stock_ret_tooltip_lines(row: dict[str, Any] | None) -> str:
 
 
 def format_stock_ret_column_lines(row: dict[str, Any] | None) -> str:
-    """표 전용 N-3·N-2·N-1·N 일봉 등락률(예측 전용·장중)."""
+    """표 전용 N-3·N-2·N-1·N 일봉 등락률(예측 전용·장마감 후 유지)."""
     return _stock_ret_lines_html(
         row,
         wrapper_class="stock-ret-col-lines",

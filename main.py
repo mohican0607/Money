@@ -8,13 +8,14 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
     → 거래일 14:30 자동 실행·리포트 열기: scripts/run_daily_1500.ps1 (등록 예: scripts/register_task_scheduler_example.ps1)
 
   python main.py 20260401
-    → 관측일 T=2026-04-01, 기준일 N=T-1 캘린더일. N일 14:30(KST)부터 실행.
+    → 관측일 T=2026-04-01(거래일), 기준일 N=T 직전 거래일.
+      T가 현재 N+1을 넘으면 거부. T=현재 N+1이면 N일 14:30(KST)부터 실행.
       output/report_dated_by_MMDD.html 에 해당 T 블록 추가·재실행 시 해당 블록만 갱신
-    → T가 오늘/미래면 예측 후보 중심, T가 과거면 pykrx로 시장 20%↑와 예측을 함께 표시(OHLCV 샘플 밖 급등 포함).
 
   python main.py 20260102 20260410
-    → 기준일 N=2026-01-02, 관측일 T=N+1(2026-01-03)만 허용. N일 14:30(KST)부터 실행.
-      월별 HTML·목차 (--weekly 와 동일 형식). --no-report-expand 로 병합 끔
+    → 관측일 From~To 구간(양 끝 포함, **KRX 거래일만**). To는 현재 기준 N+1 거래일 이하.
+      구간에 현재 N+1이 포함되면 N일 14:30(KST)부터 실행.
+      월별 HTML·목차. --no-report-expand 로 병합 끔
 
   python main.py --weekly
     → config REPORT_TEST_DAY_START~END 구간을 달력 월 단위로 묶어
@@ -32,7 +33,7 @@ from __future__ import annotations
 import os
 import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -134,9 +135,9 @@ def main() -> None:
         assert arg_date is not None and range_end is not None
         d_from, d_to = arg_date, range_end
         end_date = min(date(2026, 12, 31), d_to)
-        test_days = trading_calendar.calendar_days_inclusive(d_from, d_to)
+        test_days = trading_calendar.trading_sessions_in_range(d_from, d_to)
         if not test_days:
-            print(f"구간 {d_from} ~ {d_to} 에 포함되는 관측일이 없습니다.")
+            print(f"구간 {d_from} ~ {d_to} 에 포함되는 거래일(관측일)이 없습니다.")
             return
         merge_monthly = "--no-report-expand" not in sys.argv[1:]
         if not merge_monthly:
@@ -206,7 +207,7 @@ def main() -> None:
         return
 
     # daily: N=today → T=next trading day
-    # dated: argv YYYYMMDD 를 관측일 T로 해석, 기준일 N=T-1 캘린더일
+    # dated: argv YYYYMMDD 를 관측일 T로 해석, 기준일 N=T 직전 거래일
     if mode == "daily":
         n_day = today
         if not trading_calendar.is_trading_day(n_day):
@@ -220,7 +221,11 @@ def main() -> None:
     else:
         assert arg_date is not None
         t_day = arg_date
-        n_day = t_day - timedelta(days=1)
+        try:
+            n_day = trading_calendar.last_trading_day_before(t_day)
+        except ValueError as e:
+            print(e)
+            return
 
     end_date = max(today, t_day)
     end_date = min(end_date, date(2026, 12, 31))
