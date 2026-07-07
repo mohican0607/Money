@@ -506,6 +506,83 @@ def recall_presort_score(row: PredictionRow) -> float:
     return max(h, blend, 0.72 * ml_n + 0.28 * h if ml_n > 0 else h, blend)
 
 
+def _hot_sector_presort_signal(row: PredictionRow) -> float:
+    """pre_pool 승격용 — 업종 열기·로테이션 신호(ML 확률과 독립)."""
+    lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    sec = max(
+        lim,
+        float(getattr(row, "industry_momentum", 0.0) or 0.0),
+        float(getattr(row, "prior_industry_hot", 0.0) or 0.0),
+        float(getattr(row, "sector_breadth_hot", 0.0) or 0.0),
+    )
+    rot = theme_rotation_score(row)
+    return max(rot, sec, lim * 0.95, sec * 0.85 + 0.12 * rot)
+
+
+def select_pre_pool_with_hot_promotion(
+    buf: list[PredictionRow],
+    *,
+    finalize_n: int,
+) -> list[PredictionRow]:
+    """ML prescore 상위 + 핫 업종(enrich 하위) 구제 승격으로 finalize 풀을 만듭니다."""
+    n = min(len(buf), max(1, int(finalize_n)))
+    promote_max = int(config.PRED_PREPOOL_HOT_PROMOTE_MAX)
+    if n <= 0 or not buf:
+        return []
+    if promote_max <= 0 or len(buf) <= n:
+        return sorted(buf, key=lambda r: (-recall_presort_score(r), str(r.code).zfill(6)))[:n]
+
+    def _prescore(r: PredictionRow) -> float:
+        return recall_presort_score(r)
+
+    ranked = sorted(buf, key=lambda r: (-_prescore(r), str(r.code).zfill(6)))
+    base = list(ranked[:n])
+    base_ids = {id(r) for r in base}
+    candidates: list[tuple[float, PredictionRow]] = []
+    for r in ranked[n:]:
+        if id(r) in base_ids:
+            continue
+        lim = float(getattr(r, "industry_limit_up_heat", 0.0) or 0.0)
+        prior = float(getattr(r, "prior_industry_hot", 0.0) or 0.0)
+        sec_br = float(getattr(r, "sector_breadth_hot", 0.0) or 0.0)
+        rot = theme_rotation_score(r)
+        sec = max(
+            lim,
+            float(getattr(r, "industry_momentum", 0.0) or 0.0),
+            prior,
+            sec_br,
+        )
+        sig = _hot_sector_presort_signal(r)
+        ok = (
+            rot + 1e-12 >= 0.24
+            or (
+                lim + 1e-12 >= 0.30
+                and sec + 1e-12 >= 0.22
+                and prior + 1e-12 < 0.20
+            )
+        )
+        if ok:
+            candidates.append((sig, r))
+    candidates.sort(key=lambda x: (-x[0], -_prescore(x[1]), str(x[1].code).zfill(6)))
+    replaceable = sorted(base, key=_prescore)
+    promoted = 0
+    for _, r in candidates:
+        if promoted >= promote_max or not replaceable:
+            break
+        if id(r) in base_ids:
+            continue
+        worst = replaceable.pop(0)
+        try:
+            wi = base.index(worst)
+        except ValueError:
+            continue
+        base[wi] = r
+        base_ids.discard(id(worst))
+        base_ids.add(id(r))
+        promoted += 1
+    return base
+
+
 def _dual_signal_ok(row: PredictionRow, *, hybrid: float, top_hybrid: float) -> bool:
     """고확신 1차 게이트: 상대 순위 + 뉴스 외 다요인 합의."""
     ks11 = getattr(row, "ks11_ret_lag1", None)
@@ -640,7 +717,9 @@ def rank_score_for_row(row: PredictionRow) -> float:
     if sec_br + 1e-12 >= 0.35 and ml_n + 1e-12 >= 0.40:
         s = min(1.0, s + 0.07)
     rot = theme_rotation_score(row)
-    if rot + 1e-12 >= 0.28:
+    if rot + 1e-12 >= 0.32 and ml_n + 1e-12 >= 0.28:
+        s = min(1.0, s + 0.11 * rot)
+    elif rot + 1e-12 >= 0.28:
         s = min(1.0, s + 0.14 * rot)
     if ml_n + 1e-12 >= 0.72:
         s = min(1.0, s + 0.05)
@@ -713,6 +792,8 @@ def _rerank_carryover_industry_leaders(
             heat_map[k] = max(heat_map.get(k, 0.0), 0.55 * v)
     except ValueError:
         pass
+    if max(heat_map.values(), default=0.0) + 1e-12 < float(config.PRED_CARRYOVER_MIN_HEAT):
+        return pool
 
     def _boosted(row: PredictionRow) -> float:
         base = rank_score_for_row(row)
@@ -803,7 +884,11 @@ def _inject_hot_sector_leaders(pool: list[PredictionRow]) -> list[PredictionRow]
         rot = theme_rotation_score(row)
         lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
         sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
-        if rot + 1e-12 < 0.22 and lim + 1e-12 < 0.08 and sec + 1e-12 < 0.16:
+        if rot + 1e-12 < 0.20 and lim + 1e-12 < 0.08 and sec + 1e-12 < 0.16:
+            continue
+        prior = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+        sec_br = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
+        if prior + 1e-12 < 0.16 and sec_br + 1e-12 < 0.22 and rot + 1e-12 < 0.24:
             continue
         if prior_day_exhaustion_blocks_confidence(row):
             continue

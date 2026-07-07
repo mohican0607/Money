@@ -105,7 +105,7 @@ def prior_day_hot_peer_codes(
             vs = float(r.get("vol_surge_ratio") or 0.0)
         except (TypeError, ValueError):
             continue
-        if rl + 1e-12 >= 0.035 or vs + 1e-12 >= 1.15:
+        if rl + 1e-12 >= 0.028 or vs + 1e-12 >= 1.10:
             lag_hot.append((rl + 0.15 * min(vs, 3.0), code))
     lag_hot.sort(key=lambda x: (-x[0], x[1]))
     for _, code in lag_hot[:100]:
@@ -123,10 +123,11 @@ def burst_industry_peer_codes(
     target_day: date,
     listing_codes: list[str],
     *,
-    min_ret: float = 0.10,
+    min_ret: float = 0.08,
     min_count: int = 2,
-    max_industries: int = 24,
-    peers_per_industry: int = 32,
+    max_industries: int = 28,
+    peers_per_industry: int = 40,
+    hot_peers_per_industry: int = 90,
 ) -> list[str]:
     """최근 거래일 업종 내 다수 급등 시 동업종 전체를 후보에 넣습니다."""
     from .. import stocks as stocks_mod
@@ -175,7 +176,10 @@ def burst_industry_peer_codes(
             break
         if industry_hits[ic] < min_count and industry_best[ic] + 1e-12 < 0.18:
             continue
-        for peer in stocks_mod.peers_for_industry(ic)[:peers_per_industry]:
+        n_peers = peers_per_industry
+        if industry_hits[ic] >= 12 or industry_best[ic] + 1e-12 >= 0.16:
+            n_peers = max(peers_per_industry, hot_peers_per_industry)
+        for peer in stocks_mod.peers_for_industry(ic)[:n_peers]:
             c6 = str(peer).zfill(6)
             if c6 in allowed and c6 not in seen:
                 seen.add(c6)
@@ -438,6 +442,32 @@ def day_candidate_codes(
             + rs_codes
         )
     )
+
+
+def industry_must_keep_codes(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+    listing_codes: list[str],
+    *,
+    max_codes: int | None = None,
+) -> list[str]:
+    """
+    burst·hot·rotation peer — ML pool cap(``PRED_ML_SCORE_POOL_CAP``)에서 잘리지 않도록
+    반드시 추론 풀에 남겨 둘 종목.
+    """
+    cap = max_codes if max_codes is not None else int(config.PRED_INDUSTRY_MUST_KEEP_MAX)
+    burst = burst_industry_peer_codes(returns_ml, target_day, listing_codes)
+    hot = prior_day_hot_peer_codes(returns_ml, target_day, listing_codes)
+    rot: list[str] = []
+    if config.PRED_THEME_ROTATION_ENABLED:
+        rot = theme_rotation_peer_codes(
+            returns_ml,
+            target_day,
+            listing_codes,
+            max_codes=int(config.PRED_THEME_ROTATION_ENRICH_MAX),
+        )
+    bounce = oversold_bounce_candidate_codes(returns_ml, target_day, listing_codes)
+    return list(dict.fromkeys(burst + hot + bounce + rot))[: max(1, cap)]
 
 
 _day_candidate_codes = day_candidate_codes

@@ -24,7 +24,12 @@ from ..prediction import accuracy_cache as prediction_accuracy_cache
 from .. import trading_calendar
 from ..features import BreakoutEvent, filter_specific_keywords, keyword_set, name_mention_score
 from . import predict
-from .candidate_pool import day_candidate_codes, ml_scoring_candidate_codes, theme_rotation_peer_codes
+from .candidate_pool import (
+    day_candidate_codes,
+    industry_must_keep_codes,
+    ml_scoring_candidate_codes,
+    theme_rotation_peer_codes,
+)
 from .market_features import (
     blended_hist_return,
     industry_feats,
@@ -370,12 +375,14 @@ def _cheap_prescore_code(
                     if isinstance(pr, pd.DataFrame):
                         pr = pr.iloc[-1]
                     pl = float(pr.get("ret_lag1") or 0.0)
-                    if pl + 1e-12 >= 0.08:
+                    if pl + 1e-12 >= 0.05:
                         hot_peers += 1
                 except (KeyError, TypeError, ValueError):
                     continue
             if hot_peers >= 2:
-                score += 0.6 + 0.15 * min(hot_peers, 6)
+                score += 1.4 + 0.28 * min(hot_peers, 8)
+            elif hot_peers == 1:
+                score += 0.45
     except Exception:
         pass
     return score
@@ -385,6 +392,7 @@ def _cap_score_codes_for_ml(
     score_codes: list[str],
     *,
     cap: int,
+    must_keep: frozenset[str] | None = None,
     target_day: date,
     ohlcv_idx: pd.DataFrame,
     kw_news: frozenset[str],
@@ -392,12 +400,12 @@ def _cap_score_codes_for_ml(
     news_blob: str,
     listing_names: dict[str, str],
 ) -> list[str]:
-    """추론 풀 상한 — 저신호 후보는 ML 피처 계산 전에 제외."""
+    """추론 풀 상한 — 저신호 후보 제외. 핫 업종 peer는 cap 밖이면 하위 슬롯과 교체."""
     if cap <= 0 or len(score_codes) <= cap:
         return score_codes
-    ranked = sorted(
-        score_codes,
-        key=lambda c: (-_cheap_prescore_code(
+
+    def _prescore(c: str) -> float:
+        return _cheap_prescore_code(
             c,
             target_day=target_day,
             ohlcv_idx=ohlcv_idx,
@@ -405,9 +413,37 @@ def _cap_score_codes_for_ml(
             profile=profile,
             news_blob=news_blob,
             listing_names=listing_names,
-        ), str(c).zfill(6)),
+        )
+
+    ranked = sorted(
+        score_codes,
+        key=lambda c: (-_prescore(c), str(c).zfill(6)),
     )
-    return ranked[:cap]
+    if not must_keep:
+        return ranked[:cap]
+    base = ranked[:cap]
+    base_set = {str(c).zfill(6) for c in base}
+    swap_max = int(config.PRED_INDUSTRY_MUST_KEEP_SWAP_MAX)
+    missing = [c for c in must_keep if c not in base_set][:swap_max]
+    if not missing:
+        return base
+    replaceable = sorted(base, key=_prescore)
+    out = list(base)
+    for m in missing:
+        m6 = str(m).zfill(6)
+        if m6 in base_set:
+            continue
+        if not replaceable:
+            break
+        worst = replaceable.pop(0)
+        try:
+            wi = out.index(worst)
+        except ValueError:
+            continue
+        out[wi] = m6
+        base_set.discard(str(worst).zfill(6))
+        base_set.add(m6)
+    return list(dict.fromkeys(out))
 
 
 def _build_feat_matrix_parallel(
@@ -970,9 +1006,14 @@ def rank_predictions_ml(
     )
     pool_cap = int(config.PRED_ML_SCORE_POOL_CAP)
     n_raw = len(score_codes)
+    must_keep_list = industry_must_keep_codes(
+        returns_ml, target_day, listing_codes
+    )
+    must_keep = frozenset(str(c).zfill(6) for c in must_keep_list)
     score_codes = _cap_score_codes_for_ml(
         score_codes,
         cap=pool_cap,
+        must_keep=must_keep,
         target_day=target_day,
         ohlcv_idx=ohlcv_idx,
         kw_news=kw_news,
@@ -1079,21 +1120,25 @@ def rank_predictions_ml(
     )
     order = np.argsort(-proba)
     enrich_order = order[:enrich_n]
+    industry_must = industry_must_keep_codes(
+        returns_ml, target_day, listing_codes
+    )
+    must_enrich_codes = {str(c).zfill(6) for c in industry_must}
     rotation_code_set = {str(c).zfill(6) for c in rotation_must}
-    if config.PRED_THEME_ROTATION_ENABLED and rotation_must:
+    must_enrich_codes |= rotation_code_set
+    if must_enrich_codes:
         ix_by_code = {
             str(listing_codes[i]).zfill(6): pos for pos, i in enumerate(cand_ix)
         }
-        rot_extra: list[int] = []
-        for c in rotation_must:
-            c6 = str(c).zfill(6)
-            pos = ix_by_code.get(c6)
+        extra: list[int] = []
+        for c in must_enrich_codes:
+            pos = ix_by_code.get(c)
             if pos is not None:
-                rot_extra.append(pos)
-        if rot_extra:
+                extra.append(pos)
+        if extra:
             merged = list(enrich_order)
             seen_enrich = set(merged)
-            for p in rot_extra:
+            for p in extra:
                 if p not in seen_enrich:
                     merged.append(p)
                     seen_enrich.add(p)
@@ -1105,6 +1150,7 @@ def rank_predictions_ml(
         code = listing_codes[i]
         c6 = str(code).zfill(6)
         is_rotation = c6 in rotation_code_set
+        is_industry_must = c6 in must_enrich_codes
         pr = predict.prediction_row_for_code(
             code,
             listing_names,
@@ -1114,9 +1160,13 @@ def rank_predictions_ml(
             int(config.PRED_ML_POOL_MIN_KEYWORD_HITS),
             feedback_ctx=feedback_ctx,
             theme_weights=tw,
-            allow_momentum_only=(code in mom_only and code not in news_only) or is_rotation,
-            allow_news_context_only=code in news_ctx_only or is_rotation,
-            allow_investor_flow_only=code in flow_only or is_rotation,
+            allow_momentum_only=(
+                (code in mom_only and code not in news_only)
+                or is_rotation
+                or is_industry_must
+            ),
+            allow_news_context_only=code in news_ctx_only or is_rotation or is_industry_must,
+            allow_investor_flow_only=code in flow_only or is_rotation or is_industry_must,
         )
         if pr is None:
             continue
