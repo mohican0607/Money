@@ -2724,7 +2724,13 @@ def build_day_strong_mover_sections(
             -len(x[1]),
         ),
     ):
-        stocks.sort(key=lambda s: float(s.get("return_pct") or 0), reverse=True)
+        stocks.sort(
+            key=lambda s: (
+                -float(s.get("return_pct") or 0),
+                str(s.get("name") or ""),
+                str(s.get("code") or "").zfill(6),
+            )
+        )
         full_label = srl._full_sector_label(theme) or theme
         sector_blocks.append(
             {
@@ -2919,15 +2925,22 @@ _THEME_DAY_SECTION_TEMPLATE = r"""
     <h3>{{ sec.theme }} ({{ sec.count }})</h3>
     {{ sec.rationale_html | safe }}
     <table class="stocks">
-      <thead><tr><th>종목</th><th>테마</th><th>시장</th><th>등락</th><th>근거 요약</th></tr></thead>
+      <colgroup>
+        <col class="col-stock"/><col class="col-theme"/><col class="col-market"/>
+        <col class="col-chg"/><col class="col-reason"/>
+      </colgroup>
+      <thead><tr>
+        <th class="col-stock">종목</th><th class="col-theme">테마</th><th class="col-market">시장</th>
+        <th class="col-chg">등락</th><th class="col-reason">근거 요약</th>
+      </tr></thead>
       <tbody>
       {% for st in sec.stocks %}
         <tr>
-          <td><strong>{{ st.name }}</strong> <code>{{ st.code }}</code></td>
-          <td class="theme">{{ st.theme }}</td>
-          <td class="market">{{ st.market }}</td>
-          <td class="ok">{{ "%+.1f"|format(st.return_pct) }}%{% if st.is_limit_up %} <span class="warn">상한</span>{% endif %}</td>
-          <td class="reason muted">{{ st.reason | safe }}</td>
+          <td class="col-stock"><strong>{{ st.name }}</strong> <code>{{ st.code }}</code></td>
+          <td class="col-theme theme">{{ st.theme }}</td>
+          <td class="col-market market">{{ st.market }}</td>
+          <td class="col-chg ok">{{ "%+.1f"|format(st.return_pct) }}%{% if st.is_limit_up %} <span class="warn">상한</span>{% endif %}</td>
+          <td class="col-reason reason muted">{{ st.reason | safe }}</td>
         </tr>
       {% endfor %}
       </tbody>
@@ -2973,13 +2986,33 @@ _THEME_REPORT_SHELL_TEMPLATE = r"""
     .mover-rationale-h { font-size: 0.92rem; color: var(--ok); margin: 0 0 8px; }
     .mover-rationale-block ul { margin: 0; padding-left: 18px; }
     .mover-rationale-block li { margin-bottom: 6px; line-height: 1.5; }
-    table.stocks { width: 100%; border-collapse: collapse; font-size: 0.8rem; margin-bottom: 10px; }
+    table.stocks { width: 100%; table-layout: fixed; border-collapse: collapse;
+      font-size: 0.8rem; margin-bottom: 10px; }
     table.stocks th { text-align: left; color: var(--muted); font-weight: 600;
-                      border-bottom: 1px solid #2a3f5c; padding: 4px 6px; }
-    table.stocks td { padding: 4px 6px; border-bottom: 1px solid #1e2a3a; vertical-align: top; }
-    table.stocks td.reason { font-size: 0.78rem; line-height: 1.45; max-width: 420px; }
-    table.stocks td.theme { color: var(--accent); white-space: nowrap; }
-    table.stocks td.market { white-space: nowrap; font-size: 0.75rem; color: var(--muted); }
+                      border-bottom: 1px solid #2a3f5c; padding: 6px 8px; vertical-align: bottom; }
+    table.stocks td { padding: 6px 8px; border-bottom: 1px solid #1e2a3a; vertical-align: top; }
+    table.stocks th.col-stock, table.stocks td.col-stock { width: 19%; }
+    table.stocks th.col-theme, table.stocks td.col-theme { width: 14%; }
+    table.stocks th.col-market, table.stocks td.col-market { width: 8%; }
+    table.stocks th.col-chg, table.stocks td.col-chg { width: 11%; text-align: right;
+      white-space: nowrap; font-variant-numeric: tabular-nums; }
+    table.stocks th.col-reason, table.stocks td.col-reason { width: 48%; }
+  /* 병합·구버전 일자 블록(클래스 없음) 호환 */
+    table.stocks th:nth-child(1), table.stocks td:nth-child(1) { width: 19%; }
+    table.stocks th:nth-child(2), table.stocks td:nth-child(2) { width: 14%; }
+    table.stocks th:nth-child(3), table.stocks td:nth-child(3) { width: 8%; }
+    table.stocks th:nth-child(4), table.stocks td:nth-child(4) { width: 11%;
+      text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    table.stocks th:nth-child(5), table.stocks td:nth-child(5) { width: 48%; }
+    table.stocks td.col-stock { line-height: 1.35; }
+    table.stocks td.col-stock code { display: inline-block; margin-left: 4px;
+      font-variant-numeric: tabular-nums; }
+    table.stocks td.reason, table.stocks td.col-reason { font-size: 0.78rem; line-height: 1.45;
+      word-break: keep-all; overflow-wrap: break-word; }
+    table.stocks td.theme, table.stocks td.col-theme { color: var(--accent); white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis; }
+    table.stocks td.market, table.stocks td.col-market { white-space: nowrap; font-size: 0.75rem;
+      color: var(--muted); }
     table.stocks tr:hover td { background: #121c28; }
     .disclaimer { font-size: 0.72rem; color: var(--muted); margin-top: 20px; }
     code { font-size: 0.72rem; color: var(--muted); }
