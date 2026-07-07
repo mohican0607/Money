@@ -356,6 +356,166 @@ def oversold_bounce_candidate_codes(
     return out[:max_codes]
 
 
+def observation_day_burst_peer_codes(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+    listing_codes: list[str],
+    *,
+    max_codes: int = 480,
+) -> list[str]:
+    """
+    당일 관측 시점 업종 상한·확산 열기 — 전일 급등 히스토리 없이도 동업종 전체를 풀에 넣습니다.
+
+    7/1 건설처럼 당일 테마가 터지는 날, ML enrich 상위 160 밖 종목이 아예 예측 행으로
+    생성되지 않는 문제를 막습니다.
+    """
+    from .. import stocks as stocks_mod
+    from .market_features import IndustryFeatureCache, ohlcv_lookup
+
+    allowed = {str(c).zfill(6) for c in listing_codes}
+    ohlcv_idx = ohlcv_lookup(returns_ml)
+    if ohlcv_idx is None:
+        return []
+    ind_cache = IndustryFeatureCache(target_day, ohlcv_idx, returns_ml, frozenset())
+    ind_sample: dict[str, str] = {}
+    for code in listing_codes:
+        ic = stocks_mod.industry_code_for_stock(code)
+        if not ic:
+            continue
+        k = str(ic)
+        if k not in ind_sample:
+            ind_sample[k] = str(code).zfill(6)
+    if not ind_sample:
+        return []
+    ind_cache.prewarm(ind_sample.values())
+
+    lim_min = float(config.PRED_OBS_BURST_LIM_MIN)
+    prior_max = float(config.PRED_OBS_BURST_PRIOR_MAX)
+    br_min = float(config.PRED_OBS_BURST_BREADTH_MIN)
+    mom_min = float(config.PRED_OBS_BURST_MOM_MIN)
+
+    scored_inds: list[tuple[float, str, float, float, float]] = []
+    for ic, sample in ind_sample.items():
+        mom, _, lim = ind_cache.industry_feats(sample)
+        prior = ind_cache.prior_hot(sample)
+        br = ind_cache.sector_breadth(sample)
+        if lim + 1e-12 < lim_min:
+            continue
+        if prior + 1e-12 >= prior_max:
+            continue
+        if br + 1e-12 < br_min and mom + 1e-12 < mom_min:
+            continue
+        score = lim * (1.0 - min(0.85, prior)) * (0.50 + 0.50 * br)
+        if (
+            prior + 1e-12 < float(config.PRED_OBS_BURST_COLD_PRIOR_MAX)
+            and lim + 1e-12 >= float(config.PRED_OBS_BURST_COLD_LIM_MIN)
+        ):
+            score += float(config.PRED_OBS_BURST_COLD_SCORE_BOOST)
+        scored_inds.append((score, ic, lim, prior, br))
+    scored_inds.sort(key=lambda x: (-x[0], -x[2], x[3]))
+
+    max_inds = int(config.PRED_OBS_BURST_MAX_INDUSTRIES)
+    cold_cap = int(config.PRED_OBS_BURST_COLD_INDUSTRY_MAX)
+    cold_inds = [
+        row
+        for row in scored_inds
+        if row[3] + 1e-12 < float(config.PRED_OBS_BURST_COLD_PRIOR_MAX)
+        and row[2] + 1e-12 >= float(config.PRED_OBS_BURST_COLD_LIM_MIN)
+    ]
+    other_inds = [row for row in scored_inds if row not in cold_inds]
+    picked = cold_inds[:cold_cap] + other_inds[: max(0, max_inds - cold_cap)]
+
+    out: list[str] = []
+    seen: set[str] = set()
+    n_inds = len(picked)
+    base_quota = max(22, max_codes // max(1, n_inds))
+
+    for score, ic, lim, prior, br in picked:
+        n_peers = base_quota
+        if lim + 1e-12 >= 0.34:
+            n_peers = max(n_peers, int(config.PRED_OBS_BURST_PEERS_HOT))
+        if (
+            prior + 1e-12 < float(config.PRED_OBS_BURST_COLD_PRIOR_MAX)
+            and lim + 1e-12 >= float(config.PRED_OBS_BURST_COLD_LIM_MIN)
+        ):
+            n_peers = max(n_peers, int(config.PRED_OBS_BURST_PEERS_FULL))
+        for peer in stocks_mod.peers_for_industry(ic)[:n_peers]:
+            c6 = str(peer).zfill(6)
+            if c6 in allowed and c6 not in seen:
+                seen.add(c6)
+                out.append(c6)
+                if len(out) >= max_codes:
+                    return out
+    return out
+
+
+def priority_cold_limit_peer_codes(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+    listing_codes: list[str],
+    *,
+    max_codes: int = 220,
+) -> list[str]:
+    """당일 상한 열기 + 낮은 전일 과열(건설 후발주) — must_keep 최우선 고정."""
+    from .. import stocks as stocks_mod
+    from .market_features import IndustryFeatureCache, ohlcv_lookup
+
+    allowed = {str(c).zfill(6) for c in listing_codes}
+    ohlcv_idx = ohlcv_lookup(returns_ml)
+    if ohlcv_idx is None:
+        return []
+    ind_cache = IndustryFeatureCache(target_day, ohlcv_idx, returns_ml, frozenset())
+    ind_sample: dict[str, str] = {}
+    for code in listing_codes:
+        ic = stocks_mod.industry_code_for_stock(code)
+        if not ic:
+            continue
+        k = str(ic)
+        if k not in ind_sample:
+            ind_sample[k] = str(code).zfill(6)
+    ind_cache.prewarm(ind_sample.values())
+
+    lim_min = float(config.PRED_OBS_BURST_COLD_LIM_MIN)
+    prior_max = float(config.PRED_OBS_BURST_COLD_PRIOR_MAX)
+    n_peers = int(config.PRED_PRIORITY_COLD_PEERS)
+    max_inds = int(config.PRED_PRIORITY_COLD_MAX_INDUSTRIES)
+
+    scored: list[tuple[float, str, float, float]] = []
+    for ic, sample in ind_sample.items():
+        _mom, _, lim = ind_cache.industry_feats(sample)
+        prior = ind_cache.prior_hot(sample)
+        if lim + 1e-12 < lim_min or prior + 1e-12 >= prior_max:
+            continue
+        if lim + 1e-12 > float(config.PRED_PRIORITY_COLD_LIM_HIGH):
+            continue
+        br = ind_cache.sector_breadth(sample)
+        if br + 1e-12 < float(config.PRED_PRIORITY_COLD_BREADTH_MIN):
+            continue
+        score = lim * (1.0 - min(0.85, prior))
+        if (
+            lim + 1e-12 >= float(config.PRED_PRIORITY_COLD_LIM_MIN)
+            and prior + 1e-12 < prior_max
+        ):
+            score += float(config.PRED_PRIORITY_COLD_SCORE_BOOST)
+        scored.append((score, ic, lim, prior))
+    scored.sort(key=lambda x: (-x[0], -x[2]))
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for _, ic, lim, _prior in scored[:max_inds]:
+        peers_n = n_peers
+        if lim + 1e-12 >= float(config.PRED_PRIORITY_COLD_LIM_MIN):
+            peers_n = max(peers_n, int(config.PRED_OBS_BURST_PEERS_FULL))
+        for peer in stocks_mod.peers_for_industry(ic)[:peers_n]:
+            c6 = str(peer).zfill(6)
+            if c6 in allowed and c6 not in seen:
+                seen.add(c6)
+                out.append(c6)
+                if len(out) >= max_codes:
+                    return out
+    return out
+
+
 def ml_scoring_candidate_codes(
     listing_codes: list[str],
     listing_names: dict[str, str],
@@ -426,6 +586,8 @@ def day_candidate_codes(
     burst_peers = burst_industry_peer_codes(returns_ml, target_day, listing_codes)
     bounce_codes = oversold_bounce_candidate_codes(returns_ml, target_day, listing_codes)
     rotation_codes = theme_rotation_peer_codes(returns_ml, target_day, listing_codes)
+    obs_burst = observation_day_burst_peer_codes(returns_ml, target_day, listing_codes)
+    priority_burst = priority_cold_limit_peer_codes(returns_ml, target_day, listing_codes)
     rs_codes = pred_hybrid.relative_strength_candidate_codes(
         returns_ml, target_day, listing_codes
     )
@@ -435,6 +597,8 @@ def day_candidate_codes(
             + mom
             + news_ctx_codes
             + flow_codes
+            + priority_burst
+            + obs_burst
             + hot_peers
             + burst_peers
             + rotation_codes
@@ -456,6 +620,8 @@ def industry_must_keep_codes(
     반드시 추론 풀에 남겨 둘 종목.
     """
     cap = max_codes if max_codes is not None else int(config.PRED_INDUSTRY_MUST_KEEP_MAX)
+    priority = priority_cold_limit_peer_codes(returns_ml, target_day, listing_codes)
+    obs = observation_day_burst_peer_codes(returns_ml, target_day, listing_codes)
     burst = burst_industry_peer_codes(returns_ml, target_day, listing_codes)
     hot = prior_day_hot_peer_codes(returns_ml, target_day, listing_codes)
     rot: list[str] = []
@@ -467,7 +633,7 @@ def industry_must_keep_codes(
             max_codes=int(config.PRED_THEME_ROTATION_ENRICH_MAX),
         )
     bounce = oversold_bounce_candidate_codes(returns_ml, target_day, listing_codes)
-    return list(dict.fromkeys(burst + hot + bounce + rot))[: max(1, cap)]
+    return list(dict.fromkeys(priority + obs + burst + hot + bounce + rot))[: max(1, cap)]
 
 
 _day_candidate_codes = day_candidate_codes

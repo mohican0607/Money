@@ -52,6 +52,38 @@ def prior_day_exhaustion_blocks_confidence(row: PredictionRow) -> bool:
     return lag + 1e-12 >= float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
 
 
+def prior_day_drop_penalty(row: PredictionRow) -> float:
+    """전일 급락 종목의 익일 급등 추격 위험(0~1). ``ret_lag1`` 은 부호 유지."""
+    lag = float(getattr(row, "ret_lag1", 0.0) or 0.0)
+    floor = float(config.PRED_PRIOR_DAY_DROP_WARN_RET)
+    block = float(config.PRED_PRIOR_DAY_DROP_BLOCK_RET)
+    if lag + 1e-12 >= floor:
+        return 0.0
+    if lag + 1e-12 <= block:
+        return 1.0
+    return min(1.0, (floor - lag) / max(1e-9, floor - block))
+
+
+def sector_burst_rotation_bonus(row: PredictionRow) -> float:
+    """당일 업종 상한 열기 + 낮은 전일 업종 과열 → 후발주·로테이션 가산."""
+    prior = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+    lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    br = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
+    ov = float(getattr(row, "industry_theme_overlap", 0.0) or 0.0)
+    if prior + 1e-12 >= float(config.PRED_SECTOR_BURST_PRIOR_MAX):
+        return 0.0
+    if lim + 1e-12 < float(config.PRED_SECTOR_BURST_LIM_MIN):
+        return 0.0
+    bonus = (
+        float(config.PRED_SECTOR_BURST_LIM_W) * lim
+        + float(config.PRED_SECTOR_BURST_BREADTH_W) * br
+        + float(config.PRED_SECTOR_BURST_THEME_W) * ov
+    )
+    if br + 1e-12 >= 0.18:
+        bonus += float(config.PRED_SECTOR_BURST_BREADTH_EXTRA)
+    return min(float(config.PRED_SECTOR_BURST_MAX), bonus)
+
+
 def theme_rotation_score(row: PredictionRow) -> float:
     """
     핫 섹터 내 전일 중간 모멘텀(로테이션) 점수(0~1).
@@ -105,7 +137,7 @@ def enrich_prediction_rows_from_returns_ml(
                 ohlcv_row, ks11_ret_lag1=ks11_ret_lag1
             )
             row.vol_surge_ratio = float(ohlcv_row.get("vol_surge_ratio") or 0.0)
-            row.ret_lag1 = max(0.0, float(ohlcv_row.get("ret_lag1") or 0.0))
+            row.ret_lag1 = float(ohlcv_row.get("ret_lag1") or 0.0)
             row.investor_flow_score = float(ohlcv_row.get("investor_flow_score") or 0.0)
             row.foreign_net_vol_ratio = float(
                 ohlcv_row.get("foreign_net_vol_ratio_lag1") or 0.0
@@ -205,6 +237,13 @@ def compute_pillar_scores(
 
     flow = _clamp01(inv + 0.40 * min(fr / 0.06, 1.0))
     sector = _clamp01(0.45 * ind_m / 0.38 + 0.35 * ind_ov + 0.20 * ind_lim)
+    prior_hot = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+    br_hot = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
+    if (
+        prior_hot + 1e-12 < float(config.PRED_SECTOR_BURST_PRIOR_MAX)
+        and ind_lim + 1e-12 >= float(config.PRED_SECTOR_BURST_LIM_MIN)
+    ):
+        sector = min(1.0, sector + 0.14 * ind_lim + 0.08 * br_hot + 0.06 * ind_ov)
     news = _clamp01(0.35 * nctx + 0.35 * min(1.0, nh / 4.0) + 0.30 * min(mention, 1.0))
 
     return {
@@ -281,6 +320,12 @@ def multi_factor_rank_score(
     pen = prior_day_exhaustion_penalty(row)
     if pen > 0:
         s *= max(0.35, 1.0 - 0.62 * pen)
+    drop = prior_day_drop_penalty(row)
+    if drop > 0:
+        s *= max(0.38, 1.0 - 0.58 * drop)
+    burst = sector_burst_rotation_bonus(row)
+    if burst > 0:
+        s = min(1.0, s + burst)
     rot = theme_rotation_score(row)
     if rot > 0:
         s = min(1.0, s + float(config.PRED_THEME_ROTATION_RANK_BOOST) * rot)
@@ -500,9 +545,14 @@ def recall_presort_score(row: PredictionRow) -> float:
         float(getattr(row, "industry_momentum", 0.0) or 0.0),
         float(getattr(row, "prior_industry_hot", 0.0) or 0.0),
     )
-    blend = 0.36 * ml_n + 0.34 * h + 0.18 * mom + 0.12 * sec
+    br = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
+    prior = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+    lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    burst = sector_burst_rotation_bonus(row)
+    sec = max(sec, br * 0.85, lim * 0.9 if prior < 0.22 else 0.0)
+    blend = 0.34 * ml_n + 0.32 * h + 0.16 * mom + 0.10 * sec + 0.08 * burst
     rot = theme_rotation_score(row)
-    blend = min(1.0, blend + 0.24 * rot)
+    blend = min(1.0, blend + 0.22 * rot + 0.10 * burst)
     return max(h, blend, 0.72 * ml_n + 0.28 * h if ml_n > 0 else h, blend)
 
 
@@ -705,22 +755,45 @@ def rank_score_for_row(row: PredictionRow) -> float:
     """행의 최종 랭킹 점수 — ML 확률·업종열기가 있으면 하이브리드보다 가중."""
     h = hybrid_rank_score(row)
     ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
-    if ml <= 0:
-        return h
-    ml_n = min(1.0, ml / 0.11)
-    s = max(h, 0.40 * h + 0.60 * ml_n)
     prior = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
     lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
     sec_br = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
+    burst = sector_burst_rotation_bonus(row)
+    if ml <= 0:
+        return min(1.0, h + burst)
+    ml_n = min(1.0, ml / 0.11)
+    if (
+        burst + 1e-12 >= float(config.PRED_SECTOR_BURST_RANK_MIN)
+        and prior + 1e-12 < float(config.PRED_SECTOR_BURST_PRIOR_MAX)
+        and lim + 1e-12 >= float(config.PRED_SECTOR_BURST_LIM_MIN)
+    ):
+        s = max(
+            h,
+            min(
+                1.0,
+                0.62 * h
+                + 0.18 * ml_n
+                + 0.28 * burst
+                + 0.14 * lim
+                + 0.10 * sec_br,
+            ),
+        )
+    else:
+        s = max(h, 0.40 * h + 0.60 * ml_n)
     if ml_n + 1e-12 >= 0.55 and (prior + 1e-12 >= 0.18 or lim + 1e-12 >= 0.14):
         s = min(1.0, s + 0.09)
     if sec_br + 1e-12 >= 0.35 and ml_n + 1e-12 >= 0.40:
         s = min(1.0, s + 0.07)
+    if burst > 0:
+        s = min(1.0, s + 0.65 * burst)
     rot = theme_rotation_score(row)
     if rot + 1e-12 >= 0.32 and ml_n + 1e-12 >= 0.28:
         s = min(1.0, s + 0.11 * rot)
     elif rot + 1e-12 >= 0.28:
         s = min(1.0, s + 0.14 * rot)
+    drop = prior_day_drop_penalty(row)
+    if drop > 0:
+        s *= max(0.40, 1.0 - 0.55 * drop)
     if ml_n + 1e-12 >= 0.72:
         s = min(1.0, s + 0.05)
     return s
@@ -767,6 +840,46 @@ def _hot_industry_heat_map(
     return heat
 
 
+def _focused_industry_heat_map(
+    returns_ml: pd.DataFrame,
+    session_day: date,
+    *,
+    min_ret: float = 0.15,
+    min_count: int = 2,
+    top_k: int = 4,
+) -> dict[str, float]:
+    """당일 다수 급등 업종만 열기 반환 — 단일 종목 급등으로 인한 캐리오버 오탐을 줄입니다."""
+    from .. import stocks as stocks_mod
+
+    sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(session_day)]
+    if sl.empty:
+        return {}
+    counts: dict[str, int] = {}
+    best: dict[str, float] = {}
+    for _, r in sl.iterrows():
+        try:
+            rp = float(r.get("return_pct") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if rp + 1e-12 < min_ret:
+            continue
+        ic = stocks_mod.industry_code_for_stock(str(r["Code"]))
+        if not ic:
+            continue
+        k = str(ic)
+        counts[k] = counts.get(k, 0) + 1
+        best[k] = max(best.get(k, 0.0), rp)
+    ranked = sorted(
+        [k for k, n in counts.items() if n >= min_count],
+        key=lambda k: (counts[k], best[k]),
+        reverse=True,
+    )[:top_k]
+    out: dict[str, float] = {}
+    for k in ranked:
+        out[k] = min(1.0, 0.22 * counts[k] + best[k] / 0.38)
+    return out
+
+
 def _rerank_carryover_industry_leaders(
     pool: list[PredictionRow],
     *,
@@ -782,16 +895,40 @@ def _rerank_carryover_industry_leaders(
         prev = trading_calendar.last_trading_day_before(target_day)
     except ValueError:
         return pool
-    heat_map = _hot_industry_heat_map(returns_ml, prev, min_ret=0.12)
+    if config.PRED_CARRYOVER_FOCUS_MODE:
+        heat_map = _focused_industry_heat_map(
+            returns_ml,
+            prev,
+            min_ret=float(config.PRED_CARRYOVER_FOCUS_MIN_RET),
+            min_count=int(config.PRED_CARRYOVER_FOCUS_MIN_COUNT),
+            top_k=int(config.PRED_CARRYOVER_FOCUS_TOP_K),
+        )
+        try:
+            prev2 = trading_calendar.last_trading_day_before(prev)
+            heat2 = _focused_industry_heat_map(
+                returns_ml,
+                prev2,
+                min_ret=float(config.PRED_CARRYOVER_FOCUS_MIN_RET),
+                min_count=int(config.PRED_CARRYOVER_FOCUS_MIN_COUNT),
+                top_k=int(config.PRED_CARRYOVER_FOCUS_TOP_K),
+            )
+            for k, v in heat2.items():
+                heat_map[k] = max(heat_map.get(k, 0.0), 0.50 * v)
+        except ValueError:
+            pass
+    else:
+        heat_map = _hot_industry_heat_map(returns_ml, prev, min_ret=0.12)
+        if not heat_map:
+            return pool
+        try:
+            prev2 = trading_calendar.last_trading_day_before(prev)
+            heat2 = _hot_industry_heat_map(returns_ml, prev2, min_ret=0.12)
+            for k, v in heat2.items():
+                heat_map[k] = max(heat_map.get(k, 0.0), 0.55 * v)
+        except ValueError:
+            pass
     if not heat_map:
         return pool
-    try:
-        prev2 = trading_calendar.last_trading_day_before(prev)
-        heat2 = _hot_industry_heat_map(returns_ml, prev2, min_ret=0.12)
-        for k, v in heat2.items():
-            heat_map[k] = max(heat_map.get(k, 0.0), 0.55 * v)
-    except ValueError:
-        pass
     if max(heat_map.values(), default=0.0) + 1e-12 < float(config.PRED_CARRYOVER_MIN_HEAT):
         return pool
 
@@ -844,6 +981,82 @@ def _rerank_sector_diversity(pool: list[PredictionRow]) -> list[PredictionRow]:
                 continue
             head.append(row)
             seen.add(id(row))
+    seen = {id(r) for r in head}
+    return head + [r for r in ranked if id(r) not in seen]
+
+
+def _dominant_burst_industry(pool: list[PredictionRow]) -> str | None:
+    """당일 상한 열기·낮은 전일 과열 업종(로테이션/후발) 키."""
+    lims: dict[str, list[float]] = {}
+    priors: dict[str, list[float]] = {}
+    for row in pool:
+        ik = _industry_key(str(row.code))
+        lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+        if lim + 1e-12 < float(config.PRED_SECTOR_BURST_LIM_MIN):
+            continue
+        lims.setdefault(ik, []).append(lim)
+        priors.setdefault(ik, []).append(
+            float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+        )
+    best_ik: str | None = None
+    best_score = 0.0
+    for ik, vals in lims.items():
+        avg_lim = sum(vals) / len(vals)
+        avg_prior = sum(priors[ik]) / len(priors[ik])
+        if avg_prior + 1e-12 >= float(config.PRED_SECTOR_BURST_PRIOR_MAX):
+            continue
+        score = avg_lim * (1.0 - min(0.85, avg_prior))
+        if score + 1e-12 > best_score:
+            best_score = score
+            best_ik = ik
+    if best_ik is None or best_score + 1e-12 < float(config.PRED_BURST_INDUSTRY_MIN_SCORE):
+        return None
+    return best_ik
+
+
+def _burst_industry_leader_score(row: PredictionRow) -> float:
+    burst = sector_burst_rotation_bonus(row)
+    if burst <= 0:
+        return 0.0
+    lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    br = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
+    return burst + 0.34 * lim + 0.22 * br + 0.12 * hybrid_rank_score(row)
+
+
+def _inject_burst_sector_leaders(pool: list[PredictionRow]) -> list[PredictionRow]:
+    """버스트 업종(건설 등 후발주) 리더를 상위 슬롯에 조건부 주입."""
+    slots = int(config.PRED_BURST_INDUSTRY_LEADER_SLOTS)
+    top_k = min(int(config.PRED_SECTOR_DIVERSITY_TOP_K), len(pool))
+    if slots <= 0 or top_k <= 0 or not pool:
+        return pool
+    burst_ik = _dominant_burst_industry(pool)
+    if not burst_ik:
+        return pool
+    ranked = sorted(pool, key=rank_score_for_row, reverse=True)
+    head = list(ranked[:top_k])
+    head_ids = {id(r) for r in head}
+    candidates = [
+        r
+        for r in pool
+        if _industry_key(str(r.code)) == burst_ik
+        and not prior_day_exhaustion_blocks_confidence(r)
+        and sector_burst_rotation_bonus(r) + 1e-12
+        >= float(config.PRED_SECTOR_BURST_RANK_MIN)
+    ]
+    if not candidates:
+        return pool
+    leaders = sorted(candidates, key=_burst_industry_leader_score, reverse=True)[:slots]
+    insert_at = max(4, top_k - slots - 2)
+    for leader in leaders:
+        if id(leader) in head_ids:
+            continue
+        if insert_at >= len(head):
+            head.append(leader)
+        else:
+            head.insert(insert_at, leader)
+            head.pop()
+        head_ids.add(id(leader))
+        insert_at += 1
     seen = {id(r) for r in head}
     return head + [r for r in ranked if id(r) not in seen]
 
@@ -1091,7 +1304,7 @@ def _forward_conviction_score(row: PredictionRow) -> float:
     """장 전 관측일: 뉴스 단독보다 시세·섹터·ML 합의를 우선하는 확신 점수."""
     ks11 = getattr(row, "ks11_ret_lag1", None)
     pillars = compute_pillar_scores(row, ks11_ret_lag1=ks11)
-    return (
+    s = (
         0.32 * pillars["momentum"]
         + 0.28 * pillars["sector"]
         + 0.22 * pillars["ml"]
@@ -1099,7 +1312,12 @@ def _forward_conviction_score(row: PredictionRow) -> float:
         + 0.08 * pillars["relative_strength"]
         + 0.05 * min(pillars["news"], 0.65)
         + 0.14 * theme_rotation_score(row)
+        + 0.10 * sector_burst_rotation_bonus(row)
     )
+    drop = prior_day_drop_penalty(row)
+    if drop > 0:
+        s *= max(0.35, 1.0 - 0.62 * drop)
+    return s
 
 
 def assign_forward_confidence_tiers(
@@ -1221,6 +1439,7 @@ def finalize_ranked_predictions(
 
     pool = _rerank_sector_diversity(rows)
     pool = _inject_hot_sector_leaders(pool)
+    pool = _inject_burst_sector_leaders(pool)
     if returns_ml is not None:
         pool = _rerank_carryover_industry_leaders(
             pool, target_day=target_day, returns_ml=returns_ml

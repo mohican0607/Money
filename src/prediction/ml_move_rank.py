@@ -1180,7 +1180,7 @@ def rank_predictions_ml(
                 ohlcv_row, ks11_ret_lag1=ks11_ret
             )
             pr.vol_surge_ratio = float(ohlcv_row.get("vol_surge_ratio") or 0.0)
-            pr.ret_lag1 = max(0.0, float(ohlcv_row.get("ret_lag1") or 0.0))
+            pr.ret_lag1 = float(ohlcv_row.get("ret_lag1") or 0.0)
         try:
             row = ohlcv_row if ohlcv_row is not None else ohlcv_idx.loc[(target_day, code)]
             if isinstance(row, pd.DataFrame):
@@ -1206,8 +1206,9 @@ def rank_predictions_ml(
         ] + list(pr.reasons)
         buf.append(pr)
 
-    buf.sort(key=lambda r: -pred_hybrid.recall_presort_score(r))
-    pre_pool = buf[: min(len(buf), finalize_n)]
+    pre_pool = pred_hybrid.select_pre_pool_with_hot_promotion(
+        buf, finalize_n=min(len(buf), finalize_n)
+    )
     t_ml = time.perf_counter() - t0
     cap_note = f" 풀 {n_raw}→{len(cand_ix)}" if n_raw != len(cand_ix) else ""
     print(
