@@ -117,6 +117,13 @@ def _load_prediction_freeze_payload() -> dict[str, list[dict]]:
     if not isinstance(raw, dict):
         return {}
     if raw.get("_schema_version") != config.PREDICTION_FREEZE_SCHEMA_VERSION:
+        print(
+            "예측 고정 캐시 스키마 불일치 "
+            f"(저장={raw.get('_schema_version')!r}, "
+            f"현재={config.PREDICTION_FREEZE_SCHEMA_VERSION}) "
+            f"→ 재사용하지 않고 신규 계산합니다. ({path})",
+            flush=True,
+        )
         return {}
     out: dict[str, list[dict]] = {}
     for k, v in raw.items():
@@ -161,6 +168,37 @@ def _freeze_entry_usable(items: list[dict]) -> bool:
         if p is not None and math.isfinite(p):
             return True
     return False
+
+
+def effective_train_snapshot_cal_scope(
+    *,
+    train_snapshot_mode: str,
+    train_snapshot_cal_scope: tuple[date, date] | None,
+    day_reports: list,
+    forward_prediction_only: bool,
+) -> tuple[date, date] | None:
+    """
+    ``rebuild_learning`` 병합 대상 캘린더 구간.
+
+  ``--append-rebuild-learning`` 단일일 실행은 ``train_snapshot_cal_scope`` 가
+    ``None`` 으로 들어오던 경우가 있어, 장 마감 확정 ``DayReport`` 의 T 로 보정합니다.
+    """
+    if forward_prediction_only:
+        return None
+    if train_snapshot_mode not in ("rebuild", "append_learning"):
+        return None
+    if train_snapshot_cal_scope is not None:
+        return train_snapshot_cal_scope
+    closed_days = sorted(
+        {
+            dr.trading_day
+            for dr in day_reports
+            if not getattr(dr, "forward_observation", False)
+        }
+    )
+    if not closed_days:
+        return None
+    return (closed_days[0], closed_days[-1])
 
 
 def _should_reuse_prediction_freeze(

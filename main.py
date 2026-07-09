@@ -265,9 +265,13 @@ def main() -> None:
         print(
             f"--append-rebuild-learning: T={t_day.isoformat()} - "
             "예측 고정 캐시가 있으면 14:30 예측 후보를 유지하고, "
-            "실제 상승률·테마·rebuild_learning 만 갱신합니다.",
+            "실제 상승률·테마·rebuild_learning(미스 진단) 병합 저장합니다.",
             flush=True,
         )
+
+    cal_scope: tuple[date, date] | None = None
+    if snap_mode in ("rebuild", "append_learning") and not forward_prediction_only:
+        cal_scope = (t_day, t_day)
 
     po = run_pipeline(
         test_days,
@@ -275,7 +279,7 @@ def main() -> None:
         include_target_calendar_news=True,
         forward_prediction_only=forward_prediction_only,
         train_snapshot_mode=snap_mode,
-        train_snapshot_cal_scope=None,
+        train_snapshot_cal_scope=cal_scope,
         skip_ohlcv_gap_download=skip_ohlcv_gap,
         omit_target_calendar_days=omit_t_calendar,
         skip_news_fetch_after=skip_news_fetch_after,

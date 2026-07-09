@@ -70,6 +70,7 @@ from .support import (
     _prediction_rows_from_frozen_items,
     _prediction_rows_to_frozen_items,
     _save_prediction_freeze_payload,
+    effective_train_snapshot_cal_scope,
 )
 from .support import _collect_calendar_days_for_trading_range, _fetch_news_for_calendar_days
 from .support import (
@@ -496,6 +497,8 @@ def _run_pipeline(
                 feedback_ctx=pipeline_feedback_ctx,
                 forward_observation=day_forward,
             )
+            # ``predict_for_trading_day`` / ML 랭커가 이미 finalize 를 끝냄 — 여기서 다시 finalize 하면
+            # 14:30 리포트와 freeze·장마감 후 재사용 예측이 어긋납니다.
             if config.PREDICTION_FREEZE_ENABLED and (
                 ignore_freeze_for_t
                 or (
@@ -521,18 +524,10 @@ def _run_pipeline(
                 target_day=T,
                 ks11_ret_lag1=kospi_r,
             )
-            # 14:30 freeze: tier·예측%·순위 고정. finalize 는 장마감 후 tier 를 바꿔 표에서 빠질 수 있음.
+            # 14:30 freeze: tier·예측%·순위 고정 — finalize 재실행 없음.
             for pos, row in enumerate(preds, start=1):
                 if getattr(row, "rank_position", None) is None:
                     row.rank_position = pos
-        elif preds:
-            preds = prediction_ranking.finalize_ranked_predictions(
-                preds,
-                target_day=T,
-                ks11_ret_lag1=kospi_r,
-                forward_observation=day_forward,
-                returns_ml=returns_ml,
-            )
 
         now_kst_td = datetime.now(trading_calendar.KST)
         is_today_t = T == now_kst_td.date()
@@ -1114,12 +1109,18 @@ def _run_pipeline(
             now_kst=now_end_kst,
         )
 
+    cal_scope = effective_train_snapshot_cal_scope(
+        train_snapshot_mode=train_snapshot_mode,
+        train_snapshot_cal_scope=train_snapshot_cal_scope,
+        day_reports=day_reports,
+        forward_prediction_only=forward_prediction_only,
+    )
     if (
         train_snapshot_mode in ("rebuild", "append_learning")
-        and train_snapshot_cal_scope is not None
+        and cal_scope is not None
         and not forward_prediction_only
     ):
-        s0, s1 = train_snapshot_cal_scope
+        s0, s1 = cal_scope
         rl = _build_rebuild_learning_payload(day_reports, s0, s1)["rebuild_learning"]
         if theme_flow_rows:
             theme = [

@@ -1,6 +1,9 @@
 """예측 표·freeze·전일 과열 게이트 회귀 방지."""
 from __future__ import annotations
 
+from datetime import date
+from types import SimpleNamespace
+
 from src import config
 from src.pipeline.rows import (
     _compare_row_belongs_in_closed_day_table,
@@ -9,7 +12,10 @@ from src.pipeline.rows import (
 )
 from src.pipeline.support import (
     _display_prediction_rows_for_freeze,
+    _prediction_rows_from_frozen_items,
+    _prediction_rows_to_frozen_items,
     _should_reuse_prediction_freeze,
+    effective_train_snapshot_cal_scope,
 )
 from src.prediction.predict import PredictionRow
 from src.prediction import prediction_ranking as prk
@@ -53,6 +59,19 @@ def test_reuse_prediction_freeze_after_market_close() -> None:
         ignore_freeze_for_trading_day=False,
         frozen_items=None,
     )
+
+
+def test_freeze_roundtrip_preserves_prediction_codes_and_tiers() -> None:
+    rows = [
+        PredictionRow("000001", "A", 1.0, 25.0, [], [], confidence_tier="high", rank_position=1),
+        PredictionRow("000002", "B", 1.0, 22.0, [], [], confidence_tier="mid", rank_position=2),
+        PredictionRow("000003", "C", 1.0, 21.0, [], [], confidence_tier="none", rank_position=3),
+    ]
+    frozen = _prediction_rows_to_frozen_items(_display_prediction_rows_for_freeze(rows))
+    restored = _prediction_rows_from_frozen_items(frozen)
+    assert [r.code for r in restored] == ["000001", "000002"]
+    assert [r.confidence_tier for r in restored] == ["high", "mid"]
+    assert [round(r.predicted_return_pct, 1) for r in restored] == [25.0, 22.0]
 
 
 def test_freeze_keeps_display_candidates_only() -> None:
@@ -110,3 +129,27 @@ def test_theme_rotation_prefers_moderate_lag_in_hot_sector() -> None:
 
 def test_carryover_rerank_disabled_by_default() -> None:
     assert not config.PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED
+
+
+def test_append_learning_single_day_infers_cal_scope_from_day_reports() -> None:
+    t = date(2026, 7, 7)
+    dr = SimpleNamespace(trading_day=t, forward_observation=False)
+    scope = effective_train_snapshot_cal_scope(
+        train_snapshot_mode="append_learning",
+        train_snapshot_cal_scope=None,
+        day_reports=[dr],
+        forward_prediction_only=False,
+    )
+    assert scope == (t, t)
+
+
+def test_append_learning_forward_day_skips_cal_scope() -> None:
+    t = date(2026, 7, 8)
+    dr = SimpleNamespace(trading_day=t, forward_observation=True)
+    scope = effective_train_snapshot_cal_scope(
+        train_snapshot_mode="append_learning",
+        train_snapshot_cal_scope=None,
+        day_reports=[dr],
+        forward_prediction_only=True,
+    )
+    assert scope is None

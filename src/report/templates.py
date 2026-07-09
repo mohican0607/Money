@@ -3,10 +3,24 @@ from __future__ import annotations
 
 import re
 
+ROWS_COMPARE_GROUP_COL_CSS = """
+    table.rows-compare { table-layout: fixed; }
+    table.rows-compare col.col-group,
+    table.rows-compare th.col-group,
+    table.rows-compare td.col-group,
+    table.rows-compare th:nth-child(1),
+    table.rows-compare td:nth-child(1) {
+      width: 5.75rem; min-width: 5.75rem; max-width: 5.75rem;
+    }
+    table.rows-compare td.col-group,
+    table.rows-compare td:nth-child(1) { white-space: nowrap; vertical-align: top; }
+"""
+
 REPORT_TABLE_INTERACTION_MARKER = "money-report-table-interaction"
 # 비교표 정렬·필터·차트 tooltip·장중 실시간 등락률 갱신 스크립트(리포트 </body> 직전 삽입).
 REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
 <style>
+""" + ROWS_COMPARE_GROUP_COL_CSS + r"""
 .stock-chart-popup.stock-chart-popup-floating {
   display: block !important;
   position: fixed !important;
@@ -904,7 +918,16 @@ _TEMPLATE = r"""
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
     .tabs-wrap section { margin-bottom: 16px; }
-    table.rows-compare { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    table.rows-compare { width: 100%; border-collapse: collapse; font-size: 0.88rem; table-layout: fixed; }
+    table.rows-compare col.col-group,
+    table.rows-compare th.col-group,
+    table.rows-compare td.col-group,
+    table.rows-compare th:nth-child(1),
+    table.rows-compare td:nth-child(1) {
+      width: 5.75rem; min-width: 5.75rem; max-width: 5.75rem;
+    }
+    table.rows-compare td.col-group,
+    table.rows-compare td:nth-child(1) { white-space: nowrap; vertical-align: top; }
     table.rows-compare th, table.rows-compare td { padding: 10px 8px; text-align: left; border-bottom: 1px solid #2a3548; vertical-align: top; }
     table.rows-compare th.sortable-col { cursor: pointer; user-select: none; color: var(--accent); }
     table.rows-compare th.sortable-col:hover { text-decoration: underline; }
@@ -1182,9 +1205,10 @@ __ACTUAL_RET_CELL_MACRO__
     <p class="sub" style="margin-top:0">{% if d.forward_observation | default(false) %}모델 <strong>예측 상승률</strong> 10% 이상 후보입니다. 장 마감 전이므로 실제 상승률은 표시하지 않습니다.{% else %}당일 <strong>실제</strong> 10% 이상 상승 종목과, 모델 <strong>예측 상승률</strong> 10% 이상 후보(중복 제거)를 함께 표시합니다.{% endif %} 위 라디오로 20%이상 / 10~20% 구간을 전환할 수 있습니다.</p>
     {% if d.rows_compare %}
     <table class="rows-compare">
+      <colgroup><col class="col-group"/></colgroup>
       <thead>
         <tr>
-          <th class="sortable-col" data-sort="group" scope="col" title="구분 우선순위 정렬: 실제+예측 > 실제만 > 예측만">구분</th>
+          <th class="sortable-col col-group" data-sort="group" scope="col" title="구분 우선순위 정렬: 실제+예측 > 실제만 > 예측만">구분</th>
           <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
           {% if not (d.forward_observation | default(false)) %}
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준">실제 상승률(%)</th>
@@ -1205,7 +1229,7 @@ __ACTUAL_RET_CELL_MACRO__
       <tbody>
         {% for r in d.rows_compare %}
         <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
-          <td style="white-space:nowrap;vertical-align:top" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
+          <td class="col-group" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
             {% if not (d.forward_observation | default(false)) and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측≥{{ meta.threshold }}{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
           </td>
@@ -1459,6 +1483,16 @@ _COMPACT_TEMPLATE = r"""
     .day-stack { margin-bottom: 28px; padding-bottom: 4px; border-bottom: 1px solid #2a3f5c; }
     .day-stack:last-of-type { border-bottom: none; margin-bottom: 8px; }
     .day-stack > h2 { font-size: 1.08rem; margin: 0 0 12px 0; color: #8ec5f6; }
+    table.rows-compare { table-layout: fixed; }
+    table.rows-compare col.col-group,
+    table.rows-compare th.col-group,
+    table.rows-compare td.col-group,
+    table.rows-compare th:nth-child(1),
+    table.rows-compare td:nth-child(1) {
+      width: 5.75rem; min-width: 5.75rem; max-width: 5.75rem;
+    }
+    table.rows-compare td.col-group,
+    table.rows-compare td:nth-child(1) { white-space: nowrap; vertical-align: top; }
     .gap-tip { position: relative; display: inline-block; margin-top: 4px; max-width: 100%; }
     .gap-tip.gap-tip-inline { margin-top: 0; margin-left: 8px; vertical-align: baseline; }
     .gap-tip.gap-tip-end .gap-tip-popup { left: auto; right: 0; }
@@ -1841,9 +1875,10 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 {% macro compact_day_table(d, meta, empty_extra='') -%}
 {% if d.rows_compare %}
 <table class="rows-compare">
+  <colgroup><col class="col-group"/></colgroup>
   <thead>
     <tr>
-      <th class="sortable-col" data-sort="group" scope="col" title="구분 우선순위 정렬: 실제+예측 > 실제만 > 예측만">구분</th>
+      <th class="sortable-col col-group" data-sort="group" scope="col" title="구분 우선순위 정렬: 실제+예측 > 실제만 > 예측만">구분</th>
       <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
       {% if not (d.forward_observation | default(false)) %}
       <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준">실제 상승률(%)</th>
@@ -1864,7 +1899,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
   <tbody>
     {% for r in d.rows_compare %}
     <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
-      <td style="white-space:nowrap;vertical-align:top" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
+      <td class="col-group" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
         {% if not (d.forward_observation | default(false)) and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제</span>{% endif %}
         {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
       </td>
@@ -2139,7 +2174,16 @@ _DATED_N_TEMPLATE = r"""
     .pill { display: inline-block; padding: 2px 8px; border-radius: 8px; font-size: 0.72rem;
             margin: 2px 4px 2px 0; background: #243044; color: var(--muted); }
     .table-wrap { overflow-x: auto; margin-top: 10px; -webkit-overflow-scrolling: touch; }
-    table.rows-compare { width: 100%; border-collapse: collapse; font-size: 0.86rem; min-width: 720px; }
+    table.rows-compare { width: 100%; border-collapse: collapse; font-size: 0.86rem; min-width: 720px; table-layout: fixed; }
+    table.rows-compare col.col-group,
+    table.rows-compare th.col-group,
+    table.rows-compare td.col-group,
+    table.rows-compare th:nth-child(1),
+    table.rows-compare td:nth-child(1) {
+      width: 5.75rem; min-width: 5.75rem; max-width: 5.75rem;
+    }
+    table.rows-compare td.col-group,
+    table.rows-compare td:nth-child(1) { white-space: nowrap; vertical-align: top; }
     table.rows-compare th, table.rows-compare td {
       padding: 10px 8px; text-align: left; border-bottom: 1px solid #2a3548; vertical-align: top;
     }
@@ -2532,9 +2576,10 @@ __ACTUAL_RET_CELL_MACRO_DATED__
     {% if day.rows_compare|length > 0 %}
     <div class="table-wrap">
     <table class="rows-compare">
+      <colgroup><col class="col-group"/></colgroup>
       <thead>
         <tr>
-          <th class="sortable-col" data-sort="group" scope="col" title="구분 우선순위 정렬: 실제+예측 > 실제만 > 예측만">구분</th>
+          <th class="sortable-col col-group" data-sort="group" scope="col" title="구분 우선순위 정렬: 실제+예측 > 실제만 > 예측만">구분</th>
           <th class="sortable-col" data-sort="stock" scope="col" title="종목명/코드 오름차순·내림차순 정렬">종목</th>
           {% if not (day.forward_observation | default(false)) %}
           <th class="sortable-col" data-sort="actual" scope="col" title="종가 확정 후 일봉 기준">실제 상승률(%)</th>
@@ -2558,7 +2603,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
       <tbody>
         {% for r in day.rows_compare %}
         <tr id="code-{{ row_id_prefix }}{{ r.code }}" data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
-          <td style="white-space:nowrap" data-sort-col="group" data-sort-value="{% if (not meta.prediction_only) and r.actual_big and (r.pred_high | default(false)) %}3{% elif (not meta.prediction_only) and r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
+          <td class="col-group" data-sort-col="group" data-sort-value="{% if (not meta.prediction_only) and r.actual_big and (r.pred_high | default(false)) %}3{% elif (not meta.prediction_only) and r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
             {% if not meta.prediction_only and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block;color:var(--warn)">예측≥{{ meta.threshold }}</span>{% endif %}
           </td>

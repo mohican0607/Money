@@ -113,8 +113,10 @@ def _print_usage() -> None:
       From~To 구간 안의 관측일은 예측 고정 캐시를 무시하고 재계산·저장합니다.
   --append-rebuild-learning
       급등-뉴스 train_events 는 스냅샷 재사용(미반영 캘린더만 병합). ML joblib 도 재학습하지 않고
-      기존 모델을 로드합니다. From~To 안은 freeze 없는 일만 신규 예측·rebuild_learning 병합.
-      단일일 ``YYYYMMDD`` 는 freeze 가 있으면 14:30 예측 후보를 유지한 채 actual·테마만 갱신.
+      기존 모델을 로드합니다. From~To·단일일 모두 장 마감 확정 T 에 대해
+      rebuild_learning(미예측 급등·고예측 실패 원인 태그)·market_theme_flow·
+      prediction_gap_rollup 을 breakout_train_snapshot.json 에 병합합니다.
+      단일일 ``YYYYMMDD`` 는 freeze 가 있으면 14:30 예측 후보를 유지한 채 actual·테마·학습 진단을 갱신.
   (플래그 없음) From~To
       각 T 에 prediction_freeze_by_t.json 이 있으면 예측 후보 재사용(실제·테마·누적만 갱신).
       없는 T 만 신규 예측 후 freeze 저장.
