@@ -557,6 +557,13 @@ def day_candidate_codes(
     news_ctx_bundle: dict[str, Any] | None = None,
 ) -> list[str]:
     """뉴스 프로필 ∪ 시세 모멘텀 후보(예측·학습 동일 유니버스)."""
+    from .. import stocks as stocks_mod
+
+    listing_codes = [
+        str(c).zfill(6)
+        for c in listing_codes
+        if stocks_mod.is_common_equity_code(str(c).zfill(6))
+    ]
     news = ml_scoring_candidate_codes(
         listing_codes,
         listing_names,
@@ -588,6 +595,9 @@ def day_candidate_codes(
     rotation_codes = theme_rotation_peer_codes(returns_ml, target_day, listing_codes)
     obs_burst = observation_day_burst_peer_codes(returns_ml, target_day, listing_codes)
     priority_burst = priority_cold_limit_peer_codes(returns_ml, target_day, listing_codes)
+    gap_codes = open_gap_breakout_candidate_codes(
+        returns_ml, target_day, listing_codes, max_codes=180
+    )
     rs_codes = pred_hybrid.relative_strength_candidate_codes(
         returns_ml, target_day, listing_codes
     )
@@ -598,6 +608,7 @@ def day_candidate_codes(
             + news_ctx_codes
             + flow_codes
             + priority_burst
+            + gap_codes
             + obs_burst
             + hot_peers
             + burst_peers
@@ -608,6 +619,46 @@ def day_candidate_codes(
     )
 
 
+def open_gap_breakout_candidate_codes(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+    listing_codes: list[str],
+    *,
+    max_codes: int = 160,
+    min_gap: float = 0.04,
+) -> list[str]:
+    """
+    당일 시가갭이 큰 종목(장 시작 확정) — 캡 컷에서 살아남아야 하는 돌파 후보.
+
+    ``open_gap`` 은 시가/전일종가이므로 14:30 누수 없음. 갭↑ + 전일 과열↓ 우선.
+    """
+    allowed = {str(c).zfill(6) for c in listing_codes}
+    sl = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
+    if sl.empty:
+        return []
+    scored: list[tuple[float, str]] = []
+    for _, r in sl.iterrows():
+        code = str(r["Code"]).zfill(6)
+        if code not in allowed:
+            continue
+        try:
+            gap = float(r.get("open_gap") or 0.0)
+            rl = float(r.get("ret_lag1") or 0.0)
+            vs = float(r.get("vol_surge_ratio") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if gap + 1e-12 < min_gap:
+            continue
+        # 갭 크기가 1순위 — 전일 과열 갭도 캡에 남겨 Hit@K 리콜
+        quiet = max(0.0, 0.12 - max(0.0, rl))
+        score = gap * 14.0 + quiet * 1.2 + 0.10 * min(max(vs, 0.0), 2.5)
+        if gap + 1e-12 >= 0.08:
+            score += 2.0
+        scored.append((score, code))
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    return [c for _, c in scored[: max(1, max_codes)]]
+
+
 def industry_must_keep_codes(
     returns_ml: pd.DataFrame,
     target_day: date,
@@ -616,11 +667,14 @@ def industry_must_keep_codes(
     max_codes: int | None = None,
 ) -> list[str]:
     """
-    burst·hot·rotation peer — ML pool cap(``PRED_ML_SCORE_POOL_CAP``)에서 잘리지 않도록
-    반드시 추론 풀에 남겨 둘 종목.
+    burst·hot·rotation·RS·bounce·갭돌파 peer — ML pool cap 에서 잘리지 않도록
+    반드시 추론 풀에 남겨 둘 종목(앞쪽이 우선순위).
     """
     cap = max_codes if max_codes is not None else int(config.PRED_INDUSTRY_MUST_KEEP_MAX)
     priority = priority_cold_limit_peer_codes(returns_ml, target_day, listing_codes)
+    gap = open_gap_breakout_candidate_codes(
+        returns_ml, target_day, listing_codes, max_codes=160
+    )
     obs = observation_day_burst_peer_codes(returns_ml, target_day, listing_codes)
     burst = burst_industry_peer_codes(returns_ml, target_day, listing_codes)
     hot = prior_day_hot_peer_codes(returns_ml, target_day, listing_codes)
@@ -630,10 +684,20 @@ def industry_must_keep_codes(
             returns_ml,
             target_day,
             listing_codes,
-            max_codes=int(config.PRED_THEME_ROTATION_ENRICH_MAX),
+            max_codes=max(
+                int(config.PRED_THEME_ROTATION_ENRICH_MAX),
+                80,
+            ),
         )
     bounce = oversold_bounce_candidate_codes(returns_ml, target_day, listing_codes)
-    return list(dict.fromkeys(priority + obs + burst + hot + bounce + rot))[: max(1, cap)]
+    rs_codes = pred_hybrid.relative_strength_candidate_codes(
+        returns_ml, target_day, listing_codes, top_k=140
+    )
+    return list(
+        dict.fromkeys(
+            priority + gap + obs + rot + bounce + burst + rs_codes + hot
+        )
+    )[: max(1, cap)]
 
 
 _day_candidate_codes = day_candidate_codes

@@ -130,8 +130,16 @@ def load_prediction_eval_context(
     ohlcv = pd.read_parquet(path)
     returns_ml = stocks.enrich_daily_returns_for_ml(stocks.daily_returns_table(ohlcv))
     listing = stocks.load_listing()
-    codes = listing["Code"].astype(str).str.zfill(6).tolist()
-    names = {str(r["Code"]).zfill(6): str(r["Name"]) for _, r in listing.iterrows()}
+    codes = [
+        c
+        for c in listing["Code"].astype(str).str.zfill(6).tolist()
+        if stocks.is_common_equity_code(c)
+    ]
+    names = {
+        str(r["Code"]).zfill(6): str(r["Name"])
+        for _, r in listing.iterrows()
+        if stocks.is_common_equity_code(str(r["Code"]).zfill(6))
+    }
 
     ns = news_start or date(target_day.year, max(1, target_day.month - 1), 1)
     news_by = load_news_by_calendar(ns, target_day)

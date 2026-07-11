@@ -409,32 +409,43 @@ def _cheap_prescore_code(
         rl = float(row.get("ret_lag1") or 0.0)
         vs = float(row.get("vol_surge_ratio") or 0.0)
         gap = float(row.get("open_gap") or 0.0)
-        rs_proxy = float(row.get("ret_lag1") or 0.0)  # KS11 없이 근사
+        rs_proxy = float(row.get("ret_lag1") or 0.0)
         rmin5 = float(row.get("ret_min5") or 0.0)
         rmax5 = float(row.get("ret_max5") or 0.0)
-        score += mom * 3.5 + max(0.0, rl) * 10.0 + min(vs, 2.5) * 0.4
-        if rl + 1e-12 >= 0.12:
-            score += 1.2
+        # 모멘텀 가중 완화 — 전일 급등주가 캡을 독점하면 당일 급등 리콜이 무너짐
+        score += mom * 2.2 + max(0.0, min(rl, 0.12)) * 6.0 + min(vs, 2.5) * 0.55
+        if 0.04 <= rl + 1e-12 < 0.12:
+            score += 1.0
+        if rl + 1e-12 >= 0.18:
+            score -= 2.5  # 과열은 must_keep 경로로만 생존
+        elif rl + 1e-12 >= 0.14:
+            score -= 1.0
         if config.PRED_THEME_ROTATION_ENABLED:
             lag_min = float(config.PRED_THEME_ROTATION_LAG_MIN)
             lag_max = float(config.PRED_THEME_ROTATION_LAG_MAX)
             block = float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
             if lag_min <= rl + 1e-12 < min(lag_max, block):
                 sweet = 1.0 - abs(rl - 0.10) / max(0.06, block - lag_min)
-                score += 2.2 + 6.5 * sweet
+                score += 2.8 + 7.0 * sweet
         # 눌림 후 반등·갭 돌파·콜드 RS (캡 컷 완화)
         if rl <= -0.02 and vs + 1e-12 >= 0.06:
-            score += 0.85
+            score += 1.35
         if gap + 1e-12 >= 0.03:
-            score += 1.1 + 4.0 * min(gap, 0.12)
+            score += 1.4 + 5.0 * min(gap, 0.12)
+        if gap + 1e-12 >= 0.08:
+            score += 3.5 + 12.0 * min(gap, 0.25)  # 시가갭 돌파 — 당일 급등 리콜 핵심
         if gap + 1e-12 >= 0.015 and n_hit >= 1:
-            score += 0.9
+            score += 1.1
+        if gap + 1e-12 >= 0.05 and rl + 1e-12 <= 0.05:
+            score += 2.2  # 전일 조용 + 당일 갭 돌파
         if rmin5 <= -0.04 and (gap >= 0.02 or vs >= 0.08):
-            score += 1.35  # 단기 조정 후 재진입
+            score += 1.8
         if rs_proxy + 1e-12 >= 0.06 and rmax5 + 1e-12 < 0.18:
-            score += 0.75  # 과열 아닌 상대강도
-        if rl <= 0.02 and vs + 1e-12 >= 0.12 and n_hit >= 1:
-            score += 1.0  # 뉴스+거래량 급증, 가격은 아직 조용
+            score += 0.9
+        if rl <= 0.03 and vs + 1e-12 >= 0.10 and n_hit >= 1:
+            score += 1.4
+        if rl <= 0.02 and mention + 1e-12 >= 0.35:
+            score += 1.2  # 가격 조용 + 종목 직접 언급
     except (KeyError, TypeError, ValueError):
         pass
     try:
@@ -467,7 +478,7 @@ def _cap_score_codes_for_ml(
     score_codes: list[str],
     *,
     cap: int,
-    must_keep: frozenset[str] | None = None,
+    must_keep: frozenset[str] | list[str] | tuple[str, ...] | None = None,
     target_day: date,
     ohlcv_idx: pd.DataFrame,
     kw_news: frozenset[str],
@@ -475,7 +486,11 @@ def _cap_score_codes_for_ml(
     news_blob: str,
     listing_names: dict[str, str],
 ) -> list[str]:
-    """추론 풀 상한 — 저신호 후보 제외. 핫 업종 peer는 cap 밖이면 하위 슬롯과 교체."""
+    """추론 풀 상한 — 저신호 후보 제외. 핫 업종 peer는 cap 밖이면 하위 슬롯과 교체.
+
+    ``must_keep`` 는 **우선순위 리스트**를 권장합니다. frozenset 만 넘기면 순서가
+    사라져 상위 must 가 swap 한도에 못 들어갈 수 있습니다.
+    """
     if cap <= 0 or len(score_codes) <= cap:
         return score_codes
 
@@ -496,29 +511,18 @@ def _cap_score_codes_for_ml(
     )
     if not must_keep:
         return ranked[:cap]
-    base = ranked[:cap]
-    base_set = {str(c).zfill(6) for c in base}
-    swap_max = int(config.PRED_INDUSTRY_MUST_KEEP_SWAP_MAX)
-    missing = [c for c in must_keep if c not in base_set][:swap_max]
-    if not missing:
-        return base
-    replaceable = sorted(base, key=_prescore)
-    out = list(base)
-    for m in missing:
-        m6 = str(m).zfill(6)
-        if m6 in base_set:
-            continue
-        if not replaceable:
-            break
-        worst = replaceable.pop(0)
-        try:
-            wi = out.index(worst)
-        except ValueError:
-            continue
-        out[wi] = m6
-        base_set.discard(str(worst).zfill(6))
-        base_set.add(m6)
-    return list(dict.fromkeys(out))
+    # 리스트면 호출부 우선순위 유지, set 이면 안정 정렬
+    if isinstance(must_keep, (list, tuple)):
+        must_ordered = [str(c).zfill(6) for c in must_keep]
+    else:
+        must_ordered = sorted(str(c).zfill(6) for c in must_keep)
+    # 상위 must 를 풀 앞쪽에 강제 배치(스왑 한도로 유실되던 버그 제거)
+    score_set = {str(c).zfill(6) for c in score_codes}
+    force = [c for c in must_ordered if c in score_set]
+    force = list(dict.fromkeys(force))[:cap]
+    force_set = set(force)
+    rest = [c for c in ranked if str(c).zfill(6) not in force_set]
+    return list(dict.fromkeys(force + rest))[:cap]
 
 
 def _build_feat_matrix_parallel(
@@ -967,6 +971,16 @@ def fit_or_load_classifier(
     }
     if not force_retrain:
         loaded = _try_load_joblib_bundle(path, fp=fp)
+        loaded_name = path.name if loaded is not None else ""
+        if loaded is None:
+            # 오프라인 평가용 v22q 캐시(지문에 _v22q 접미사) 재사용
+            alt_fp = f"{fp}_v22q"
+            alt_path = _model_path(alt_fp, label_before_exclusive)
+            loaded = _try_load_joblib_bundle(alt_path, fp=alt_fp)
+            if loaded is not None:
+                loaded = dict(loaded)
+                loaded["fp"] = fp
+                loaded_name = alt_path.name
         if loaded is not None:
             bundle["pipeline"] = loaded["pipeline"]
             bundle["reg_pipeline"] = loaded.get("reg_pipeline")
@@ -980,7 +994,7 @@ def fit_or_load_classifier(
                     config.TRAIN_START_DEFAULT,
                     label_before_exclusive,
                 )
-            print(f"ML 랭커: 캐시 로드 {path.name}", flush=True)
+            print(f"ML 랭커: 캐시 로드 {loaded_name}", flush=True)
             return bundle
         if config.ML_REUSE_PRIOR_TRADING_DAY_MODEL:
             try:
@@ -1200,14 +1214,15 @@ def rank_predictions_ml(
     )
     pool_cap = int(config.PRED_ML_SCORE_POOL_CAP)
     n_raw = len(score_codes)
-    must_keep_list = industry_must_keep_codes(
-        returns_ml, target_day, listing_codes
-    )
-    must_keep = frozenset(str(c).zfill(6) for c in must_keep_list)
+    must_keep_list = [
+        str(c).zfill(6)
+        for c in industry_must_keep_codes(returns_ml, target_day, listing_codes)
+        if str(c).zfill(6).isdigit()
+    ]
     score_codes = _cap_score_codes_for_ml(
         score_codes,
         cap=pool_cap,
-        must_keep=must_keep,
+        must_keep=must_keep_list,
         target_day=target_day,
         ohlcv_idx=ohlcv_idx,
         kw_news=kw_news,
@@ -1339,9 +1354,13 @@ def rank_predictions_ml(
     industry_must = industry_must_keep_codes(
         returns_ml, target_day, listing_codes
     )
-    must_enrich_codes = {str(c).zfill(6) for c in industry_must}
+    must_enrich_codes = list(
+        dict.fromkeys(str(c).zfill(6) for c in industry_must)
+    )
     rotation_code_set = {str(c).zfill(6) for c in rotation_must}
-    must_enrich_codes |= rotation_code_set
+    for c in rotation_code_set:
+        if c not in must_enrich_codes:
+            must_enrich_codes.append(c)
     if must_enrich_codes:
         ix_by_code = {
             str(listing_codes[i]).zfill(6): pos for pos, i in enumerate(cand_ix)
@@ -1398,6 +1417,7 @@ def rank_predictions_ml(
             )
             pr.vol_surge_ratio = float(ohlcv_row.get("vol_surge_ratio") or 0.0)
             pr.ret_lag1 = float(ohlcv_row.get("ret_lag1") or 0.0)
+            pr.open_gap = float(ohlcv_row.get("open_gap") or 0.0)
         try:
             row = ohlcv_row if ohlcv_row is not None else ohlcv_idx.loc[(target_day, code)]
             if isinstance(row, pd.DataFrame):

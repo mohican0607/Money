@@ -57,6 +57,12 @@ def _ensure_cache_dir() -> None:
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def is_common_equity_code(code: str) -> bool:
+    """보통주 6자리 숫자 코드만 True(우선주·스팩형 ``35320K`` 등 제외)."""
+    c = str(code).strip()
+    return len(c) == 6 and c.isdigit()
+
+
 def load_listing() -> pd.DataFrame:
     """
     KRX 상장 종목 목록을 로드합니다.

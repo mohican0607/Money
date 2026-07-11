@@ -211,7 +211,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 36
+PREDICTION_FREEZE_SCHEMA_VERSION = 41
 
 # --- 다요인(멀티팩터) 랭킹 가중치 (합≈1, 뉴스 최소) ---
 PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.48)
@@ -230,8 +230,8 @@ PRED_SECTOR_DIVERSITY_MAX_PER_INDUSTRY = _positive_int_env(
 # 최근 거래일 업종 급등 peer 후보·피처 반영 일수
 PRED_INDUSTRY_HEAT_LOOKBACK_DAYS = _positive_int_env("PRED_INDUSTRY_HEAT_LOOKBACK_DAYS", 5)
 PRED_INDUSTRY_LEADER_SLOTS = _positive_int_env("PRED_INDUSTRY_LEADER_SLOTS", 5)
-PRED_INDUSTRY_MUST_KEEP_MAX = _positive_int_env("PRED_INDUSTRY_MUST_KEEP_MAX", 200)
-PRED_INDUSTRY_MUST_KEEP_SWAP_MAX = _positive_int_env("PRED_INDUSTRY_MUST_KEEP_SWAP_MAX", 60)
+PRED_INDUSTRY_MUST_KEEP_MAX = _positive_int_env("PRED_INDUSTRY_MUST_KEEP_MAX", 280)
+PRED_INDUSTRY_MUST_KEEP_SWAP_MAX = _positive_int_env("PRED_INDUSTRY_MUST_KEEP_SWAP_MAX", 180)
 PRED_PREPOOL_HOT_PROMOTE_MAX = _positive_int_env("PRED_PREPOOL_HOT_PROMOTE_MAX", 14)
 # 핫 섹터 내 전일 과열 리더 대신 중간 모멘텀(로테이션) 종목 우선
 PRED_THEME_ROTATION_ENABLED = os.getenv("PRED_THEME_ROTATION_ENABLED", "1").strip().lower() in (
@@ -263,6 +263,7 @@ PRED_HIGH_EXHAUSTION_BLOCK_RET = _float_env("PRED_HIGH_EXHAUSTION_BLOCK_RET", 0.
 # 비과열 후보 풀 최고 ML 대비 상대 하한·절대 하한
 PRED_HIGH_RELATIVE_ML = _float_env("PRED_HIGH_RELATIVE_ML", 0.48)
 PRED_HIGH_ABS_ML_FLOOR = _float_env("PRED_HIGH_ABS_ML_FLOOR", 0.28)
+PRED_HIGH_SELECT_FLOOR = _float_env("PRED_HIGH_SELECT_FLOOR", 0.32)
 PRED_PRECISION_BUCKET_MIN_SAMPLES = _positive_int_env("PRED_PRECISION_BUCKET_MIN_SAMPLES", 8)
 PRED_PRECISION_BUCKET_MIN_RATIO = _float_env("PRED_PRECISION_BUCKET_MIN_RATIO", 0.28)
 PRED_PRECISION_CODE_MIN_TRIES = _positive_int_env("PRED_PRECISION_CODE_MIN_TRIES", 5)
@@ -285,11 +286,11 @@ PRED_USE_DISPLAY_RANK_MAPPING = os.getenv("PRED_USE_DISPLAY_RANK_MAPPING", "0").
 )
 PRED_RANK_POOL_N = _positive_int_env("PRED_RANK_POOL_N", 80)
 # ML 하이브리드 점수 1차 컷 전 finalize(캐리오버·섹터 재랭킹)에 넣을 후보 수
-PRED_ML_FINALIZE_POOL_N = _positive_int_env("PRED_ML_FINALIZE_POOL_N", 180)
+PRED_ML_FINALIZE_POOL_N = _positive_int_env("PRED_ML_FINALIZE_POOL_N", 220)
 # ML predict_proba 대상 상한(후보 리콜↑ — 정확도 우선)
-PRED_ML_SCORE_POOL_CAP = _positive_int_env("PRED_ML_SCORE_POOL_CAP", 400)
+PRED_ML_SCORE_POOL_CAP = _positive_int_env("PRED_ML_SCORE_POOL_CAP", 650)
 # 확률 산출 후 PredictionRow 풀구성·finalize에 쓸 상한
-PRED_ML_ENRICH_TOP_N = _positive_int_env("PRED_ML_ENRICH_TOP_N", 200)
+PRED_ML_ENRICH_TOP_N = _positive_int_env("PRED_ML_ENRICH_TOP_N", 280)
 PRED_ML_FEAT_WORKERS = _positive_int_env("PRED_ML_FEAT_WORKERS", 12)
 # 휴리스틱·ML 후보: 종목 관련(비범용) 키워드 교집합 최소 개수
 PRED_MIN_KEYWORD_HITS = _positive_int_env("PRED_MIN_KEYWORD_HITS", 2)

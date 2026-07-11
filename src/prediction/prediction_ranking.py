@@ -188,6 +188,7 @@ def enrich_prediction_rows_from_returns_ml(
             )
             row.vol_surge_ratio = float(ohlcv_row.get("vol_surge_ratio") or 0.0)
             row.ret_lag1 = float(ohlcv_row.get("ret_lag1") or 0.0)
+            row.open_gap = float(ohlcv_row.get("open_gap") or 0.0)
             row.investor_flow_score = float(ohlcv_row.get("investor_flow_score") or 0.0)
             row.foreign_net_vol_ratio = float(
                 ohlcv_row.get("foreign_net_vol_ratio_lag1") or 0.0
@@ -890,6 +891,19 @@ def rank_score_for_row(row: PredictionRow) -> float:
         s *= max(0.40, 1.0 - 0.55 * drop)
     if ml_n + 1e-12 >= 0.72:
         s = min(1.0, s + 0.05)
+    # 전일 과열 추격 억제 · 조용한 ML 강신호·시가갭 돌파 가산 (Hit@K)
+    rl = float(getattr(row, "ret_lag1", 0.0) or 0.0)
+    gap = float(getattr(row, "open_gap", 0.0) or 0.0)
+    if rl + 1e-12 >= 0.18:
+        s *= 0.80
+    elif rl + 1e-12 >= 0.14:
+        s *= 0.90
+    elif rl + 1e-12 < 0.08 and ml_n + 1e-12 >= 0.45:
+        s = min(1.0, s + 0.07)
+    if gap + 1e-12 >= 0.06 and rl + 1e-12 < 0.12:
+        s = min(1.0, s + 0.08 + 0.35 * min(gap, 0.20))
+    elif gap + 1e-12 >= 0.03 and rl + 1e-12 < 0.08:
+        s = min(1.0, s + 0.04)
     return s
 
 
@@ -1704,7 +1718,7 @@ def passes_precision_gate(
     if top_ml > 1e-9 and ml + 1e-12 < top_ml * rel:
         return False
     sel = high_precision_select_score(row)
-    if sel + 1e-12 < 0.32:
+    if sel + 1e-12 < float(config.PRED_HIGH_SELECT_FLOOR):
         return False
     pillars = _pillar_scores(row)
     non_news = count_non_news_strong_pillars(pillars, threshold=0.40)

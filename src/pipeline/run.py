@@ -312,8 +312,16 @@ def _run_pipeline(
     correlation_rows = kw_cooccur.most_common(40)
 
     listing = stocks.load_listing()
-    codes = listing["Code"].astype(str).str.zfill(6).tolist()
-    names = dict(zip(codes, listing["Name"].astype(str)))
+    codes = [
+        c
+        for c in listing["Code"].astype(str).str.zfill(6).tolist()
+        if stocks.is_common_equity_code(c)
+    ]
+    names = {
+        str(r["Code"]).zfill(6): str(r["Name"])
+        for _, r in listing.iterrows()
+        if stocks.is_common_equity_code(str(r["Code"]).zfill(6))
+    }
     market_by_code = stocks.market_segment_by_code()
 
     if config.PRED_INVESTOR_FLOW_ENABLED:
