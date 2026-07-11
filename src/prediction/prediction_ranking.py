@@ -45,11 +45,61 @@ def prior_day_exhaustion_penalty(row: PredictionRow) -> float:
 
 
 def prior_day_exhaustion_blocks_confidence(row: PredictionRow) -> bool:
-    """전일 15%+ 급등(기본) 종목은 고·중 확신 슬롯에서 제외."""
+    """전일 급등(기본 18%+) 종목은 고·중 확신 슬롯에서 제외."""
     if not config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED:
         return False
     lag = float(getattr(row, "ret_lag1", 0.0) or 0.0)
     return lag + 1e-12 >= float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
+
+
+def blocks_high_confidence(row: PredictionRow) -> bool:
+    """
+    고확신 전용 차단 — 중확신보다 엄격.
+
+    전일 이미 크게 오른 종목·급락 반등 추격·상한가 연속은 high 에서 제외해 정밀도를 올립니다.
+    """
+    if prior_day_exhaustion_blocks_confidence(row):
+        return True
+    lag = float(getattr(row, "ret_lag1", 0.0) or 0.0)
+    if lag + 1e-12 >= float(config.PRED_HIGH_EXHAUSTION_BLOCK_RET):
+        return True
+    if prior_day_drop_penalty(row) + 1e-12 >= 0.85:
+        return True
+    # 전일 상한가권 연속은 익일 추격 실패가 많음
+    try:
+        lim_proxy = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+        if lag + 1e-12 >= 0.18 and lim_proxy + 1e-12 >= 0.35:
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def high_precision_select_score(row: PredictionRow) -> float:
+    """
+    고확신 선정용 점수 — 하이브리드·ML 합의 + 전일 과열 페널티 + 로테이션 가산.
+    """
+    ml = _ml_rank_signal(row)
+    h = hybrid_rank_score(row)
+    ml_n = min(1.0, ml / 0.55) if ml > 0 else 0.0
+    score = 0.50 * ml_n + 0.50 * h
+    rl = float(getattr(row, "ret_lag1", 0.0) or 0.0)
+    if 0.03 <= rl + 1e-12 < 0.10:
+        score += 0.10
+    elif 0.0 <= rl + 1e-12 < 0.03:
+        score += 0.04
+    elif rl + 1e-12 >= 0.10:
+        score -= 0.20 * min(1.0, (rl - 0.10) / 0.08)
+    rot = theme_rotation_score(row)
+    if rot + 1e-12 >= 0.28:
+        score += 0.08 * rot
+    burst = sector_burst_rotation_bonus(row)
+    if burst > 0 and rl + 1e-12 < 0.10:
+        score += 0.06 * burst
+    pillars = compute_pillar_scores(row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None))
+    if pillars["news"] + 1e-12 >= 0.55 and count_non_news_strong_pillars(pillars, threshold=0.40) < 1:
+        score *= 0.72
+    return float(score)
 
 
 def prior_day_drop_penalty(row: PredictionRow) -> float:
@@ -158,16 +208,19 @@ def _promote_theme_rotation_confidence(
     high_n: int,
     mid_n: int,
 ) -> tuple[int, int]:
-    """로테이션 후보를 고·중 확신 슬롯에 추가 배정합니다."""
+    """로테이션 후보는 **중확신만** 보강(고확신은 정밀 게이트 전용 — 정밀도 보호)."""
     if not config.PRED_THEME_ROTATION_ENABLED:
         return high_n, mid_n
     tier_min = float(config.PRED_THEME_ROTATION_TIER_MIN)
     for row in ranked:
-        if high_n >= max_high and mid_n >= max_mid:
+        if mid_n >= max_mid:
             break
         if row.confidence_tier in ("high", "mid"):
             continue
         if prior_day_exhaustion_blocks_confidence(row):
+            continue
+        if blocks_high_confidence(row):
+            # 과열은 mid 도 스킵
             continue
         rot = theme_rotation_score(row)
         if rot + 1e-12 < tier_min:
@@ -177,12 +230,8 @@ def _promote_theme_rotation_confidence(
         )
         if count_non_news_strong_pillars(pillars, threshold=0.34) < 1:
             continue
-        if high_n < max_high:
-            row.confidence_tier = "high"
-            high_n += 1
-        elif mid_n < max_mid:
-            row.confidence_tier = "mid"
-            mid_n += 1
+        row.confidence_tier = "mid"
+        mid_n += 1
     return high_n, mid_n
 
 
@@ -665,10 +714,11 @@ def assign_hybrid_confidence_tiers(
     *,
     regime_scale: float = 1.0,
 ) -> None:
-    """하이브리드 순위 + 이중 신호(뉴스∩모멘텀)로 고·중 확신 부여."""
+    """하이브리드 순위 + 이중 신호로 고·중 확신 부여(고확신은 비과열·ML 합의 우선)."""
     rs = max(0.25, float(regime_scale))
     max_high = max(1, int(round(int(config.PRED_OUTPUT_MAX) * rs)))
     max_mid = max(1, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
+    # 최종 high 는 refine 이 다시 고름 — 여기선 후보만 넉넉히 mid/high 표시
     high_floor = max(0.08, float(config.PRED_ML_HIGH_CONFIDENCE_PROB)) / rs
     mid_floor = max(0.045, float(config.PRED_ML_MID_CONFIDENCE_PROB)) / rs
 
@@ -678,23 +728,41 @@ def assign_hybrid_confidence_tiers(
     if not pool:
         return
 
-    ranked = sorted(pool, key=hybrid_rank_score, reverse=True)
-    top_hybrid = hybrid_rank_score(ranked[0])
+    ranked = sorted(pool, key=rank_score_for_row, reverse=True)
+    top_hybrid = hybrid_rank_score(ranked[0]) if ranked else 0.0
     high_n = mid_n = 0
 
+    # 고확신 1차: 비과열 + 선정점수 상위만
+    high_cand = sorted(
+        (r for r in ranked if not blocks_high_confidence(r)),
+        key=high_precision_select_score,
+        reverse=True,
+    )
+    top_sel = high_precision_select_score(high_cand[0]) if high_cand else 0.0
+    for pos, row in enumerate(high_cand, start=1):
+        if high_n >= max_high or pos > 10:
+            break
+        sel = high_precision_select_score(row)
+        ml = _ml_rank_signal(row)
+        if sel + 1e-12 < max(0.35, top_sel * 0.55):
+            continue
+        if ml + 1e-12 < float(config.PRED_HIGH_ABS_ML_FLOOR) * 0.85:
+            continue
+        if not _dual_signal_ok(row, hybrid=hybrid_rank_score(row), top_hybrid=top_hybrid):
+            # 이중신호 실패여도 ML·선정점수가 매우 높으면 허용
+            if ml + 1e-12 < 0.45 or sel + 1e-12 < 0.55:
+                continue
+        row.confidence_tier = "high"
+        high_n += 1
+
     for pos, row in enumerate(ranked, start=1):
+        if row.confidence_tier == "high":
+            continue
         h = hybrid_rank_score(row)
-        ml = float(row.ml_prob or 0.0)
+        ml = _ml_rank_signal(row)
         if prior_day_exhaustion_blocks_confidence(row):
             continue
-        # 고확신: 상위 8위 이내 + 하이브리드·이중신호(비뉴스 기둥) 통과
-        if high_n < max_high and pos <= 12 and h + 1e-12 >= high_floor and _dual_signal_ok(
-            row, hybrid=h, top_hybrid=top_hybrid
-        ):
-            row.confidence_tier = "high"
-            high_n += 1
-            continue
-        mid_ok = h + 1e-12 >= mid_floor
+        mid_ok = h + 1e-12 >= mid_floor or ml + 1e-12 >= mid_floor
         nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
         nh = int(getattr(row, "keyword_hits", 0) or 0)
         if not mid_ok and nctx + 1e-12 >= 0.45 and nh >= 1:
@@ -702,8 +770,11 @@ def assign_hybrid_confidence_tiers(
         if (
             mid_n < max_mid
             and mid_ok
-            and not prior_day_exhaustion_blocks_confidence(row)
-            and (ml + 1e-12 >= mid_floor * 0.70 or float(row.momentum_score or 0) >= 0.28 or nctx + 1e-12 >= 0.40)
+            and (
+                ml + 1e-12 >= mid_floor * 0.70
+                or float(row.momentum_score or 0) >= 0.28
+                or nctx + 1e-12 >= 0.40
+            )
         ):
             row.confidence_tier = "mid"
             mid_n += 1
@@ -715,7 +786,8 @@ def assign_hybrid_confidence_tiers(
             row.confidence_tier = "mid"
             mid_n += 1
 
-    if high_n < max_high and config.PRED_SECTOR_RESCUE_HIGH_ENABLED:
+    # 섹터 구조 승격은 mid 만 (high 정밀도 보호)
+    if mid_n < max_mid and config.PRED_SECTOR_RESCUE_HIGH_ENABLED:
         sector_ranked = sorted(
             ranked,
             key=lambda r: (
@@ -726,11 +798,11 @@ def assign_hybrid_confidence_tiers(
             reverse=True,
         )
         for row in sector_ranked:
-            if high_n >= max_high:
+            if mid_n >= max_mid:
                 break
-            if row.confidence_tier == "high":
+            if row.confidence_tier in ("high", "mid"):
                 continue
-            if prior_day_exhaustion_blocks_confidence(row):
+            if blocks_high_confidence(row):
                 continue
             lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
             sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
@@ -740,8 +812,8 @@ def assign_hybrid_confidence_tiers(
                 row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
             )
             if count_non_news_strong_pillars(pillars, threshold=0.36) >= 1:
-                row.confidence_tier = "high"
-                high_n += 1
+                row.confidence_tier = "mid"
+                mid_n += 1
 
     rot_ranked = sorted(ranked, key=theme_rotation_score, reverse=True)
     high_n, mid_n = _promote_theme_rotation_confidence(
@@ -757,7 +829,7 @@ def assign_hybrid_confidence_tiers(
             break
         if row.confidence_tier != "none":
             continue
-        ml = float(row.ml_prob or 0.0)
+        ml = _ml_rank_signal(row)
         pillars = compute_pillar_scores(
             row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
         )
@@ -1609,51 +1681,48 @@ def passes_precision_gate(
     feedback_ctx: dict[str, object] | None = None,
 ) -> bool:
     """
-    고확신 슬롯 승격 조건: 순위·확신·비뉴스 기둥·ML 절대/상대 하한·피드백 버킷·종목 이력.
+    고확신 슬롯 승격 조건(정밀도 우선).
 
-    ``top_ml`` 은 당일 풀 최고 ML 확률(상대 하한 ``PRED_ML_HIGH_RELATIVE_PROB`` 용).
+    - 비과열(``blocks_high_confidence``) 필수
+    - ML 절대·상대 하한은 **비과열 풀** 최고점 기준
+    - 기둥 합의는 완화하되 뉴스 단독은 차단
     """
+    if blocks_high_confidence(row):
+        return False
     if rank_position > int(config.PRED_PRECISION_MAX_RANK):
         return False
-    conv = precision_conviction_score(row)
-    if conv + 1e-12 < float(config.PRED_PRECISION_MIN_CONVICTION):
-        return False
-    pillars = _pillar_scores(row)
-    non_news = count_non_news_strong_pillars(pillars, threshold=0.46)
-    if non_news < int(config.PRED_PRECISION_MIN_PILLARS):
-        return False
     ml = _ml_rank_signal(row)
-    # raw 혼합점수 하한(보정 확률 하한보다 높게 — 변별력)
-    if getattr(row, "ml_rank_score", None) is not None:
-        floor = max(0.18, float(config.PRED_PRECISION_ML_FLOOR) * 2.5)
-    else:
-        floor = max(
+    abs_floor = float(config.PRED_HIGH_ABS_ML_FLOOR)
+    if getattr(row, "ml_rank_score", None) is None:
+        abs_floor = max(
             float(config.PRED_ML_HIGH_CONFIDENCE_PROB),
             float(config.PRED_PRECISION_ML_FLOOR),
         )
-    if ml + 1e-12 < floor:
+    if ml + 1e-12 < abs_floor:
         return False
-    if top_ml > 1e-9 and ml + 1e-12 < top_ml * float(config.PRED_ML_HIGH_RELATIVE_PROB):
+    rel = float(config.PRED_HIGH_RELATIVE_ML)
+    if top_ml > 1e-9 and ml + 1e-12 < top_ml * rel:
         return False
-    if pillars["news"] + 1e-12 >= 0.52 and non_news < 2:
+    sel = high_precision_select_score(row)
+    if sel + 1e-12 < 0.32:
         return False
-    non_news_signals = 0
-    if pillars["momentum"] + 1e-12 >= 0.40:
-        non_news_signals += 1
-    if pillars["flow"] + 1e-12 >= 0.40:
-        non_news_signals += 1
-    if pillars["relative_strength"] + 1e-12 >= 0.38:
-        non_news_signals += 1
-    if pillars["sector"] + 1e-12 >= 0.42:
-        non_news_signals += 1
-    if pillars["ml"] + 1e-12 >= 0.45:
-        non_news_signals += 1
-    if non_news_signals < 2:
+    pillars = _pillar_scores(row)
+    non_news = count_non_news_strong_pillars(pillars, threshold=0.40)
+    if non_news < int(config.PRED_PRECISION_MIN_PILLARS) and ml + 1e-12 < 0.45:
         return False
-    if not _bucket_ok(row, feedback_ctx):
+    if pillars["news"] + 1e-12 >= 0.55 and non_news < 1:
         return False
+    # 과열 모멘텀만 강한 경우 배제
+    if pillars["momentum"] + 1e-12 >= 0.70 and float(getattr(row, "ret_lag1", 0.0) or 0.0) >= 0.10:
+        if ml + 1e-12 < abs_floor + 0.15:
+            return False
     if not _code_history_ok(str(row.code).zfill(6)):
         return False
+    # 버킷은 표본 부족 시 통과 — 너무 공격적인 탈락 방지
+    if not _bucket_ok(row, feedback_ctx):
+        # ML·선정점수가 매우 높으면 버킷 실패 무시
+        if ml + 1e-12 < abs_floor + 0.20 or sel + 1e-12 < 0.50:
+            return False
     return True
 
 
@@ -1664,29 +1733,38 @@ def refine_confidence_tiers(
     regime_scale: float = 1.0,
 ) -> None:
     """
-    하이브리드 tier 부여 후 ``confidence_tier=high`` 를 정밀 게이트로 재필터링합니다.
+    고확신을 **비과열 후보 + 정밀 선정점수**로 재구성합니다.
 
-    통과 종목만 ``high`` 유지, 기존 ``high`` 미통과는 ``mid`` 로 강등. ``PRED_PRECISION_GATE_ENABLED=0`` 이면 no-op.
+    과열 종목이 ML 최상위를 차지해도 top_ml 기준을 오염시키지 않으며,
+    슬롯을 억지로 채우지 않습니다(정밀도 > 개수).
     """
     if not pool or not config.PRED_PRECISION_GATE_ENABLED:
         return
     rs = max(0.25, float(regime_scale))
     max_high = max(1, int(round(int(config.PRED_PRECISION_MAX_HIGH) * rs)))
-    top_ml = max((_ml_rank_signal(r) for r in pool), default=0.0)
-    ranked = sorted(
-        pool,
-        key=lambda r: (precision_conviction_score(r), _ml_rank_signal(r)),
-        reverse=True,
-    )
+
+    # 기존 high 전부 해제 후 재선정
+    for row in pool:
+        if str(getattr(row, "confidence_tier", "")) == "high":
+            row.confidence_tier = "mid"
+
+    eligible = [r for r in pool if not blocks_high_confidence(r)]
+    if not eligible:
+        return
+
+    top_ml = max((_ml_rank_signal(r) for r in eligible), default=0.0)
+    ranked = sorted(eligible, key=high_precision_select_score, reverse=True)
+
     promoted: list[str] = []
     for pos, row in enumerate(ranked, start=1):
         if len(promoted) >= max_high:
             break
+        # 약한 ML 단독 승격 방지(빈 슬롯이 오탐보다 나음)
+        if _ml_rank_signal(row) + 1e-12 < 0.38:
+            continue
         if not passes_precision_gate(
             row, top_ml=top_ml, rank_position=pos, feedback_ctx=feedback_ctx
         ):
-            continue
-        if prior_day_exhaustion_blocks_confidence(row):
             continue
         promoted.append(str(row.code).zfill(6))
 
@@ -1697,60 +1775,6 @@ def refine_confidence_tiers(
             row.confidence_tier = "high"
         elif str(getattr(row, "confidence_tier", "")) == "high":
             row.confidence_tier = "mid"
-
-    if promoted and config.PRED_SECTOR_RESCUE_HIGH_ENABLED:
-        # 섹터 열기 상위 1~2종 추가 승격(정밀 게이트 통과분 외 리콜 보강).
-        extra_n = max(0, min(2, max_high - len(promoted)))
-        if extra_n:
-            rescue_ranked = sorted(
-                pool,
-                key=lambda r: (
-                    float(getattr(r, "industry_limit_up_heat", 0.0) or 0.0)
-                    + float(getattr(r, "industry_momentum", 0.0) or 0.0)
-                    + float(getattr(r, "momentum_score", 0.0) or 0.0),
-                    hybrid_rank_score(r),
-                ),
-                reverse=True,
-            )
-            added = 0
-            for row in rescue_ranked:
-                if added >= extra_n:
-                    break
-                code = str(row.code).zfill(6)
-                if code in promoted_set:
-                    continue
-                lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
-                sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
-                if lim + 1e-12 < 0.14 and sec + 1e-12 < 0.20:
-                    continue
-                row.confidence_tier = "high"
-                promoted_set.add(code)
-                added += 1
-        return
-
-    if not config.PRED_SECTOR_RESCUE_HIGH_ENABLED:
-        return
-
-    # 정밀 게이트가 전원 탈락 시: 전일·섹터 모멘텀 상위 1~3종만 고확신 승격(리콜 구제).
-    rescue_n = max(1, min(3, max_high))
-    rescue_ranked = sorted(
-        pool,
-        key=lambda r: (
-            float(getattr(r, "industry_limit_up_heat", 0.0) or 0.0)
-            + float(getattr(r, "momentum_score", 0.0) or 0.0)
-            + float(getattr(r, "industry_momentum", 0.0) or 0.0)
-            + 0.5 * float(getattr(r, "industry_theme_overlap", 0.0) or 0.0),
-            hybrid_rank_score(r),
-        ),
-        reverse=True,
-    )
-    for row in rescue_ranked[:rescue_n]:
-        mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
-        sec = float(getattr(row, "industry_momentum", 0.0) or 0.0)
-        lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
-        if mom + 1e-12 < 0.22 and sec + 1e-12 < 0.18 and lim + 1e-12 < 0.15:
-            continue
-        row.confidence_tier = "high"
 
 
 def compute_hit_at_k_metrics(
