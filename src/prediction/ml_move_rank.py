@@ -408,6 +408,10 @@ def _cheap_prescore_code(
         mom = pred_hybrid.momentum_raw_from_row(row)
         rl = float(row.get("ret_lag1") or 0.0)
         vs = float(row.get("vol_surge_ratio") or 0.0)
+        gap = float(row.get("open_gap") or 0.0)
+        rs_proxy = float(row.get("ret_lag1") or 0.0)  # KS11 없이 근사
+        rmin5 = float(row.get("ret_min5") or 0.0)
+        rmax5 = float(row.get("ret_max5") or 0.0)
         score += mom * 3.5 + max(0.0, rl) * 10.0 + min(vs, 2.5) * 0.4
         if rl + 1e-12 >= 0.12:
             score += 1.2
@@ -418,8 +422,19 @@ def _cheap_prescore_code(
             if lag_min <= rl + 1e-12 < min(lag_max, block):
                 sweet = 1.0 - abs(rl - 0.10) / max(0.06, block - lag_min)
                 score += 2.2 + 6.5 * sweet
+        # 눌림 후 반등·갭 돌파·콜드 RS (캡 컷 완화)
         if rl <= -0.02 and vs + 1e-12 >= 0.06:
             score += 0.85
+        if gap + 1e-12 >= 0.03:
+            score += 1.1 + 4.0 * min(gap, 0.12)
+        if gap + 1e-12 >= 0.015 and n_hit >= 1:
+            score += 0.9
+        if rmin5 <= -0.04 and (gap >= 0.02 or vs >= 0.08):
+            score += 1.35  # 단기 조정 후 재진입
+        if rs_proxy + 1e-12 >= 0.06 and rmax5 + 1e-12 < 0.18:
+            score += 0.75  # 과열 아닌 상대강도
+        if rl <= 0.02 and vs + 1e-12 >= 0.12 and n_hit >= 1:
+            score += 1.0  # 뉴스+거래량 급증, 가격은 아직 조용
     except (KeyError, TypeError, ValueError):
         pass
     try:
@@ -808,7 +823,6 @@ def _build_training_arrays(
         }
         for _, r in pos_df.iterrows():
             code = str(r["Code"]).zfill(6)
-            in_pool = not cand_set or code in cand_set
             name = str(names.get(code, r.get("Name", "")))
             fv = _train_feat(code, name, blob, kw_news, d, tw, today_v)
             try:
@@ -816,9 +830,21 @@ def _build_training_arrays(
             except (TypeError, ValueError):
                 act_ret = 0.0
             _append_row(fv, 1, act_ret, d)
-            # 풀 밖 급등도 한 번 더 강조(리콜 학습)
-            if not in_pool:
-                _append_row(fv, 1, act_ret, d, extra_w=1.25)
+            # 1차 컷에서 밀릴 급등(저 프리점수)은 리콜용으로 가중
+            try:
+                ps = _cheap_prescore_code(
+                    code,
+                    target_day=d,
+                    ohlcv_idx=ohlcv_idx,
+                    kw_news=kw_news,
+                    profile=ctx[1],
+                    news_blob=blob,
+                    listing_names=names,
+                )
+            except Exception:
+                ps = 99.0
+            if ps < 4.0:
+                _append_row(fv, 1, act_ret, d, extra_w=1.35)
             if boost_dup > 0 and (d_iso, code) in pos_boost:
                 for _ in range(boost_dup):
                     _append_row(fv, 1, act_ret, d, extra_w=1.15)
@@ -1289,15 +1315,15 @@ def rank_predictions_ml(
         )
     else:
         rank_score = np.asarray(proba_raw, dtype=np.float64)
-    # 표시·게이트용 보정 확률(랭킹 순서와 별도)
+    # 보정 테이블은 분류 raw 확률 기준 — 혼합 rank_score 에 적용하면 왜곡됨
     proba = np.asarray(
         [
             calibrate_ml_probability(float(p), cal_table=cal_table, base_rate=cal_base)
-            for p in rank_score
+            for p in proba_raw
         ],
         dtype=np.float64,
     )
-    # 상위 선정은 rank_score, PredictionRow.ml_prob 은 보정값
+    # 상위 선정은 rank_score; ml_prob=보정, ml_rank_score=혼합
     order = np.argsort(-rank_score)
     eval_k = max(config.PRED_EVAL_HIT_AT_K) if config.PRED_EVAL_HIT_AT_K else 40
     finalize_n = max(
@@ -1362,6 +1388,7 @@ def rank_predictions_ml(
             continue
         p = float(proba[int(fi)])
         pr.ml_prob = p
+        pr.ml_rank_score = float(rank_score[int(fi)])
         pr.ks11_ret_lag1 = ks11_ret
         pr.momentum_score = momentum_for_code(ohlcv_idx, code, target_day)
         ohlcv_row = ohlcv_row_for_code(ohlcv_idx, code, target_day)

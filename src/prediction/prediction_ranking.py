@@ -216,13 +216,29 @@ def relative_strength_from_row(
     return _clamp01((excess + 0.015) / 0.10)
 
 
+def _ml_rank_signal(row: PredictionRow) -> float:
+    """하이브리드·정렬용 ML 신호: raw 혼합점수 우선, 없으면 보정 ml_prob."""
+    raw = getattr(row, "ml_rank_score", None)
+    if raw is not None:
+        try:
+            v = float(raw)
+            if math.isfinite(v) and v > 0.0:
+                return v
+        except (TypeError, ValueError):
+            pass
+    try:
+        return float(getattr(row, "ml_prob", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def compute_pillar_scores(
     row: PredictionRow,
     *,
     ks11_ret_lag1: float | None = None,
 ) -> dict[str, float]:
     """0~1 기둥 점수: ml·모멘텀·수급·상대강도·섹터·뉴스·시장."""
-    ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
+    ml = _ml_rank_signal(row)
     nh = int(getattr(row, "keyword_hits", 0) or 0)
     mention = float(getattr(row, "mention_score", 0.0) or 0.0)
     nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
@@ -245,9 +261,11 @@ def compute_pillar_scores(
     ):
         sector = min(1.0, sector + 0.14 * ind_lim + 0.08 * br_hot + 0.06 * ind_ov)
     news = _clamp01(0.35 * nctx + 0.35 * min(1.0, nh / 4.0) + 0.30 * min(mention, 1.0))
+    # raw 혼합점수는 보정확률보다 스케일이 큼 → 0.35 기준 정규화
+    ml_scale = 0.35 if getattr(row, "ml_rank_score", None) is not None else 0.15
 
     return {
-        "ml": _clamp01(ml / 0.15),
+        "ml": _clamp01(ml / ml_scale),
         "momentum": _clamp01(mom / 0.55),
         "flow": flow,
         "relative_strength": rs,
@@ -272,7 +290,7 @@ def multi_factor_rank_score(
     w_news = float(config.PRED_FACTOR_W_NEWS)
     w_mkt = float(config.PRED_FACTOR_W_MARKET)
 
-    ml_v = float(getattr(row, "ml_prob", 0.0) or 0.0)
+    ml_v = _ml_rank_signal(row)
     if ml_v <= 0:
         s = (
             0.38 * p["momentum"]
@@ -537,8 +555,9 @@ def hybrid_rank_score(row: PredictionRow) -> float:
 def recall_presort_score(row: PredictionRow) -> float:
     """finalize 풀 선정용 — ML·하이브리드·모멘텀·섹터열기 중 강한 신호를 반영."""
     h = hybrid_rank_score(row)
-    ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
-    ml_n = min(1.0, ml / 0.11) if ml > 0 else 0.0
+    ml = _ml_rank_signal(row)
+    ml_den = 0.40 if getattr(row, "ml_rank_score", None) is not None else 0.11
+    ml_n = min(1.0, ml / ml_den) if ml > 0 else 0.0
     mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
     sec = max(
         float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0),
@@ -754,14 +773,16 @@ def assign_hybrid_confidence_tiers(
 def rank_score_for_row(row: PredictionRow) -> float:
     """행의 최종 랭킹 점수 — ML 확률·업종열기가 있으면 하이브리드보다 가중."""
     h = hybrid_rank_score(row)
-    ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
+    ml = _ml_rank_signal(row)
     prior = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
     lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
     sec_br = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
     burst = sector_burst_rotation_bonus(row)
     if ml <= 0:
         return min(1.0, h + burst)
-    ml_n = min(1.0, ml / 0.11)
+    # raw 혼합점수 스케일(보정 0.11 대비 완화) — 순위 변별력 유지
+    ml_den = 0.40 if getattr(row, "ml_rank_score", None) is not None else 0.11
+    ml_n = min(1.0, ml / ml_den)
     if (
         burst + 1e-12 >= float(config.PRED_SECTOR_BURST_RANK_MIN)
         and prior + 1e-12 < float(config.PRED_SECTOR_BURST_PRIOR_MAX)
@@ -771,21 +792,22 @@ def rank_score_for_row(row: PredictionRow) -> float:
             h,
             min(
                 1.0,
-                0.62 * h
-                + 0.18 * ml_n
-                + 0.28 * burst
-                + 0.14 * lim
-                + 0.10 * sec_br,
+                0.55 * h
+                + 0.28 * ml_n
+                + 0.22 * burst
+                + 0.12 * lim
+                + 0.08 * sec_br,
             ),
         )
     else:
-        s = max(h, 0.40 * h + 0.60 * ml_n)
+        # ML 정렬을 더 강하게 보존(하이브리드가 순위를 과도하게 뒤집지 않도록)
+        s = max(h, 0.28 * h + 0.72 * ml_n)
     if ml_n + 1e-12 >= 0.55 and (prior + 1e-12 >= 0.18 or lim + 1e-12 >= 0.14):
         s = min(1.0, s + 0.09)
     if sec_br + 1e-12 >= 0.35 and ml_n + 1e-12 >= 0.40:
         s = min(1.0, s + 0.07)
     if burst > 0:
-        s = min(1.0, s + 0.65 * burst)
+        s = min(1.0, s + 0.50 * burst)
     rot = theme_rotation_score(row)
     if rot + 1e-12 >= 0.32 and ml_n + 1e-12 >= 0.28:
         s = min(1.0, s + 0.11 * rot)
@@ -1155,13 +1177,13 @@ def _ml_high_signal_ok(row: PredictionRow, *, rank_position: int) -> bool:
 
 
 def _pool_top_ml_prob(pool: list[PredictionRow]) -> float:
-    """풀 내 유한한 ML 확률의 최댓값(상대 확신 게이트용)."""
-    top = 0.0
+    """풀 내 최고 ML 신호(raw 혼합점수 우선, 상대 확신 게이트용)."""
+    best = 0.0
     for row in pool:
-        mp = getattr(row, "ml_prob", None)
-        if mp is not None and math.isfinite(float(mp)):
-            top = max(top, float(mp))
-    return top
+        v = _ml_rank_signal(row)
+        if v > best:
+            best = v
+    return best
 
 
 def assign_confidence_tiers_by_rank(
@@ -1192,22 +1214,34 @@ def assign_confidence_tiers_by_rank(
         score = float(getattr(row, "score", 0.0) or 0.0)
         raw_ml = getattr(row, "ml_prob", None)
         has_ml = raw_ml is not None and math.isfinite(float(raw_ml))
+        rank_sig = _ml_rank_signal(row)
 
         if prob + 1e-12 < min_out and score + 1e-12 < min_score:
             continue
 
         if has_ml:
-            rel_ok = top_prob <= 0 or prob + 1e-12 >= top_prob * rel_hi
+            # 상대 하한은 raw 혼합점수 기준(보정 상한 0.42 뭉개짐 방지)
+            rel_ok = top_prob <= 0 or rank_sig + 1e-12 >= top_prob * rel_hi
+            high_ok = (
+                rank_sig + 1e-12 >= 0.22
+                if getattr(row, "ml_rank_score", None) is not None
+                else prob + 1e-12 >= high_thr
+            )
             if (
                 high_n < max_high
-                and prob + 1e-12 >= high_thr
+                and high_ok
                 and rel_ok
                 and _ml_high_signal_ok(row, rank_position=pos)
             ):
                 row.confidence_tier = "high"
                 high_n += 1
                 continue
-            if mid_n < max_mid and prob + 1e-12 >= mid_thr:
+            mid_ok = (
+                rank_sig + 1e-12 >= 0.12
+                if getattr(row, "ml_rank_score", None) is not None
+                else prob + 1e-12 >= mid_thr
+            )
+            if mid_n < max_mid and mid_ok:
                 row.confidence_tier = "mid"
                 mid_n += 1
                 continue
@@ -1588,11 +1622,15 @@ def passes_precision_gate(
     non_news = count_non_news_strong_pillars(pillars, threshold=0.46)
     if non_news < int(config.PRED_PRECISION_MIN_PILLARS):
         return False
-    ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
-    floor = max(
-        float(config.PRED_ML_HIGH_CONFIDENCE_PROB),
-        float(config.PRED_PRECISION_ML_FLOOR),
-    )
+    ml = _ml_rank_signal(row)
+    # raw 혼합점수 하한(보정 확률 하한보다 높게 — 변별력)
+    if getattr(row, "ml_rank_score", None) is not None:
+        floor = max(0.18, float(config.PRED_PRECISION_ML_FLOOR) * 2.5)
+    else:
+        floor = max(
+            float(config.PRED_ML_HIGH_CONFIDENCE_PROB),
+            float(config.PRED_PRECISION_ML_FLOOR),
+        )
     if ml + 1e-12 < floor:
         return False
     if top_ml > 1e-9 and ml + 1e-12 < top_ml * float(config.PRED_ML_HIGH_RELATIVE_PROB):
@@ -1634,13 +1672,10 @@ def refine_confidence_tiers(
         return
     rs = max(0.25, float(regime_scale))
     max_high = max(1, int(round(int(config.PRED_PRECISION_MAX_HIGH) * rs)))
-    top_ml = max(
-        (float(getattr(r, "ml_prob", 0.0) or 0.0) for r in pool),
-        default=0.0,
-    )
+    top_ml = max((_ml_rank_signal(r) for r in pool), default=0.0)
     ranked = sorted(
         pool,
-        key=lambda r: (precision_conviction_score(r), float(getattr(r, "ml_prob", 0.0) or 0.0)),
+        key=lambda r: (precision_conviction_score(r), _ml_rank_signal(r)),
         reverse=True,
     )
     promoted: list[str] = []

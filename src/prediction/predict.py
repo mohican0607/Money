@@ -194,6 +194,8 @@ class PredictionRow:
     matched_keywords: list[str]
     reasons: list[str]
     ml_prob: float | None = None
+    # ML raw 혼합 점수(분류+회귀) — 하이브리드·Hit@K 정렬용. 보정 ml_prob 과 분리.
+    ml_rank_score: float | None = None
     momentum_score: float = 0.0
     news_context_score: float = 0.0
     keyword_hits: int = 0
