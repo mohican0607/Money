@@ -8,7 +8,7 @@ from typing import Any
 
 import pandas as pd
 
-from .. import config, news, stocks, trading_calendar
+from .. import config, news, stocks
 from ..learning import support as train_snapshot
 from ..prediction import ml_move_rank, predict, prediction_ranking
 from ..prediction.candidate_pool import day_candidate_codes
@@ -135,8 +135,7 @@ def load_prediction_eval_context(
 
     ns = news_start or date(target_day.year, max(1, target_day.month - 1), 1)
     news_by = load_news_by_calendar(ns, target_day)
-    prev = trading_calendar.last_trading_day_before(target_day)
-    blob, _ = news.aggregate_early_late_for_target(news_by, prev)
+    blob, _ = news.aggregate_early_late_for_target(news_by, target_day)
 
     snap = train_snapshot.load_snapshot(config.TRAIN_SNAPSHOT_PATH)
     events = snap.events if snap else []

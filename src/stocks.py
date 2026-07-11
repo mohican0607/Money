@@ -497,7 +497,7 @@ def enrich_daily_returns_for_ml(returns_df: pd.DataFrame) -> pd.DataFrame:
     """
     ML 랭커용 시세 피처를 ``daily_returns_table`` 결과에 붙입니다.
 
-    각 (종목, 거래일) 행에 대해 **당일 장 시작 시점**까지 알 수 있는 값만 사용합니다.
+    각 (종목, 거래일) 행에 대해 **당일 14:30 의사결정**까지 알 수 있는 값만 사용합니다.
 
     - ``ret_lag1``: 직전 영업일 종가 기준 일간 수익률
     - ``log_vol_lag1``: 직전 영업일 거래량 ``log1p``
@@ -506,6 +506,11 @@ def enrich_daily_returns_for_ml(returns_df: pd.DataFrame) -> pd.DataFrame:
     - ``close_ma20_ratio``: 직전 종가가 20일 이평(직전일까지) 대비 얼마나 떨어져 있는지 ``(C-MA)/MA``
     - ``ret_roll_mean5``: 직전 5영업일 수익률 평균(단기 모멘텀)
     - ``vol_surge_ratio``: 직전 거래량 log 대비 5일 평균 log 차이(거래량 급증)
+    - ``open_gap``: 당일 시가 / 전일 종가 − 1 (장 시작 시점 확정, 14:30 누수 없음)
+    - ``hl_range_lag1``: 직전일 (고가−저가)/종가
+    - ``ret_lag3``: 3영업일 전 수익률
+    - ``close_ma5_ratio``: 직전 종가 대비 5일 이평 위치
+    - ``ret_max5`` / ``ret_min5``: 직전 5영업일 수익률 최대·최소
     """
     df = returns_df.sort_values(["Code", "Date"]).copy()
     if "Volume" not in df.columns:
@@ -514,9 +519,25 @@ def enrich_daily_returns_for_ml(returns_df: pd.DataFrame) -> pd.DataFrame:
     if "Close" not in df.columns:
         df["Close"] = np.nan
     df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
+    opn = (
+        pd.to_numeric(df["Open"], errors="coerce")
+        if "Open" in df.columns
+        else pd.Series(np.nan, index=df.index)
+    )
+    hi = (
+        pd.to_numeric(df["High"], errors="coerce")
+        if "High" in df.columns
+        else pd.Series(np.nan, index=df.index)
+    )
+    lo = (
+        pd.to_numeric(df["Low"], errors="coerce")
+        if "Low" in df.columns
+        else pd.Series(np.nan, index=df.index)
+    )
 
     g = df.groupby("Code", group_keys=False)
     df["ret_lag1"] = g["return_pct"].shift(1)
+    df["ret_lag3"] = g["return_pct"].shift(3)
     df["log_vol_lag1"] = np.log1p(g["Volume"].shift(1).fillna(0.0))
     df["ret_roll_std5"] = g["return_pct"].transform(
         lambda s: s.shift(1).rolling(5, min_periods=1).std()
@@ -525,20 +546,51 @@ def enrich_daily_returns_for_ml(returns_df: pd.DataFrame) -> pd.DataFrame:
         lambda s: np.log1p(s).shift(1).rolling(5, min_periods=1).mean()
     )
     ma20 = g["Close"].transform(lambda s: s.shift(1).rolling(20, min_periods=1).mean())
+    ma5 = g["Close"].transform(lambda s: s.shift(1).rolling(5, min_periods=1).mean())
     prev_c = g["Close"].shift(1)
     df["close_ma20_ratio"] = (prev_c - ma20) / ma20.replace(0, np.nan)
+    df["close_ma5_ratio"] = (prev_c - ma5) / ma5.replace(0, np.nan)
     df["ret_roll_mean5"] = g["return_pct"].transform(
         lambda s: s.shift(1).rolling(5, min_periods=1).mean()
     )
+    df["ret_max5"] = g["return_pct"].transform(
+        lambda s: s.shift(1).rolling(5, min_periods=1).max()
+    )
+    df["ret_min5"] = g["return_pct"].transform(
+        lambda s: s.shift(1).rolling(5, min_periods=1).min()
+    )
     df["vol_surge_ratio"] = df["log_vol_lag1"] - df["log_vol_roll_mean5"]
+    df["open_gap"] = (opn / prev_c.replace(0, np.nan)) - 1.0
+    df["hl_range_lag1"] = (
+        ((hi - lo) / df["Close"].replace(0, np.nan))
+        .groupby(df["Code"])
+        .shift(1)
+    )
 
-    for c in ("ret_lag1", "ret_roll_std5", "close_ma20_ratio", "ret_roll_mean5"):
+    for c in (
+        "ret_lag1",
+        "ret_lag3",
+        "ret_roll_std5",
+        "close_ma20_ratio",
+        "close_ma5_ratio",
+        "ret_roll_mean5",
+        "ret_max5",
+        "ret_min5",
+        "open_gap",
+        "hl_range_lag1",
+    ):
         df[c] = pd.to_numeric(df[c], errors="coerce").replace([np.inf, -np.inf], np.nan).fillna(0.0)
     df["log_vol_lag1"] = pd.to_numeric(df["log_vol_lag1"], errors="coerce").fillna(0.0)
     df["log_vol_roll_mean5"] = pd.to_numeric(df["log_vol_roll_mean5"], errors="coerce").fillna(0.0)
     df["close_ma20_ratio"] = df["close_ma20_ratio"].clip(-1.0, 1.0)
+    df["close_ma5_ratio"] = df["close_ma5_ratio"].clip(-0.5, 0.5)
     df["ret_roll_std5"] = df["ret_roll_std5"].clip(0.0, 0.6)
     df["ret_roll_mean5"] = df["ret_roll_mean5"].clip(-0.25, 0.25)
+    df["ret_max5"] = df["ret_max5"].clip(-0.35, 0.35)
+    df["ret_min5"] = df["ret_min5"].clip(-0.35, 0.35)
+    df["ret_lag3"] = df["ret_lag3"].clip(-0.35, 0.35)
+    df["open_gap"] = df["open_gap"].clip(-0.25, 0.30)
+    df["hl_range_lag1"] = df["hl_range_lag1"].clip(0.0, 0.45)
     df["vol_surge_ratio"] = pd.to_numeric(df["vol_surge_ratio"], errors="coerce").fillna(0.0)
     df["vol_surge_ratio"] = df["vol_surge_ratio"].clip(-4.0, 4.0)
     return df

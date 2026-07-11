@@ -2,7 +2,9 @@
 훈련 구간 라벨(당일 급등 여부)로 **감독학습 랭커**를 학습해, 관측일 후보 종목을 확률 순으로 정렬합니다.
 
 피처: N−1~N일 **14:30(KST)까지** 뉴스·테마·시세·KOSPI 흐름·과거 급등 이력(보조) 등.
-``stocks.enrich_daily_returns_for_ml`` 로 만든 **전일 수익·거래량·단기 변동성·이평 대비 위치** 등 시세 요약.
+``stocks.enrich_daily_returns_for_ml`` 로 만든 **전일 수익·거래량·단기 변동성·이평·시가갭·고저폭** 등 시세 요약.
+학습: 이진 분류 + 소프트라벨 회귀 이중 헤드, 시간순 보정, 샘플가중·하드네거티브.
+랭킹 점수는 raw 분류확률과 회귀점수를 혼합하고, 표시용만 분위 보정합니다.
 학습 행은 거래일 ``d`` 기준으로 ``d`` **이전**의 급등 이벤트만 써서 시간 누수를 줄입니다.
 """
 from __future__ import annotations
@@ -56,7 +58,7 @@ from .news_context import (
 
 try:
     import joblib
-    from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
     from sklearn.pipeline import Pipeline
     from sklearn.preprocessing import StandardScaler
 
@@ -66,8 +68,10 @@ except ImportError:  # pragma: no cover
     Pipeline = None  # type: ignore[misc, assignment]
     StandardScaler = None  # type: ignore[misc, assignment]
     HistGradientBoostingClassifier = None  # type: ignore[misc, assignment]
+    HistGradientBoostingRegressor = None  # type: ignore[misc, assignment]
     _SKLEARN_OK = False
 
+# ``_feat_vector`` 반환 순서와 일치해야 함(메타·디버그용).
 FEATURE_NAMES = (
     "n_hit",
     "mention",
@@ -88,13 +92,19 @@ FEATURE_NAMES = (
     "close_ma20_ratio",
     "ret_roll_mean5",
     "vol_surge_ratio",
-    "ret_vs_ks11_lag1",
-    "ks11_regime_risk_off",
+    "open_gap",
+    "hl_range_lag1",
+    "ret_lag3",
+    "close_ma5_ratio",
+    "ret_max5",
+    "ret_min5",
     "foreign_net_vol_ratio_lag1",
     "inst_net_vol_ratio_lag1",
     "foreign_holding_pct_lag1",
     "foreign_net_sum3_ratio",
     "investor_flow_score",
+    "ret_vs_ks11_lag1",
+    "ks11_regime_risk_off",
     "news_cos_code",
     "news_cos_global",
     "news_dot_code",
@@ -112,12 +122,54 @@ FEATURE_NAMES = (
     "sector_breadth_hot",
     "limit_up_streak",
     "news_x_sector_heat",
+    "gap_x_news",
+    "gap_x_vol",
+    "near_limit_pressure",
 )
 
-ML_MODEL_VERSION = 21
+ML_MODEL_VERSION = 22
 MAX_NEG_PER_DAY = 150
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
+
+
+def _soft_move_label(ret: float, *, threshold: float) -> float:
+    """수익률 → [0,1] 소프트 라벨(랭킹·회귀용). 임계값 부근·초대형 급등에 민감."""
+    r = float(ret)
+    thr = float(threshold)
+    if r <= 0.0:
+        return 0.0
+    if r < thr * 0.5:
+        return 0.12 * (r / max(1e-6, thr * 0.5))
+    if r < thr:
+        return 0.12 + 0.38 * ((r - thr * 0.5) / max(1e-6, thr * 0.5))
+    # ≥ threshold: 0.5 → 1.0 as ret → thr+0.15
+    return min(1.0, 0.50 + 0.50 * min(1.0, (r - thr) / 0.15))
+
+
+def _row_sample_weight(y_bin: int, ret: float, *, threshold: float) -> float:
+    """극단 급등·임계 근접 음성에 더 큰 가중(행 복제 대신)."""
+    r = float(ret)
+    thr = float(threshold)
+    if int(y_bin) == 1:
+        return 1.0 + min(2.5, max(0.0, (r - thr) / 0.08))
+    if r + 1e-12 >= thr * 0.6:
+        return 1.45
+    if r + 1e-12 >= thr * 0.4:
+        return 1.20
+    return 1.0
+
+
+def _blend_rank_score(clf_prob: float, reg_score: float) -> float:
+    """보정 분류 확률 + 회귀 소프트 라벨 예측을 Hit@K용 점수로 혼합."""
+    w_c = float(getattr(config, "ML_RANK_BLEND_CLF", 0.55))
+    w_r = float(getattr(config, "ML_RANK_BLEND_REG", 0.45))
+    s = w_c + w_r
+    if s <= 1e-12:
+        return float(clf_prob)
+    w_c, w_r = w_c / s, w_r / s
+    reg = max(0.0, min(1.0, float(reg_score)))
+    return max(1e-6, min(0.95, w_c * float(clf_prob) + w_r * reg))
 
 
 def _build_prob_calibration_table(
@@ -279,11 +331,16 @@ def _feat_vector(
     investor = investor_flow_feats_row(ohlcv_idx, code, before_exclusive)
     ret_lag2 = prior_return_pct(ohlcv_idx, code, before_exclusive, lag_sessions=2)
     vol_surge = float(price[6]) if len(price) > 6 else 0.0
+    open_gap = float(price[7]) if len(price) > 7 else 0.0
+    ret_max5 = float(price[11]) if len(price) > 11 else 0.0
     mom_news = float(ret_lag1) * math.sqrt(max(0.0, float(n_hit)))
     vol_mom = float(ret_lag1) * min(3.0, max(0.0, vol_surge))
     ret_cum3 = ret_cum3_norm(ohlcv_idx, code, before_exclusive)
     lim_streak = limit_up_streak_norm(ohlcv_idx, code, before_exclusive)
     news_sector = math.sqrt(max(0.0, float(n_hit))) * float(ind_lim)
+    gap_news = float(open_gap) * math.sqrt(max(0.0, float(n_hit)))
+    gap_vol = float(open_gap) * min(3.0, max(0.0, vol_surge))
+    near_lim = max(0.0, float(open_gap)) * max(0.0, float(ret_max5))
     return base + price + investor + [float(ret_vs_ks11), float(risk_off)] + ctx_part + [
         float(ind_mom),
         float(ind_ov),
@@ -297,6 +354,9 @@ def _feat_vector(
         float(sector_br),
         float(lim_streak),
         float(news_sector),
+        float(gap_news),
+        float(gap_vol),
+        float(near_lim),
     ]
 
 
@@ -523,13 +583,17 @@ def _build_training_arrays(
     fast_train: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, Any]] | None:
     """
-    훈련 구간 거래일별 급등(양)·비급등(음) 샘플 행을 만들어 ``(X, y)`` 배열로 반환.
+    훈련 구간 거래일별 급등(양)·비급등(음) 샘플 행을 만들어 ``(X, y, meta)`` 로 반환.
 
+    ``meta`` 에 ``news_ctx``, ``sample_weight``, ``y_soft``, ``row_days`` 포함.
     표본 부족 시 ``None``.
     """
     rng = np.random.default_rng(42)
     rows_x: list[list[float]] = []
     rows_y: list[int] = []
+    rows_soft: list[float] = []
+    rows_w: list[float] = []
+    rows_day: list[date] = []
     ohlcv_idx = ohlcv_lookup(returns_ml)
     pos_boost = pos_boost_keys or set()
     neg_boost = neg_boost_keys or set()
@@ -586,6 +650,22 @@ def _build_training_arrays(
     all_returns: list[float] = []
     ind_cache_by_day: dict[date, IndustryFeatureCache] = {}
 
+    def _append_row(
+        fv: list[float],
+        y_bin: int,
+        act_ret: float,
+        d: date,
+        *,
+        extra_w: float = 1.0,
+    ) -> None:
+        soft = _soft_move_label(act_ret, threshold=threshold)
+        w = _row_sample_weight(y_bin, act_ret, threshold=threshold) * float(extra_w)
+        rows_x.append(fv)
+        rows_y.append(int(y_bin))
+        rows_soft.append(float(soft))
+        rows_w.append(float(w))
+        rows_day.append(d)
+
     def _train_feat(
         code: str,
         name: str,
@@ -597,10 +677,6 @@ def _build_training_arrays(
     ) -> list[float]:
         """학습 행 1건용 ``_feat_vector`` 래퍼(코드 정규화·히스토리 kw 누적)."""
         c6 = str(code).zfill(6)
-        if d not in ind_cache_by_day:
-            ind_cache_by_day[d] = IndustryFeatureCache(
-                d, ohlcv_idx, returns_ml, kw_news
-            )
         return _feat_vector(
             train_events,
             c6,
@@ -619,10 +695,11 @@ def _build_training_arrays(
             code_event_count=len(code_returns.get(c6, [])),
             today_tfidf=today_v,
             returns_ml=returns_ml,
-            ind_cache=ind_cache_by_day[d],
+            ind_cache=ind_cache_by_day.get(d),
         )
 
-    for d in days:
+    n_days_total = len(days)
+    for di, d in enumerate(days):
         while ev_i < len(sorted_ev) and sorted_ev[ev_i].trading_day < d:
             ev = sorted_ev[ev_i]
             c6 = str(ev.code).zfill(6)
@@ -640,39 +717,16 @@ def _build_training_arrays(
         day_slice = returns_ml[returns_ml["Date"] == pd.Timestamp(d)]
         if day_slice.empty:
             continue
-        cand_set = set(
-            day_candidate_codes(
-                listing_codes,
-                names,
-                blob,
-                ctx,
-                returns_ml,
-                d,
-                news_ctx_bundle=news_ctx,
+        # 학습은 급등 전수 + 하드네거 샘플링으로 충분. day_candidate_codes 는 일당 수십 초라 생략.
+        cand_set: set[str] = set()
+        if di == 0 or (di + 1) % 10 == 0 or di + 1 == n_days_total:
+            print(
+                f"ML 랭커: 학습표본 구성 {di + 1}/{n_days_total}일 ({d.isoformat()})",
+                flush=True,
             )
+        ind_cache_by_day[d] = IndustryFeatureCache(
+            d, ohlcv_idx, returns_ml, kw_news
         )
-        if train_day_cap > 0 and len(cand_set) > train_day_cap:
-            pos_day = set(
-                day_slice.loc[day_slice["return_pct"] >= threshold, "Code"]
-                .astype(str)
-                .str.zfill(6)
-            )
-            ranked = sorted(
-                cand_set,
-                key=lambda c: (
-                    -_cheap_prescore_code(
-                        c,
-                        target_day=d,
-                        ohlcv_idx=ohlcv_idx,
-                        kw_news=kw_news,
-                        profile=ctx[1],
-                        news_blob=blob,
-                        listing_names=names,
-                    ),
-                    str(c).zfill(6),
-                ),
-            )
-            cand_set = set(ranked[:train_day_cap]) | pos_day
         tw = theme_carryover.weights_for_observation_day(
             d,
             train_events=train_events,
@@ -690,34 +744,7 @@ def _build_training_arrays(
             continue
 
         d_iso = d.isoformat()
-        for _, r in pos_df.iterrows():
-            code = str(r["Code"]).zfill(6)
-            in_pool = not cand_set or code in cand_set
-            if not in_pool:
-                pass
-            name = str(names.get(code, r.get("Name", "")))
-            fv = _train_feat(code, name, blob, kw_news, d, tw, today_v)
-            try:
-                act_ret = float(r.get("return_pct") or 0.0)
-            except (TypeError, ValueError):
-                act_ret = 0.0
-            rows_x.append(fv)
-            rows_y.append(1)
-            if not fast_train:
-                if act_ret + 1e-12 >= 0.25:
-                    rows_x.append(fv)
-                    rows_y.append(1)
-                if act_ret + 1e-12 >= 0.29:
-                    rows_x.append(fv)
-                    rows_y.append(1)
-            if not in_pool:
-                rows_x.append(fv)
-                rows_y.append(1)
-            if boost_dup > 0 and (d_iso, code) in pos_boost:
-                for _ in range(boost_dup):
-                    rows_x.append(fv)
-                    rows_y.append(1)
-
+        pos_codes_day = pos_df["Code"].astype(str).str.zfill(6).tolist()
         neg_codes = [
             c
             for c in neg_df["Code"].astype(str).str.zfill(6).tolist()
@@ -726,18 +753,86 @@ def _build_training_arrays(
         n_pos = int(pos_df.shape[0])
         n_neg = min(neg_cap, max(30, 6 * n_pos))
         if len(neg_codes) > n_neg:
-            neg_codes = list(rng.choice(np.array(neg_codes), size=n_neg, replace=False))
+            # 하드 네거티브: 랜덤 후보군을 먼저 좁힌 뒤 고신호 절반 선택(전수 스코어링 방지)
+            pool_n = min(len(neg_codes), max(n_neg * 3, n_neg + 40))
+            if pool_n < len(neg_codes):
+                pool = list(
+                    rng.choice(np.array(neg_codes), size=pool_n, replace=False)
+                )
+            else:
+                pool = list(neg_codes)
+            scored = sorted(
+                pool,
+                key=lambda c: (
+                    -_cheap_prescore_code(
+                        c,
+                        target_day=d,
+                        ohlcv_idx=ohlcv_idx,
+                        kw_news=kw_news,
+                        profile=ctx[1],
+                        news_blob=blob,
+                        listing_names=names,
+                    ),
+                    str(c).zfill(6),
+                ),
+            )
+            n_hard = max(1, n_neg // 2)
+            hard = scored[:n_hard]
+            rest = scored[n_hard:]
+            n_rand = n_neg - len(hard)
+            if n_rand > 0 and rest:
+                pick = list(
+                    rng.choice(
+                        np.array(rest),
+                        size=min(n_rand, len(rest)),
+                        replace=False,
+                    )
+                )
+            else:
+                pick = []
+            neg_codes = list(dict.fromkeys(hard + pick))[:n_neg]
+
+        warm = set(pos_codes_day) | set(neg_codes)
+        if cand_set:
+            warm |= set(list(cand_set)[:80])
+        ind_cache_by_day[d].prewarm(warm)
+
+        neg_ret_map = {
+            str(c).zfill(6): float(v)
+            for c, v in zip(
+                neg_df["Code"].astype(str).tolist(),
+                pd.to_numeric(neg_df["return_pct"], errors="coerce")
+                .fillna(0.0)
+                .tolist(),
+            )
+        }
+        for _, r in pos_df.iterrows():
+            code = str(r["Code"]).zfill(6)
+            in_pool = not cand_set or code in cand_set
+            name = str(names.get(code, r.get("Name", "")))
+            fv = _train_feat(code, name, blob, kw_news, d, tw, today_v)
+            try:
+                act_ret = float(r.get("return_pct") or 0.0)
+            except (TypeError, ValueError):
+                act_ret = 0.0
+            _append_row(fv, 1, act_ret, d)
+            # 풀 밖 급등도 한 번 더 강조(리콜 학습)
+            if not in_pool:
+                _append_row(fv, 1, act_ret, d, extra_w=1.25)
+            if boost_dup > 0 and (d_iso, code) in pos_boost:
+                for _ in range(boost_dup):
+                    _append_row(fv, 1, act_ret, d, extra_w=1.15)
+
         neg_seen: set[str] = set()
         for code in neg_codes:
             name = str(names.get(code, ""))
             fv = _train_feat(code, name, blob, kw_news, d, tw, today_v)
-            rows_x.append(fv)
-            rows_y.append(0)
+            act_ret = float(neg_ret_map.get(code, 0.0))
+            _append_row(fv, 0, act_ret, d)
             neg_seen.add(code)
             if boost_dup > 0 and (d_iso, code) in neg_boost:
                 for _ in range(boost_dup):
-                    rows_x.append(fv)
-                    rows_y.append(0)
+                    _append_row(fv, 0, act_ret, d, extra_w=1.15)
 
         if not fast_train:
             for t_iso, code6 in neg_boost:
@@ -749,17 +844,25 @@ def _build_training_arrays(
                 rr = sub.iloc[0]
                 name = str(names.get(code6, rr.get("Name", "")))
                 fv = _train_feat(code6, name, blob, kw_news, d, tw, today_v)
-                rows_x.append(fv)
-                rows_y.append(0)
+                try:
+                    act_ret = float(rr.get("return_pct") or 0.0)
+                except (TypeError, ValueError):
+                    act_ret = 0.0
+                _append_row(fv, 0, act_ret, d)
                 if boost_dup > 0:
                     for _ in range(boost_dup):
-                        rows_x.append(fv)
-                        rows_y.append(0)
+                        _append_row(fv, 0, act_ret, d, extra_w=1.15)
                 neg_seen.add(code6)
 
     if len(rows_y) < MIN_TOTAL_SAMPLES or sum(rows_y) < MIN_POS_SAMPLES:
         return None
-    return np.asarray(rows_x, dtype=np.float64), np.asarray(rows_y, dtype=np.int32), news_ctx
+    meta: dict[str, Any] = {
+        "news_ctx": news_ctx,
+        "sample_weight": np.asarray(rows_w, dtype=np.float64),
+        "y_soft": np.asarray(rows_soft, dtype=np.float64),
+        "row_days": list(rows_day),
+    }
+    return np.asarray(rows_x, dtype=np.float64), np.asarray(rows_y, dtype=np.int32), meta
 
 
 def _model_path(fp: str, label_before_exclusive: date | None = None) -> Path:
@@ -831,6 +934,7 @@ def fit_or_load_classifier(
     )
     bundle: dict[str, Any] = {
         "pipeline": None,
+        "reg_pipeline": None,
         "fp": fp,
         "feature_names": FEATURE_NAMES,
         "version": ML_MODEL_VERSION,
@@ -839,6 +943,7 @@ def fit_or_load_classifier(
         loaded = _try_load_joblib_bundle(path, fp=fp)
         if loaded is not None:
             bundle["pipeline"] = loaded["pipeline"]
+            bundle["reg_pipeline"] = loaded.get("reg_pipeline")
             bundle["cal_base_rate"] = float(loaded.get("cal_base_rate") or 0.01)
             bundle["cal_table"] = list(loaded.get("cal_table") or [])
             bundle["news_ctx"] = loaded.get("news_ctx")
@@ -860,6 +965,7 @@ def fit_or_load_classifier(
                 prior = _try_load_joblib_bundle(prev_path, fp=fp)
                 if prior is not None:
                     bundle["pipeline"] = prior["pipeline"]
+                    bundle["reg_pipeline"] = prior.get("reg_pipeline")
                     bundle["cal_base_rate"] = float(
                         prior.get("cal_base_rate") or 0.01
                     )
@@ -909,16 +1015,36 @@ def fit_or_load_classifier(
         )
         return bundle
 
-    X, y, news_ctx_tr = xy
-    from sklearn.model_selection import train_test_split
+    X, y, meta = xy
+    news_ctx_tr = meta.get("news_ctx")
+    sample_weight = np.asarray(meta.get("sample_weight"), dtype=np.float64)
+    y_soft = np.asarray(meta.get("y_soft"), dtype=np.float64)
+    row_days: list[date] = list(meta.get("row_days") or [])
+    if sample_weight.shape[0] != len(y):
+        sample_weight = np.ones(len(y), dtype=np.float64)
+    if y_soft.shape[0] != len(y):
+        y_soft = y.astype(np.float64)
 
-    try:
-        X_tr, X_cal, y_tr, y_cal = train_test_split(
-            X, y, test_size=0.18, random_state=42, stratify=y
-        )
-    except ValueError:
-        X_tr, y_tr = X, y
-        X_cal, y_cal = X[:0], y[:0]
+    # 시간순 홀드아웃(마지막 ~18% 거래일) — IID split 낙관 편향 제거
+    uniq_days = sorted(set(row_days)) if row_days else []
+    n_cal_days = max(1, int(round(len(uniq_days) * 0.18))) if uniq_days else 0
+    cal_day_set = set(uniq_days[-n_cal_days:]) if n_cal_days and uniq_days else set()
+    if cal_day_set and row_days:
+        mask_cal = np.asarray([d in cal_day_set for d in row_days], dtype=bool)
+        # 보정 구간에 양·음이 모두 있어야 함
+        if int(y[mask_cal].sum()) >= 5 and int((1 - y[mask_cal]).sum()) >= 10:
+            mask_tr = ~mask_cal
+        else:
+            mask_tr = np.ones(len(y), dtype=bool)
+            mask_cal = np.zeros(len(y), dtype=bool)
+    else:
+        mask_tr = np.ones(len(y), dtype=bool)
+        mask_cal = np.zeros(len(y), dtype=bool)
+
+    X_tr, y_tr = X[mask_tr], y[mask_tr]
+    w_tr = sample_weight[mask_tr]
+    soft_tr = y_soft[mask_tr]
+    X_cal, y_cal = X[mask_cal], y[mask_cal]
 
     if fast_train:
         print(
@@ -927,15 +1053,16 @@ def fit_or_load_classifier(
         )
 
     clf = HistGradientBoostingClassifier(
-        max_depth=5 if fast_train else 9,
-        max_iter=48 if fast_train else 260,
-        learning_rate=0.08 if fast_train else 0.045,
+        max_depth=5 if fast_train else 8,
+        max_iter=48 if fast_train else 320,
+        learning_rate=0.08 if fast_train else 0.04,
         random_state=42,
         class_weight="balanced",
         early_stopping=True,
         validation_fraction=0.12,
-        n_iter_no_change=8 if fast_train else 16,
-        min_samples_leaf=14 if fast_train else 8,
+        n_iter_no_change=8 if fast_train else 18,
+        min_samples_leaf=14 if fast_train else 10,
+        l2_regularization=0.0 if fast_train else 0.08,
     )
     pipe: Pipeline = Pipeline(
         [
@@ -943,16 +1070,54 @@ def fit_or_load_classifier(
             ("clf", clf),
         ]
     )
+    reg_pipe: Pipeline | None = None
     try:
-        pipe.fit(X_tr, y_tr)
+        pipe.fit(X_tr, y_tr, clf__sample_weight=w_tr)
+    except TypeError:
+        try:
+            pipe.fit(X_tr, y_tr)
+        except Exception as e:
+            print(f"ML 랭커: 학습 실패(휴리스틱만) - {e}", flush=True)
+            return bundle
     except Exception as e:
         print(f"ML 랭커: 학습 실패(휴리스틱만) - {e}", flush=True)
         return bundle
+
+    # 소프트 라벨 회귀 — Hit@K 정렬용 연속 점수
+    if HistGradientBoostingRegressor is not None and soft_tr.size >= MIN_TOTAL_SAMPLES // 2:
+        try:
+            reg = HistGradientBoostingRegressor(
+                max_depth=5 if fast_train else 7,
+                max_iter=40 if fast_train else 220,
+                learning_rate=0.08 if fast_train else 0.045,
+                random_state=42,
+                early_stopping=True,
+                validation_fraction=0.12,
+                n_iter_no_change=8 if fast_train else 16,
+                min_samples_leaf=14 if fast_train else 12,
+                l2_regularization=0.0 if fast_train else 0.12,
+            )
+            reg_pipe = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    ("reg", reg),
+                ]
+            )
+            reg_pipe.fit(X_tr, soft_tr, reg__sample_weight=w_tr)
+        except TypeError:
+            try:
+                reg_pipe.fit(X_tr, soft_tr)
+            except Exception:
+                reg_pipe = None
+        except Exception:
+            reg_pipe = None
+
     cal_table: list[dict[str, float]] = []
     if X_cal.shape[0] > 0:
         raw_cal = pipe.predict_proba(X_cal)[:, 1]
         cal_table = _build_prob_calibration_table(raw_cal, y_cal)
     bundle["pipeline"] = pipe
+    bundle["reg_pipeline"] = reg_pipe
     bundle["cal_base_rate"] = (
         float(y_cal.mean()) if y_cal.size > 0 else float(np.mean(y_tr))
     )
@@ -960,7 +1125,10 @@ def fit_or_load_classifier(
     bundle["news_ctx"] = news_ctx_tr
     _persist_joblib_bundle(path, bundle)
     print(
-        f"ML 랭커: 학습 완료 표본 {len(y)} (급등 {int(y.sum())}건) -> 저장 {path.name}"
+        f"ML 랭커: 학습 완료 표본 {len(y)} (급등 {int(y.sum())}건"
+        f"·보정일 {len(cal_day_set)}일"
+        f"{'·회귀ON' if reg_pipe is not None else ''}"
+        f") -> 저장 {path.name}"
         f"{' [경량]' if fast_train else ''}",
         flush=True,
     )
@@ -1101,13 +1269,36 @@ def rank_predictions_ml(
     proba_raw = pipeline.predict_proba(X)[:, 1]
     cal_table = list((ml_bundle or {}).get("cal_table") or [])
     cal_base = float((ml_bundle or {}).get("cal_base_rate") or 0.01)
+    reg_pipe = (ml_bundle or {}).get("reg_pipeline")
+    reg_raw: np.ndarray | None = None
+    if reg_pipe is not None:
+        try:
+            reg_raw = np.clip(
+                np.asarray(reg_pipe.predict(X), dtype=np.float64), 0.0, 1.0
+            )
+        except Exception:
+            reg_raw = None
+    # 랭킹은 raw 확률(+회귀) 사용 — 분위 보정은 구간 내 순위를 뭉갬
+    if reg_raw is not None:
+        rank_score = np.asarray(
+            [
+                _blend_rank_score(float(c), float(r))
+                for c, r in zip(proba_raw, reg_raw)
+            ],
+            dtype=np.float64,
+        )
+    else:
+        rank_score = np.asarray(proba_raw, dtype=np.float64)
+    # 표시·게이트용 보정 확률(랭킹 순서와 별도)
     proba = np.asarray(
         [
             calibrate_ml_probability(float(p), cal_table=cal_table, base_rate=cal_base)
-            for p in proba_raw
+            for p in rank_score
         ],
         dtype=np.float64,
     )
+    # 상위 선정은 rank_score, PredictionRow.ml_prob 은 보정값
+    order = np.argsort(-rank_score)
     eval_k = max(config.PRED_EVAL_HIT_AT_K) if config.PRED_EVAL_HIT_AT_K else 40
     finalize_n = max(
         int(top_n),
@@ -1118,7 +1309,6 @@ def rank_predictions_ml(
         len(cand_ix),
         max(finalize_n, int(config.PRED_ML_ENRICH_TOP_N)),
     )
-    order = np.argsort(-proba)
     enrich_order = order[:enrich_n]
     industry_must = industry_must_keep_codes(
         returns_ml, target_day, listing_codes

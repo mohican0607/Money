@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 from datetime import date
 from functools import lru_cache
+from typing import Iterable
 
 import pandas as pd
 
@@ -133,6 +134,12 @@ def price_feats_row(idx: pd.DataFrame | None, code: str, trading_day: date) -> l
         "close_ma20_ratio",
         "ret_roll_mean5",
         "vol_surge_ratio",
+        "open_gap",
+        "hl_range_lag1",
+        "ret_lag3",
+        "close_ma5_ratio",
+        "ret_max5",
+        "ret_min5",
     )
     if idx is None:
         return [0.0] * len(cols)
@@ -226,6 +233,7 @@ class IndustryFeatureCache:
         self._peer_lag1: dict[str, float] = {}
         self._sector_breadth: dict[str, float] = {}
         self._sl_by_day: dict[date, pd.DataFrame] = {}
+        self._row_by_code: dict[date, dict[str, pd.Series]] = {}
         self._session_days: list[date] = []
         if returns_ml is not None and not returns_ml.empty:
             try:
@@ -260,6 +268,21 @@ class IndustryFeatureCache:
         sl = self.returns_ml.loc[self.returns_ml["Date"] == pd.Timestamp(d)]
         self._sl_by_day[d] = sl
         return sl
+
+    def _rows_by_code(self, d: date) -> dict[str, pd.Series]:
+        """일자 슬라이스를 종목코드→행 dict 로 1회 인덱싱(peer 전수 스캔 제거)."""
+        cached = self._row_by_code.get(d)
+        if cached is not None:
+            return cached
+        sl = self._slice(d)
+        out: dict[str, pd.Series] = {}
+        if not sl.empty and "Code" in sl.columns:
+            codes = sl["Code"].astype(str).str.zfill(6)
+            for i, c6 in enumerate(codes):
+                if c6 not in out:
+                    out[c6] = sl.iloc[i]
+        self._row_by_code[d] = out
+        return out
 
     def prewarm(self, codes: Iterable[str]) -> None:
         """후보 종목이 속한 업종 통계를 한 번에 계산."""
@@ -365,7 +388,7 @@ class IndustryFeatureCache:
         rets: list[float] = []
         lim_n = 0
         peer_n = 0
-        for p in peer_set:
+        for p in peer_set[:48]:
             try:
                 row = self.ohlcv_idx.loc[(day, str(p).zfill(6))]
                 if isinstance(row, pd.DataFrame):
@@ -384,15 +407,15 @@ class IndustryFeatureCache:
             hot_peer_rets: list[float] = []
             hot_n = 0
             for sess in self._session_days:
-                sl = self._slice(sess)
-                if sl.empty:
+                by_code = self._rows_by_code(sess)
+                if not by_code:
                     continue
                 for p in peer_set[:24]:
-                    sub = sl[sl["Code"].astype(str).str.zfill(6) == str(p).zfill(6)]
-                    if sub.empty:
+                    row = by_code.get(str(p).zfill(6))
+                    if row is None:
                         continue
                     try:
-                        rp = float(sub.iloc[0].get("return_pct") or 0.0)
+                        rp = float(row.get("return_pct") or 0.0)
                     except (TypeError, ValueError):
                         continue
                     if not math.isfinite(rp):
@@ -413,17 +436,17 @@ class IndustryFeatureCache:
             prev = trading_calendar.last_trading_day_before(self.day)
         except ValueError:
             return 0.0
-        sl = self._slice(prev)
-        if sl.empty:
+        by_code = self._rows_by_code(prev)
+        if not by_code:
             return 0.0
         hot = 0.0
         n = 0
         for p in peers[:32]:
-            sub = sl[sl["Code"].astype(str).str.zfill(6) == str(p).zfill(6)]
-            if sub.empty:
+            row = by_code.get(str(p).zfill(6))
+            if row is None:
                 continue
             try:
-                rp = float(sub.iloc[0].get("return_pct") or 0.0)
+                rp = float(row.get("return_pct") or 0.0)
             except (TypeError, ValueError):
                 continue
             if not math.isfinite(rp):
@@ -436,16 +459,16 @@ class IndustryFeatureCache:
         return min(1.0, hot / max(1, min(n, 8)))
 
     def _compute_peer_lag1(self, peers: list[str]) -> float:
-        sl = self._slice(self.day)
-        if sl.empty:
+        by_code = self._rows_by_code(self.day)
+        if not by_code:
             return 0.0
         rets: list[float] = []
         for p in peers[:28]:
-            sub = sl[sl["Code"].astype(str).str.zfill(6) == str(p).zfill(6)]
-            if sub.empty:
+            row = by_code.get(str(p).zfill(6))
+            if row is None:
                 continue
             try:
-                rl = float(sub.iloc[0].get("ret_lag1") or 0.0)
+                rl = float(row.get("ret_lag1") or 0.0)
             except (TypeError, ValueError):
                 continue
             if math.isfinite(rl):

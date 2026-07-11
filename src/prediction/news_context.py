@@ -13,7 +13,7 @@ from .. import news
 from ..features import BreakoutEvent, filter_specific_keywords, keyword_set
 from . import predict
 
-VOCAB_SIZE = 56  # TF-IDF 상위 용어 수(학습·추론 공통)
+VOCAB_SIZE = 96  # TF-IDF 상위 용어 수(학습·추론 공통)
 _CONTEXT_FEAT_NAMES = (
     "news_cos_code",
     "news_cos_global",

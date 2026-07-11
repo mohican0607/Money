@@ -164,8 +164,7 @@ def cmd_backtest_jun(args: argparse.Namespace) -> int:
     per_day: list[tuple[str, dict[int, int]]] = []
 
     for T in days:
-        prev = trading_calendar.last_trading_day_before(T)
-        blob, _ = news.aggregate_early_late_for_target(news_by, prev)
+        blob, _ = news.aggregate_early_late_for_target(news_by, T)
         bundle = ml_move_rank.fit_or_load_classifier(
             train_events=events,
             returns_ml=returns_ml,
