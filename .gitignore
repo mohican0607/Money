@@ -1,9 +1,9 @@
-.venv/
-.env
-data/cache/
-__pycache__/
-*.pyc
-output/
+#.venv/
+#.env
+#data/cache/
+#__pycache__/
+#*.pyc
+#output/
 
 
 ###############################################
