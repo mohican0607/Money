@@ -422,12 +422,25 @@ ML_PIPELINE_ALWAYS_FAST_TRAIN = os.getenv("ML_PIPELINE_ALWAYS_FAST_TRAIN", "0").
     "yes",
 )
 # 직전 거래일 모델 재사용(학습 생략). 기본 끔 → 관측일 T 맞춤 재학습.
+# 장중 라이브(예측 전용)는 ``ML_REUSE_PRIOR_FOR_FORWARD=1`` 로 강제 재사용.
 ML_REUSE_PRIOR_TRADING_DAY_MODEL = os.getenv("ML_REUSE_PRIOR_TRADING_DAY_MODEL", "0").strip().lower() in (
     "1",
     "true",
     "True",
     "yes",
 )
+# 예측 전용(미래·당일 장중) 관측일: 직전 가용 joblib 재사용(14:30 창 필수). 기본 ON.
+ML_REUSE_PRIOR_FOR_FORWARD = os.getenv("ML_REUSE_PRIOR_FOR_FORWARD", "1").strip().lower() in (
+    "1",
+    "true",
+    "True",
+    "yes",
+)
+# 월간 HTML에 남은 「장후 미갱신 예측전용」일자 자동 재처리.
+# 장중·예측전용 실행에서는 끄세요(수십 분 소요). 장후 백필 때 1.
+PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD = os.getenv(
+    "PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD", "1"
+).strip().lower() in ("1", "true", "True", "yes")
 # 분류 확률 vs 수익률 회귀 점수 혼합(합=1 권장). Hit@K 정렬에 회귀 신호 반영.
 ML_RANK_BLEND_CLF = _float_env("ML_RANK_BLEND_CLF", 0.55)
 ML_RANK_BLEND_REG = _float_env("ML_RANK_BLEND_REG", 0.45)

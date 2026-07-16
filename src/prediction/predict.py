@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import math
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -834,7 +835,7 @@ def format_pred_miss_tooltip_html(
     t_trading_day: date | None = None,
 ) -> str:
     """
-    장 마감 후 ``pred_high`` 미적중 행의 「틀린 이유」 tooltip HTML.
+    장 마감 후 고·중확신 미적중 행의 「틀린 이유」 tooltip HTML.
 
     갭 분석·진단 힌트·당일 뉴스·공시를 한 패널로 묶습니다.
     """
@@ -855,10 +856,41 @@ def format_pred_miss_tooltip_html(
     hints = [str(h).strip() for h in (miss_hints or []) if str(h).strip()]
     if hints:
         parts.append(
-            '<p><strong>가능한 원인</strong></p><ul class="nl">'
-            + "".join(f"<li>{html.escape(h, quote=False)}</li>" for h in hints[:6])
+            '<p><strong>진단</strong></p><ul class="nl">'
+            + "".join(f"<li>{html.escape(h, quote=False)}</li>" for h in hints[:7])
             + "</ul>"
         )
+
+    reason_bits: list[str] = []
+    for src in (
+        row.get("pred_reason_summary"),
+        row.get("pred_reason_detail_html"),
+        row.get("reasons_html"),
+        " ".join(str(x) for x in (row.get("reasons") or []) if x),
+    ):
+        plain = re.sub(r"<[^>]+>", " ", str(src or ""))
+        plain = re.sub(r"\s+", " ", plain).strip()
+        if plain and plain != "—":
+            reason_bits.append(plain)
+            break
+    if reason_bits:
+        snippet = reason_bits[0]
+        if len(snippet) > 280:
+            snippet = snippet[:279].rstrip() + "…"
+        parts.append(
+            f'<p style="margin-top:8px"><strong>예측 근거(요약)</strong> — '
+            f"{html.escape(snippet, quote=False)}</p>"
+        )
+
+    kws = [str(k).strip() for k in (row.get("keywords") or []) if str(k).strip()]
+    if kws:
+        kw_show = ", ".join(html.escape(k, quote=False) for k in kws[:12])
+        parts.append(
+            f'<p><strong>매칭 키워드 {len(kws)}개</strong> — '
+            f'<code style="font-size:0.8rem;color:var(--warn)">{kw_show}</code></p>'
+        )
+    elif int(row.get("keyword_hits", 0) or 0) <= 0:
+        parts.append("<p><strong>매칭 키워드</strong> — 없음 (키워드 0)</p>")
 
     gap = str(row.get("gap_analysis_html") or "").strip()
     if gap:
@@ -908,8 +940,8 @@ def format_pred_miss_tooltip_html(
 
     if not parts:
         return (
-            "<p>고예측이었으나 실제 급등 조건에 미달했습니다. "
-            "통합 보기의 예측·실제 차이와 당일 뉴스·공시를 함께 확인하세요.</p>"
+            "<p>예측 후보였으나 실제 급등 조건에 미달했습니다. "
+            "갭 분석·키워드·공시 데이터가 비어 진단을 채우지 못했습니다.</p>"
         )
     return "".join(parts)
 

@@ -300,8 +300,8 @@ def _enrich_forward_pred_rationale(
 
     return ""
 def _is_pred_miss_row(r: dict[str, Any]) -> bool:
-    """고예측(pred_high)인데 실제 급등 임계 미달."""
-    if not bool(r.get("pred_high")) or r.get("pred_ret") is None:
+    """고·중확신 예측 후보인데 실제 급등 임계 미달."""
+    if not _compare_row_is_prediction_candidate(r) or r.get("pred_ret") is None:
         return False
     ar = r.get("actual_ret")
     if ar is None:
@@ -315,7 +315,7 @@ def _enrich_rows_pred_miss_tooltip(
     t_trading_day: date | None = None,
     kospi_hint: str | None = None,
 ) -> None:
-    """장 마감 확정일 — 미적중 행에 ``pred_miss_tooltip_html`` 채우기."""
+    """장 마감 확정일 — 고·중확신 미적중 행에 ``pred_miss_tooltip_html`` 채우기."""
     from ..learning.support import _tags_for_pred_miss
 
     thr_pct = float(config.BIG_MOVE_THRESHOLD) * 100.0
@@ -1256,6 +1256,12 @@ def _reconcile_closed_day_report(
         t,
         forward_observation=False,
         now_kst=now_kst,
+    )
+    # 장중 예측을 장마감 실적으로 전환한 뒤 실제값 기준으로 미적중 설명도 재생성.
+    # 이 호출이 없으면 장중에는 actual_ret=None 이라 비어 있던 「틀린 이유」가 계속 누락됨.
+    _enrich_rows_pred_miss_tooltip(
+        dr.rows_compare,
+        t_trading_day=t,
     )
 
     if dr.predictions:

@@ -26,6 +26,9 @@ Set-Location -LiteralPath $RepoRoot
 
 $env:MOCK_NEWS = "0"
 $env:PYTHONUTF8 = "1"
+# 14:30 라이브: 학습·과거일 백필로 창을 날리지 않음
+$env:ML_REUSE_PRIOR_FOR_FORWARD = "1"
+$env:PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD = "0"
 if (-not $env:MONEY_TEMP_DIR) { $env:MONEY_TEMP_DIR = "F:\temp\Money\tmp" }
 if (-not $env:MONEY_CACHE_DIR) { $env:MONEY_CACHE_DIR = "F:\temp\Money\cache" }
 $env:TEMP = $env:MONEY_TEMP_DIR

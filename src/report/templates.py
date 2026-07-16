@@ -2016,11 +2016,13 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
   (function () {
     var wrap = document.querySelector(".week-tabs-wrap");
     if (!wrap) return;
-    var bars = wrap.querySelectorAll(".tab-bar");
-    var panels = wrap.querySelectorAll(".tab-panel");
+    var bars = wrap.querySelectorAll(":scope > .tab-bar");
+    if (!bars.length) bars = wrap.querySelectorAll(".tab-bar");
+    var panels = wrap.querySelectorAll(":scope > .tab-panel");
+    if (!panels.length) panels = wrap.querySelectorAll(".tab-panel");
     function show(i) {
       bars.forEach(function (bar) {
-        bar.querySelectorAll(".tab-btn").forEach(function (b, j) {
+        bar.querySelectorAll(":scope > .tab-btn").forEach(function (b, j) {
           b.classList.toggle("active", j === i);
           b.setAttribute("aria-selected", j === i ? "true" : "false");
         });
@@ -2028,7 +2030,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
       panels.forEach(function (p, j) { p.classList.toggle("active", j === i); });
     }
     bars.forEach(function (bar) {
-      bar.querySelectorAll(".tab-btn").forEach(function (b, i) {
+      bar.querySelectorAll(":scope > .tab-btn").forEach(function (b, i) {
         b.addEventListener("click", function () { show(i); });
       });
     });

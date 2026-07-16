@@ -928,6 +928,34 @@ def _persist_joblib_bundle(path: Path, bundle: dict[str, Any]) -> None:
         pass
 
 
+def _try_load_nearest_prior_bundle(
+    *,
+    fp: str,
+    label_before_exclusive: date,
+    max_lookback: int = 12,
+) -> tuple[dict[str, Any], date] | None:
+    """``label_before_exclusive`` 직전 거래일부터 거슬러 가며 가용 ML joblib 을 찾습니다."""
+    try:
+        d = trading_calendar.last_trading_day_before(label_before_exclusive)
+    except ValueError:
+        return None
+    for _ in range(max(1, max_lookback)):
+        prior = _try_load_joblib_bundle(_model_path(fp, d), fp=fp)
+        if prior is None:
+            alt = _try_load_joblib_bundle(_model_path(f"{fp}_v22q", d), fp=f"{fp}_v22q")
+            if alt is not None:
+                alt = dict(alt)
+                alt["fp"] = fp
+                prior = alt
+        if prior is not None and prior.get("pipeline") is not None:
+            return prior, d
+        try:
+            d = trading_calendar.last_trading_day_before(d)
+        except ValueError:
+            break
+    return None
+
+
 def fit_or_load_classifier(
     *,
     train_events: list[BreakoutEvent],
@@ -937,12 +965,16 @@ def fit_or_load_classifier(
     fp: str,
     label_before_exclusive: date,
     force_retrain: bool = False,
+    prefer_prior_reuse: bool = False,
 ) -> dict[str, Any] | None:
     """
     스냅샷 지문 ``fp`` 단위로 모델을 캐시에 두고, 없으면 학습 후 저장합니다.
 
     ``force_retrain=True`` 이면 기존 joblib 을 읽지 않고 항상 재학습해 덮어씁니다
     (``--rebuild-train-snapshot`` 과 함께 최신 ``BreakoutEvent`` 로 랭커를 맞출 때).
+
+    ``prefer_prior_reuse=True``(예측 전용·장중) 이면 캐시 미스 시 직전 가용
+    모델을 재사용해 학습을 생략합니다(14:30 창).
 
     Returns:
         ``{"pipeline": sklearn Pipeline | None, "fp": str, "feature_names": tuple}`` 또는
@@ -996,37 +1028,37 @@ def fit_or_load_classifier(
                 )
             print(f"ML 랭커: 캐시 로드 {loaded_name}", flush=True)
             return bundle
-        if config.ML_REUSE_PRIOR_TRADING_DAY_MODEL:
-            try:
-                prev_td = trading_calendar.last_trading_day_before(
-                    label_before_exclusive
+        reuse_prior = bool(
+            prefer_prior_reuse
+            or config.ML_REUSE_PRIOR_TRADING_DAY_MODEL
+        )
+        if reuse_prior:
+            found = _try_load_nearest_prior_bundle(
+                fp=fp, label_before_exclusive=label_before_exclusive
+            )
+            if found is not None:
+                prior, prev_td = found
+                bundle["pipeline"] = prior["pipeline"]
+                bundle["reg_pipeline"] = prior.get("reg_pipeline")
+                bundle["cal_base_rate"] = float(
+                    prior.get("cal_base_rate") or 0.01
                 )
-                prev_path = _model_path(fp, prev_td)
-                prior = _try_load_joblib_bundle(prev_path, fp=fp)
-                if prior is not None:
-                    bundle["pipeline"] = prior["pipeline"]
-                    bundle["reg_pipeline"] = prior.get("reg_pipeline")
-                    bundle["cal_base_rate"] = float(
-                        prior.get("cal_base_rate") or 0.01
+                bundle["cal_table"] = list(prior.get("cal_table") or [])
+                bundle["news_ctx"] = prior.get("news_ctx")
+                if bundle["news_ctx"] is None:
+                    bundle["news_ctx"] = make_news_ctx_bundle(
+                        train_events,
+                        news_by_calendar,
+                        config.TRAIN_START_DEFAULT,
+                        label_before_exclusive,
                     )
-                    bundle["cal_table"] = list(prior.get("cal_table") or [])
-                    bundle["news_ctx"] = prior.get("news_ctx")
-                    if bundle["news_ctx"] is None:
-                        bundle["news_ctx"] = make_news_ctx_bundle(
-                            train_events,
-                            news_by_calendar,
-                            config.TRAIN_START_DEFAULT,
-                            label_before_exclusive,
-                        )
-                    _persist_joblib_bundle(path, bundle)
-                    print(
-                        f"ML 랭커: 직전 거래일({prev_td}) 모델 재사용 -> {path.name} "
-                        f"(T={label_before_exclusive} 학습 생략)",
-                        flush=True,
-                    )
-                    return bundle
-            except ValueError:
-                pass
+                _persist_joblib_bundle(path, bundle)
+                print(
+                    f"ML 랭커: 직전 가용({prev_td}) 모델 재사용 -> {path.name} "
+                    f"(T={label_before_exclusive} 학습 생략)",
+                    flush=True,
+                )
+                return bundle
 
     pos_boost, neg_boost = snapshot_miss_diagnosis.load_ml_boost_sets_from_snapshot()
     if pos_boost or neg_boost:

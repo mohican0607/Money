@@ -431,6 +431,9 @@ def _run_pipeline(
                         fp=fp_snap,
                         label_before_exclusive=T,
                         force_retrain=train_snapshot_mode == "rebuild",
+                        prefer_prior_reuse=bool(
+                            day_forward and config.ML_REUSE_PRIOR_FOR_FORWARD
+                        ),
                     )
                 ml_bundle_prev = ml_bundle
                 ml_bundle_prev_t = T

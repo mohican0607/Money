@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date
@@ -588,30 +589,90 @@ def _tags_for_pred_miss(
     thr_pct: float,
     actual_pct: float,
 ) -> tuple[list[str], list[str]]:
-    """고예측·실제 미달 행에 대한 원인 태그·한글 힌트 목록."""
+    """고·중확신 예측·실제 미달 행에 대한 원인 태그·한글 진단 힌트."""
     tags: list[str] = []
     hints: list[str] = []
+    pred_pct = row.get("pred_ret")
+    pred_f = float(pred_pct) if isinstance(pred_pct, (int, float)) else None
+    gap = (pred_f - actual_pct) if pred_f is not None else None
+
     if actual_pct < 0:
         tags.append("actual_negative")
-        hints.append("실제 수익률이 음수 — 예측과 방향이 크게 어긋남")
+        if pred_f is not None:
+            hints.append(
+                f"실제 {actual_pct:.2f}% 하락 — 예측 {pred_f:.2f}%와 방향이 반대"
+            )
+        else:
+            hints.append(f"실제 {actual_pct:.2f}% 하락 — 예측 방향과 반대")
     elif actual_pct + 1e-9 < thr_pct:
         tags.append("actual_below_threshold")
-        hints.append(f"실제 상승률이 {thr_pct:.0f}% 미만 — 급등 조건 미달")
+        if pred_f is not None and gap is not None:
+            hints.append(
+                f"실제 {actual_pct:.2f}%로 급등 임계 {thr_pct:.0f}% 미달 "
+                f"(예측 {pred_f:.2f}%, 차이 {gap:+.2f}pp)"
+            )
+        else:
+            hints.append(f"실제 {actual_pct:.2f}% — 급등 임계 {thr_pct:.0f}% 미달")
+
+    kh = int(row.get("keyword_hits", 0) or 0)
+    ms = float(row.get("mention_score", 0.0) or 0.0)
+    if kh <= 1 or ms < 0.10:
+        tags.append("weak_signal_at_prediction")
+        if kh <= 0:
+            hints.append("키워드 0 — 종목명/테마·ML 점수 위주 선정, 당일 뉴스 근거 약함")
+        else:
+            hints.append(
+                f"예측 시점 키워드 {kh}개·멘션 {ms:.2f} — 뉴스 신호가 약했음"
+            )
+
     if bool(row.get("late_news_hit")):
         tags.append("late_news_keyword_overlap")
-        hints.append("N-1 컷오프 이후 뉴스에 예측 키워드가 겹침(참고·인과 단정 아님)")
-    if int(row.get("keyword_hits", 0) or 0) <= 1 or float(row.get("mention_score", 0.0) or 0.0) < 0.10:
-        tags.append("weak_signal_at_prediction")
-        hints.append("예측 시점 키워드/종목명 신호가 약했음")
-    pr = row.get("pred_ret")
-    if isinstance(pr, (int, float)) and actual_pct + 1e-9 < thr_pct:
-        gap = float(pr) - actual_pct
-        if gap > 8.0:
-            tags.append("large_overprediction")
-            hints.append("예측이 실제보다 8%p 이상 높게 나감 — 과대 예측 구간")
+        hints.append(
+            "N-1 컷오프 이후 뉴스에 예측 키워드가 겹침 — 예측 시점 미반영 이슈 가능"
+        )
+
+    if gap is not None and actual_pct + 1e-9 < thr_pct and gap > 8.0:
+        tags.append("large_overprediction")
+        hints.append(
+            f"과대예측 {gap:.1f}pp — 표시 상승률이 과거 급등 평균·클램프에 끌려 높아짐"
+        )
+
+    tier = str(row.get("confidence_tier") or "").strip().lower()
+    ml = row.get("ml_prob")
+    if isinstance(ml, (int, float)) and float(ml) >= 0.80 and kh <= 1:
+        tags.append("ml_high_keyword_weak")
+        hints.append(
+            f"ML {float(ml) * 100.0:.0f}% 고점수인데 키워드 {kh}개 — "
+            "모델 허위 양성 후보 가능성"
+        )
+    if tier == "high" and actual_pct < 10.0:
+        tags.append("high_tier_weak_followthrough")
+        hints.append("고확신 후보였으나 실제 10%에도 못 미침 — 후속 매수세·테마 지속 실패")
+
+    rank = row.get("rank_position")
+    if isinstance(rank, (int, float)) and int(rank) <= 10 and actual_pct + 1e-9 < thr_pct:
+        tags.append("top_rank_miss")
+        hints.append(f"랭킹 {int(rank)}위권이었지만 실제 급등으로 이어지지 않음")
+
+    # 예측 근거 문장에서 캐리오버·팩터 불균형 힌트
+    reason_blob = " ".join(
+        str(x)
+        for x in (
+            row.get("pred_reason_summary"),
+            row.get("pred_reason_detail_html"),
+            row.get("reasons_html"),
+            " ".join(str(x) for x in (row.get("reasons") or [])),
+        )
+        if x
+    )
+    reason_blob = re.sub(r"<[^>]+>", " ", reason_blob)
+    if "캐리오버" in reason_blob or "테마 캐리" in reason_blob:
+        tags.append("theme_carryover_fade")
+        hints.append("전일 테마 캐리오버에 기댔는데 당일 가격이 따라오지 않음")
+
     if not tags:
         tags.append("pred_miss_other")
-        hints.append("고예측이었으나 실제 급등 미달(기타)")
+        hints.append("예측 후보였으나 실제 급등 미달 — 갭·뉴스·공시 블록 참고")
     return tags, hints
 
 

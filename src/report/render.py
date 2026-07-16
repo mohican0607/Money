@@ -13,14 +13,83 @@ from jinja2 import Environment, select_autoescape
 from .. import config, trading_calendar
 from ..features import highlight_terms
 
-_MARKET_THEME_REF_RE = re.compile(
-    r'<div class="market-theme-ref"[^>]*>.*?</div>',
-    re.DOTALL | re.IGNORECASE,
-)
-_DAY_HEADING_ROW_RE = re.compile(
-    r'(<div class="day-heading-row"[^>]*>.*?</div>)',
-    re.DOTALL | re.IGNORECASE,
-)
+
+class _SpanMatch:
+    """``re.Match`` 대용 — ``group(0)`` / ``start`` / ``end`` 만 제공."""
+
+    __slots__ = ("_s", "_a", "_b")
+
+    def __init__(self, s: str, a: int, b: int) -> None:
+        self._s = s
+        self._a = a
+        self._b = b
+
+    def group(self, n: int = 0) -> str:
+        if n != 0:
+            raise IndexError(n)
+        return self._s[self._a : self._b]
+
+    def start(self, n: int = 0) -> int:
+        if n != 0:
+            raise IndexError(n)
+        return self._a
+
+    def end(self, n: int = 0) -> int:
+        if n != 0:
+            raise IndexError(n)
+        return self._b
+
+
+def _match_balanced_div(html: str, class_name: str, *, start: int = 0) -> _SpanMatch | None:
+    """
+    ``class`` 에 ``class_name`` 이 포함된 최상위 ``<div>…</div>`` 한 블록.
+
+    비탐욕 ``.*?`` 는 중첩 ``</div>`` 에서 조기 종료되어 주간 탭을 깨뜨립니다.
+    """
+    open_re = re.compile(
+        rf'<div\b[^>]*\bclass="[^"]*\b{re.escape(class_name)}\b[^"]*"[^>]*>',
+        re.IGNORECASE,
+    )
+    m = open_re.search(html, start)
+    if not m:
+        return None
+    depth = 0
+    j = m.start()
+    n = len(html)
+    lower = None  # lazy lower only for tag sniff if needed
+    while j < n:
+        if html[j] != "<":
+            j += 1
+            continue
+        # opening <div ...>
+        if html.startswith("<div", j) or html.startswith("<DIV", j):
+            nxt = html[j + 4] if j + 4 < n else ""
+            if nxt not in " \t\r\n>/":
+                j += 1
+                continue
+            # avoid matching </div
+            depth += 1
+            gt = html.find(">", j)
+            if gt < 0:
+                return None
+            j = gt + 1
+            continue
+        if html.startswith("</div>", j) or html.startswith("</DIV>", j):
+            depth -= 1
+            j += 6
+            if depth == 0:
+                return _SpanMatch(html, m.start(), j)
+            continue
+        j += 1
+    return None
+
+
+def _replace_balanced_div(html: str, class_name: str, replacement: str) -> str | None:
+    """첫 번째 해당 class div 블록을 ``replacement`` 로 교체. 없으면 None."""
+    m = _match_balanced_div(html, class_name)
+    if m is None:
+        return None
+    return html[: m.start()] + replacement + html[m.end() :]
 
 
 @dataclass
@@ -212,11 +281,12 @@ def inject_market_theme_into_day_section(section_html: str, theme_inner_html: st
     block = build_market_theme_ref_block(theme_inner_html)
     if not block:
         return section_html
-    if _MARKET_THEME_REF_RE.search(section_html):
-        return _MARKET_THEME_REF_RE.sub(block, section_html, count=1)
-    m = _DAY_HEADING_ROW_RE.search(section_html)
-    if m:
-        pos = m.end()
+    replaced = _replace_balanced_div(section_html, "market-theme-ref", block)
+    if replaced is not None:
+        return replaced
+    heading = _match_balanced_div(section_html, "day-heading-row")
+    if heading is not None:
+        pos = heading.end()
         return section_html[:pos] + "\n        " + block + section_html[pos:]
     return block + "\n" + section_html
 
@@ -291,7 +361,7 @@ def preserved_day_section_needs_market_theme_backfill(
         return False
     if not trading_calendar.is_krx_daily_bar_effective_closed(t_day, now_kst=now):
         return False
-    m = _MARKET_THEME_REF_RE.search(section_html or "")
+    m = _match_balanced_div(section_html or "", "market-theme-ref")
     if not m:
         return True
     from ..learning import market_theme as snapshot_rebuild_learning

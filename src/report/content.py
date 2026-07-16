@@ -2848,8 +2848,11 @@ def inject_market_theme_into_theme_day_section(
     block = report_render.build_market_theme_ref_block(theme_inner_html)
     if not block:
         return section_html
-    if report_render._MARKET_THEME_REF_RE.search(section_html):
-        return report_render._MARKET_THEME_REF_RE.sub(block, section_html, count=1)
+    replaced = report_render._replace_balanced_div(
+        section_html, "market-theme-ref", block
+    )
+    if replaced is not None:
+        return replaced
     m = _THEME_DAY_META_RE.search(section_html)
     if m:
         pos = m.end()

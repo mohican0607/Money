@@ -16,6 +16,8 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
     → 관측일 From~To 구간(양 끝 포함, **KRX 거래일만**). To는 현재 기준 N+1 거래일 이하.
       구간에 현재 N+1이 포함되면 N일 14:30(KST)부터 실행.
       월별 HTML·목차. --no-report-expand 로 병합 끔
+      **주의:** 장중 매수용으로는 `python main.py`(인자 없음)만 쓰세요.
+      From~To 로 과거·미래를 한꺼번에 돌리면 학습·백필로 수십 분~1시간+ 걸립니다.
 
   python main.py --weekly
     → config REPORT_TEST_DAY_START~END 구간을 달력 월 단위로 묶어

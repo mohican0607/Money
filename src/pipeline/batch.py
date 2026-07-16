@@ -53,10 +53,37 @@ def _supplement_stale_forward_preserved_reports(
 ) -> PipelineOut:
     """
     월간 HTML 병합으로 남은 **장 마감 후에도 예측 전용** 일자 블록을 자동 재처리합니다.
+
+    장중·예측전용 실행에서는 건너뜁니다(14:30→15:00 창을 막지 않기 위함).
+    장후 백필: ``PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD=1`` (기본) 이고
+    이번 실행에 예측전용 일자가 없을 때만 동작합니다.
     """
     if not merge_existing_monthly_days:
         return po
     now_kst = datetime.now(trading_calendar.KST)
+    today = now_kst.date()
+    has_forward = any(
+        bool(getattr(dr, "forward_observation", False)) for dr in po.day_reports
+    )
+    before_close = trading_calendar.is_trading_day(today) and (
+        trading_calendar.is_before_krx_regular_close_kst(today, now_kst=now_kst)
+    )
+    if has_forward or before_close or not config.PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD:
+        reason = (
+            "예측전용 일자 포함"
+            if has_forward
+            else (
+                "장중(마감 전)"
+                if before_close
+                else "PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD=0"
+            )
+        )
+        print(
+            f"장 마감 후 미갱신 일자 자동 재처리 생략 ({reason}). "
+            "장후 백필은 확정된 과거 구간만 따로 실행하세요.",
+            flush=True,
+        )
+        return po
     in_po = {dr.trading_day for dr in po.day_reports}
     stale: list[date] = []
     for path in _monthly_report_paths_for_po(po):
