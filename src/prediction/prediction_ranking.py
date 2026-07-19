@@ -1446,93 +1446,116 @@ def assign_forward_confidence_tiers(
     regime_scale: float = 1.0,
 ) -> None:
     """
-    예측 전용(장 시작 전) 관측일: 과거 종목 적중 이력 게이트 없이
-    시세·섹터·ML 합의 상위만 고·중 확신 슬롯에 배정합니다.
+    N일 → N+1일 실전 확신 게이트.
+
+    보정 ML 확률·최종 순위·키워드 근거·비뉴스 기둥 합의를 모두 요구합니다.
+    조건을 통과한 행이 없으면 high/mid를 비워 둡니다. 과거 구현처럼 슬롯을
+    강제로 채우면 희귀 사건에서 ``고확신``이 사실상 상위 N개라는 뜻으로
+    변질되므로 fallback 승격과 테마/섹터 자동 승격을 금지합니다.
     """
-    rs = max(0.45, float(regime_scale))
-    max_high = max(2, int(round(int(config.PRED_OUTPUT_MAX) * rs)))
-    max_mid = max(2, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
+    rs = max(0.25, min(1.0, float(regime_scale)))
+    max_high = max(
+        0,
+        min(
+            int(config.PRED_PRECISION_MAX_HIGH),
+            int(round(int(config.PRED_PRECISION_MAX_HIGH) * rs)),
+        ),
+    )
+    max_mid = (
+        max(0, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
+        if config.PRED_FORWARD_MID_ENABLED
+        else 0
+    )
 
     for row in pool:
         row.confidence_tier = "none"
     if not pool:
         return
+    if not config.PRED_CONFIDENCE_OUTPUT_ENABLED:
+        for pos, row in enumerate(
+            sorted(pool, key=rank_score_for_row, reverse=True), start=1
+        ):
+            row.rank_position = pos
+            row.rank_score = hybrid_rank_score(row)
+        return
 
-    ranked = sorted(pool, key=_forward_conviction_score, reverse=True)
-    top_hybrid = hybrid_rank_score(ranked[0])
+    ranked = sorted(pool, key=rank_score_for_row, reverse=True)
+    confidence_ranked = sorted(
+        pool,
+        key=lambda row: (
+            float(getattr(row, "ml_precision_score", 0.0) or 0.0),
+            float(getattr(row, "ml_prob", 0.0) or 0.0),
+            rank_score_for_row(row),
+        ),
+        reverse=True,
+    )
+    top_precision = max(
+        (
+            float(getattr(row, "ml_precision_score", 0.0) or 0.0)
+            for row in confidence_ranked
+        ),
+        default=0.0,
+    )
+    high_prob_floor = float(config.PRED_FORWARD_HIGH_CALIBRATED_MIN) / rs
+    high_rank_max = int(config.PRED_FORWARD_HIGH_MAX_RANK)
+    high_kw_min = int(config.PRED_FORWARD_HIGH_MIN_KEYWORD_HITS)
+    high_relative = float(config.PRED_FORWARD_HIGH_RELATIVE_PRECISION)
     high_n = 0
-    for pos, row in enumerate(ranked, start=1):
-        if high_n >= max_high:
+    for pos, row in enumerate(confidence_ranked, start=1):
+        if high_n >= max_high or pos > high_rank_max:
             break
-        if prior_day_exhaustion_blocks_confidence(row):
+        if blocks_high_confidence(row):
+            continue
+        calibrated = float(getattr(row, "ml_prob", 0.0) or 0.0)
+        if calibrated + 1e-12 < high_prob_floor:
+            continue
+        precision_raw = float(
+            getattr(row, "ml_precision_score", 0.0) or 0.0
+        )
+        if (
+            top_precision > 1e-12
+            and precision_raw + 1e-12 < top_precision * high_relative
+        ):
+            continue
+        keyword_hits = int(getattr(row, "keyword_hits", 0) or 0)
+        mention = float(getattr(row, "mention_score", 0.0) or 0.0)
+        # 종목명 직접 언급 또는 서로 다른 키워드 2개 이상을 요구한다.
+        if keyword_hits < high_kw_min:
+            continue
+        if (
+            mention + 1e-12 < float(config.PRED_MENTION_GATE_MIN)
+            and keyword_hits < 2
+        ):
             continue
         pillars = compute_pillar_scores(row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None))
         non_news = count_non_news_strong_pillars(pillars, threshold=0.40)
-        mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
-        sec = max(
-            float(getattr(row, "industry_momentum", 0.0) or 0.0),
-            float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0),
-        )
-        h = hybrid_rank_score(row)
         if non_news < 2:
             continue
-        if mom + 1e-12 < 0.30 and sec + 1e-12 < 0.28:
-            continue
-        if pillars["news"] + 1e-12 >= 0.55 and non_news < 2:
-            continue
-        if not passes_dual_factor_gate(
-            row,
-            hybrid=h,
-            top_hybrid=top_hybrid,
-            ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None),
-        ):
-            if non_news < 3 and mom + 1e-12 < 0.38:
-                continue
         row.confidence_tier = "high"
         high_n += 1
 
     mid_n = 0
-    for row in ranked:
+    mid_prob_floor = float(config.PRED_FORWARD_MID_CALIBRATED_MIN) / rs
+    mid_rank_max = int(config.PRED_FORWARD_MID_MAX_RANK)
+    for pos, row in enumerate(ranked, start=1):
+        if mid_n >= max_mid or pos > mid_rank_max:
+            break
         if row.confidence_tier == "high":
             continue
-        if mid_n >= max_mid:
-            break
-        if prior_day_exhaustion_blocks_confidence(row):
+        if blocks_high_confidence(row):
             continue
-        if _forward_conviction_score(row) + 1e-12 >= 0.20:
-            row.confidence_tier = "mid"
-            mid_n += 1
-
-    rot_ranked = sorted(ranked, key=theme_rotation_score, reverse=True)
-    high_n, mid_n = _promote_theme_rotation_confidence(
-        rot_ranked,
-        max_high=max_high,
-        max_mid=max_mid,
-        high_n=high_n,
-        mid_n=mid_n,
-    )
-
-    for pos, row in enumerate(ranked, start=1):
-        if mid_n >= max_mid or pos > 12:
-            break
-        if row.confidence_tier != "none":
+        calibrated = float(getattr(row, "ml_prob", 0.0) or 0.0)
+        if calibrated + 1e-12 < mid_prob_floor:
             continue
-        ml = float(row.ml_prob or 0.0)
+        if int(getattr(row, "keyword_hits", 0) or 0) < 1:
+            continue
         pillars = compute_pillar_scores(
             row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
         )
-        if ml + 1e-12 >= 0.36 and pillars["sector"] + 1e-12 >= 0.42:
-            row.confidence_tier = "mid"
-            mid_n += 1
-
-    if high_n == 0 and ranked:
-        for row in ranked[:max_high]:
-            pillars = compute_pillar_scores(
-                row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
-            )
-            if count_non_news_strong_pillars(pillars, threshold=0.35) >= 1:
-                row.confidence_tier = "high"
-                high_n += 1
+        if count_non_news_strong_pillars(pillars, threshold=0.38) < 2:
+            continue
+        row.confidence_tier = "mid"
+        mid_n += 1
 
     for pos, row in enumerate(ranked, start=1):
         row.rank_position = pos
@@ -1585,16 +1608,9 @@ def finalize_ranked_predictions(
             row.ml_prob = prob if config.PRED_RANKING_MODE else None
 
     if config.PRED_RANKING_MODE:
-        if forward_observation:
-            assign_forward_confidence_tiers(pool, regime_scale=r_scale)
-        else:
-            assign_hybrid_confidence_tiers(pool, regime_scale=r_scale)
-            # 1차 하이브리드 tier → 정밀 게이트로 high 재필터(뉴스 단독·저적중 종목 제거)
-            refine_confidence_tiers(
-                pool,
-                feedback_ctx=prediction_accuracy_cache.build_feedback_context(),
-                regime_scale=r_scale,
-            )
+        # 과거 재생과 실전이 같은 point-in-time 확신 규칙을 써야 검증 수치가
+        # 실전 의미를 갖는다. 장후 재생에서만 permissive tier를 쓰지 않는다.
+        assign_forward_confidence_tiers(pool, regime_scale=r_scale)
         pool = sorted(pool, key=rank_score_for_row, reverse=True)
     else:
         for pos, row in enumerate(pool, start=1):

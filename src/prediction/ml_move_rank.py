@@ -1,7 +1,7 @@
 """
 훈련 구간 라벨(당일 급등 여부)로 **감독학습 랭커**를 학습해, 관측일 후보 종목을 확률 순으로 정렬합니다.
 
-피처: N−1~N일 **14:30(KST)까지** 뉴스·테마·시세·KOSPI 흐름·과거 급등 이력(보조) 등.
+피처: N−1~N일 **15:30(KST)까지** 뉴스·테마·확정 일봉·KOSPI 흐름·과거 급등 이력(보조) 등.
 ``stocks.enrich_daily_returns_for_ml`` 로 만든 **전일 수익·거래량·단기 변동성·이평·시가갭·고저폭** 등 시세 요약.
 학습: 이진 분류 + 소프트라벨 회귀 이중 헤드, 시간순 보정, 샘플가중·하드네거티브.
 랭킹 점수는 raw 분류확률과 회귀점수를 혼합하고, 표시용만 분위 보정합니다.
@@ -19,7 +19,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .. import config
+from .. import config, stocks
 from ..learning import support as snapshot_miss_diagnosis
 from ..learning import support as theme_carryover
 from ..prediction import accuracy_cache as prediction_accuracy_cache
@@ -127,7 +127,7 @@ FEATURE_NAMES = (
     "near_limit_pressure",
 )
 
-ML_MODEL_VERSION = 22
+ML_MODEL_VERSION = 24
 MAX_NEG_PER_DAY = 150
 MIN_TOTAL_SAMPLES = 200
 MIN_POS_SAMPLES = 25
@@ -173,11 +173,39 @@ def _blend_rank_score(clf_prob: float, reg_score: float) -> float:
 
 
 def _build_prob_calibration_table(
-    raw_probs: np.ndarray, y_true: np.ndarray, *, n_bins: int = 10
+    raw_probs: np.ndarray,
+    y_true: np.ndarray,
+    *,
+    population_base_rate: float | None = None,
+    n_bins: int = 10,
 ) -> list[dict[str, float]]:
-    """검증 구간 raw 확률 → 실제 급등 비율(보정 테이블)."""
+    """
+    검증 구간 raw 확률 → 모집단 급등확률 보정 테이블.
+
+    학습/검증 배열은 급등 전수 + 일별 최대 N개 음성의 case-control 표본이다.
+    표본 내 적중률을 그대로 확률로 쓰면 실제 전 종목 모집단보다 수십 배
+    과대평가되므로 표본 사전확률을 모집단 사전확률로 odds 보정한다.
+    """
     if raw_probs.size == 0:
         return []
+    sample_base_rate = float(np.mean(y_true))
+    pop_base_rate = (
+        float(population_base_rate)
+        if population_base_rate is not None
+        else sample_base_rate
+    )
+    sample_base_rate = max(1e-6, min(1.0 - 1e-6, sample_base_rate))
+    pop_base_rate = max(1e-6, min(1.0 - 1e-6, pop_base_rate))
+    prior_odds_ratio = (
+        (pop_base_rate / (1.0 - pop_base_rate))
+        / (sample_base_rate / (1.0 - sample_base_rate))
+    )
+
+    def _population_rate(sample_rate: float) -> float:
+        rate = max(1e-6, min(1.0 - 1e-6, float(sample_rate)))
+        corrected_odds = (rate / (1.0 - rate)) * prior_odds_ratio
+        return corrected_odds / (1.0 + corrected_odds)
+
     order = np.argsort(raw_probs)
     raw_s = raw_probs[order]
     y_s = y_true[order]
@@ -195,10 +223,80 @@ def _build_prob_calibration_table(
             {
                 "lo": float(sl_raw[0]),
                 "hi": float(sl_raw[-1]),
-                "rate": float(np.mean(sl_y)),
+                "rate": float(_population_rate(float(np.mean(sl_y)))),
+                "population_corrected": 1.0,
             }
         )
     return out
+
+
+def _population_move_base_rate(base_rate: float | None = None) -> float:
+    """전 종목 기준 익일 ≥20% 대략 사전확률. case-control 표본률과 분리한다."""
+    if base_rate is not None and 1e-5 < float(base_rate) < 0.03:
+        return float(base_rate)
+    return 0.006
+
+
+def _rebase_case_control_rate(
+    sample_rate: float,
+    *,
+    sample_base_rate: float,
+    population_base_rate: float,
+) -> float:
+    """case-control 표본률 → 모집단 급등확률."""
+    sample = max(1e-6, min(1.0 - 1e-6, float(sample_rate)))
+    sample_base = max(1e-6, min(1.0 - 1e-6, float(sample_base_rate)))
+    pop_base = max(1e-6, min(1.0 - 1e-6, float(population_base_rate)))
+    prior_odds_ratio = (pop_base / (1.0 - pop_base)) / (
+        sample_base / (1.0 - sample_base)
+    )
+    corrected_odds = (sample / (1.0 - sample)) * prior_odds_ratio
+    return corrected_odds / (1.0 + corrected_odds)
+
+
+def _sanitize_calibration_artifacts(
+    cal_table: list[dict[str, float]] | None,
+    *,
+    cal_base_rate: float,
+    population_base_rate: float | None = None,
+) -> tuple[list[dict[str, float]], float]:
+    """
+    구버전 캐시처럼 표본 적중률이 들어 있는 보정 테이블을 모집단 확률로 정규화.
+    """
+    pop = _population_move_base_rate(population_base_rate)
+    sample_base = float(cal_base_rate or 0.0)
+    table = list(cal_table or [])
+    if table and all(
+        float(row.get("population_corrected", 0.0) or 0.0) >= 1.0
+        for row in table
+    ):
+        return table, pop
+    contaminated = sample_base >= 0.05 or any(
+        float(row.get("rate", 0.0) or 0.0) >= 0.20 for row in table
+    )
+    if not contaminated:
+        return table, pop if sample_base <= 0 else sample_base
+    if sample_base < 0.05:
+        sample_base = max(
+            0.05,
+            max((float(row.get("rate", 0.0) or 0.0) for row in table), default=0.15),
+        )
+    fixed = [
+        {
+            "lo": float(row.get("lo", 0.0)),
+            "hi": float(row.get("hi", 1.0)),
+            "rate": float(
+                _rebase_case_control_rate(
+                    float(row.get("rate", sample_base) or sample_base),
+                    sample_base_rate=sample_base,
+                    population_base_rate=pop,
+                )
+            ),
+            "population_corrected": 1.0,
+        }
+        for row in table
+    ]
+    return fixed, pop
 
 
 def calibrate_ml_probability(
@@ -209,23 +307,27 @@ def calibrate_ml_probability(
 ) -> float:
     """raw ``predict_proba`` → 검증 구간 보정(있으면) + 희귀 사전확률 수축."""
     raw = max(1e-6, min(1.0 - 1e-6, float(raw_prob)))
-    if cal_table:
-        for row in cal_table:
+    table, br = _sanitize_calibration_artifacts(
+        cal_table,
+        cal_base_rate=float(base_rate),
+    )
+    if table:
+        for row in table:
             lo = float(row.get("lo", 0.0))
             hi = float(row.get("hi", 1.0))
             if lo - 1e-12 <= raw <= hi + 1e-12:
-                rate = float(row.get("rate", base_rate))
-                return max(1e-5, min(0.42, rate))
-        if raw + 1e-12 < float(cal_table[0].get("lo", 0.0)):
-            return max(1e-5, min(0.42, float(cal_table[0].get("rate", base_rate))))
-        return max(1e-5, min(0.42, float(cal_table[-1].get("rate", base_rate))))
-    br = max(1e-5, min(0.06, float(base_rate)))
+                rate = float(row.get("rate", br))
+                return max(1e-5, min(0.12, rate))
+        if raw + 1e-12 < float(table[0].get("lo", 0.0)):
+            return max(1e-5, min(0.12, float(table[0].get("rate", br))))
+        return max(1e-5, min(0.12, float(table[-1].get("rate", br))))
+    br = max(1e-5, min(0.03, float(br)))
     logit_r = math.log(raw / (1.0 - raw))
     logit_b = math.log(br / (1.0 - br))
     shrink = 0.35
     z = shrink * logit_r + (1.0 - shrink) * logit_b
     p = 1.0 / (1.0 + math.exp(-z))
-    return max(br, min(0.35, p))
+    return max(br, min(0.08, p))
 
 
 def _feat_vector(
@@ -277,6 +379,11 @@ def _feat_vector(
     else:
         ks11_ret_lag1, ks11_std5 = ks11_market_feats(before_exclusive)
     price = price_feats_row(ohlcv_idx, code, before_exclusive)
+    # 목표는 N일 장 마감 전 → N+1일 급등이다. T일 시가갭은 N일에 알 수
+    # 없는 미래 정보이므로 학습·백테스트·실전 모두 같은 0으로 고정한다.
+    if len(price) > 7:
+        price = list(price)
+        price[7] = 0.0
     ret_lag1 = price[0] if price else 0.0
     ret_vs_ks11 = float(ret_lag1) - float(ks11_ret_lag1)
     risk_off = (
@@ -612,6 +719,7 @@ def _build_training_arrays(
     rows_y: list[int] = []
     rows_soft: list[float] = []
     rows_w: list[float] = []
+    rows_precision_w: list[float] = []
     rows_day: list[date] = []
     ohlcv_idx = ohlcv_lookup(returns_ml)
     pos_boost = pos_boost_keys or set()
@@ -650,11 +758,17 @@ def _build_training_arrays(
     )
     if lookback > 0 and len(days) > lookback:
         days = days[-lookback:]
-    news_ctx = make_news_ctx_bundle(
-        train_events,
-        news_by_calendar,
-        train_start,
-        label_before_exclusive,
+    # 전체 훈련 구간의 news_ctx를 과거 샘플 d에 주면 d 이후 뉴스가 피처에
+    # 들어간다. 인과적 일별 context 구현 전까지 기본은 0 피처로 둔다.
+    news_ctx = (
+        make_news_ctx_bundle(
+            train_events,
+            news_by_calendar,
+            train_start,
+            label_before_exclusive,
+        )
+        if config.ML_USE_NEWS_CONTEXT_FEATURES
+        else {}
     )
     vocab = list(news_ctx.get("vocab") or [])
     idf_arr = news_ctx.get("idf")
@@ -676,6 +790,7 @@ def _build_training_arrays(
         d: date,
         *,
         extra_w: float = 1.0,
+        precision_weight: float = 1.0,
     ) -> None:
         soft = _soft_move_label(act_ret, threshold=threshold)
         w = _row_sample_weight(y_bin, act_ret, threshold=threshold) * float(extra_w)
@@ -683,6 +798,7 @@ def _build_training_arrays(
         rows_y.append(int(y_bin))
         rows_soft.append(float(soft))
         rows_w.append(float(w))
+        rows_precision_w.append(float(precision_weight))
         rows_day.append(d)
 
     def _train_feat(
@@ -770,7 +886,12 @@ def _build_training_arrays(
             if not cand_set or c in cand_set
         ]
         n_pos = int(pos_df.shape[0])
-        n_neg = min(neg_cap, max(30, 6 * n_pos))
+        # 정밀도 head가 실제 후보 풀의 거짓 양성을 충분히 보도록 하드 음성을
+        # 가능한 상한까지 사용한다. 경량 학습만 기존 작은 비율을 유지한다.
+        n_neg = min(
+            neg_cap,
+            max(30, 6 * n_pos) if fast_train else max(120, 20 * n_pos),
+        )
         if len(neg_codes) > n_neg:
             # 하드 네거티브: 랜덤 후보군을 먼저 좁힌 뒤 고신호 절반 선택(전수 스코어링 방지)
             pool_n = min(len(neg_codes), max(n_neg * 3, n_neg + 40))
@@ -848,10 +969,14 @@ def _build_training_arrays(
             except Exception:
                 ps = 99.0
             if ps < 4.0:
-                _append_row(fv, 1, act_ret, d, extra_w=1.35)
+                _append_row(
+                    fv, 1, act_ret, d, extra_w=1.35, precision_weight=0.0
+                )
             if boost_dup > 0 and (d_iso, code) in pos_boost:
                 for _ in range(boost_dup):
-                    _append_row(fv, 1, act_ret, d, extra_w=1.15)
+                    _append_row(
+                        fv, 1, act_ret, d, extra_w=1.15, precision_weight=0.0
+                    )
 
         neg_seen: set[str] = set()
         for code in neg_codes:
@@ -862,7 +987,9 @@ def _build_training_arrays(
             neg_seen.add(code)
             if boost_dup > 0 and (d_iso, code) in neg_boost:
                 for _ in range(boost_dup):
-                    _append_row(fv, 0, act_ret, d, extra_w=1.15)
+                    _append_row(
+                        fv, 0, act_ret, d, extra_w=1.15, precision_weight=0.0
+                    )
 
         if not fast_train:
             for t_iso, code6 in neg_boost:
@@ -881,7 +1008,14 @@ def _build_training_arrays(
                 _append_row(fv, 0, act_ret, d)
                 if boost_dup > 0:
                     for _ in range(boost_dup):
-                        _append_row(fv, 0, act_ret, d, extra_w=1.15)
+                        _append_row(
+                            fv,
+                            0,
+                            act_ret,
+                            d,
+                            extra_w=1.15,
+                            precision_weight=0.0,
+                        )
                 neg_seen.add(code6)
 
     if len(rows_y) < MIN_TOTAL_SAMPLES or sum(rows_y) < MIN_POS_SAMPLES:
@@ -889,6 +1023,7 @@ def _build_training_arrays(
     meta: dict[str, Any] = {
         "news_ctx": news_ctx,
         "sample_weight": np.asarray(rows_w, dtype=np.float64),
+        "precision_weight": np.asarray(rows_precision_w, dtype=np.float64),
         "y_soft": np.asarray(rows_soft, dtype=np.float64),
         "row_days": list(rows_day),
     }
@@ -974,7 +1109,7 @@ def fit_or_load_classifier(
     (``--rebuild-train-snapshot`` 과 함께 최신 ``BreakoutEvent`` 로 랭커를 맞출 때).
 
     ``prefer_prior_reuse=True``(예측 전용·장중) 이면 캐시 미스 시 직전 가용
-    모델을 재사용해 학습을 생략합니다(14:30 창).
+    모델을 재사용해 학습을 생략합니다(장후 실행 시간 보호).
 
     Returns:
         ``{"pipeline": sklearn Pipeline | None, "fp": str, "feature_names": tuple}`` 또는
@@ -996,6 +1131,7 @@ def fit_or_load_classifier(
     )
     bundle: dict[str, Any] = {
         "pipeline": None,
+        "precision_pipeline": None,
         "reg_pipeline": None,
         "fp": fp,
         "feature_names": FEATURE_NAMES,
@@ -1015,6 +1151,7 @@ def fit_or_load_classifier(
                 loaded_name = alt_path.name
         if loaded is not None:
             bundle["pipeline"] = loaded["pipeline"]
+            bundle["precision_pipeline"] = loaded.get("precision_pipeline")
             bundle["reg_pipeline"] = loaded.get("reg_pipeline")
             bundle["cal_base_rate"] = float(loaded.get("cal_base_rate") or 0.01)
             bundle["cal_table"] = list(loaded.get("cal_table") or [])
@@ -1039,6 +1176,7 @@ def fit_or_load_classifier(
             if found is not None:
                 prior, prev_td = found
                 bundle["pipeline"] = prior["pipeline"]
+                bundle["precision_pipeline"] = prior.get("precision_pipeline")
                 bundle["reg_pipeline"] = prior.get("reg_pipeline")
                 bundle["cal_base_rate"] = float(
                     prior.get("cal_base_rate") or 0.01
@@ -1090,10 +1228,13 @@ def fit_or_load_classifier(
     X, y, meta = xy
     news_ctx_tr = meta.get("news_ctx")
     sample_weight = np.asarray(meta.get("sample_weight"), dtype=np.float64)
+    precision_weight = np.asarray(meta.get("precision_weight"), dtype=np.float64)
     y_soft = np.asarray(meta.get("y_soft"), dtype=np.float64)
     row_days: list[date] = list(meta.get("row_days") or [])
     if sample_weight.shape[0] != len(y):
         sample_weight = np.ones(len(y), dtype=np.float64)
+    if precision_weight.shape[0] != len(y):
+        precision_weight = np.ones(len(y), dtype=np.float64)
     if y_soft.shape[0] != len(y):
         y_soft = y.astype(np.float64)
 
@@ -1115,6 +1256,8 @@ def fit_or_load_classifier(
 
     X_tr, y_tr = X[mask_tr], y[mask_tr]
     w_tr = sample_weight[mask_tr]
+    p_keep_tr = precision_weight[mask_tr] > 0
+    p_keep_cal = precision_weight[mask_cal] > 0
     soft_tr = y_soft[mask_tr]
     X_cal, y_cal = X[mask_cal], y[mask_cal]
 
@@ -1142,6 +1285,7 @@ def fit_or_load_classifier(
             ("clf", clf),
         ]
     )
+    precision_pipe: Pipeline | None = None
     reg_pipe: Pipeline | None = None
     try:
         pipe.fit(X_tr, y_tr, clf__sample_weight=w_tr)
@@ -1154,6 +1298,33 @@ def fit_or_load_classifier(
     except Exception as e:
         print(f"ML 랭커: 학습 실패(휴리스틱만) - {e}", flush=True)
         return bundle
+
+    # confidence 전용 head: binary label만, class balancing/급등 복제 없이 학습.
+    # 랭킹 head와 분리해야 soft-return/recall 최적화가 확신 확률을 부풀리지 않는다.
+    if int(p_keep_tr.sum()) >= MIN_TOTAL_SAMPLES:
+        try:
+            precision_clf = HistGradientBoostingClassifier(
+                max_depth=4,
+                max_iter=80 if fast_train else 220,
+                learning_rate=0.06 if fast_train else 0.035,
+                random_state=43,
+                class_weight=None,
+                early_stopping=True,
+                validation_fraction=0.12,
+                n_iter_no_change=10 if fast_train else 20,
+                min_samples_leaf=24,
+                l2_regularization=0.35,
+            )
+            precision_pipe = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    ("clf", precision_clf),
+                ]
+            )
+            precision_pipe.fit(X_tr[p_keep_tr], y_tr[p_keep_tr])
+        except Exception as e:
+            print(f"ML 정밀도 head 학습 실패(랭킹 head 대체) - {e}", flush=True)
+            precision_pipe = None
 
     # 소프트 라벨 회귀 — Hit@K 정렬용 연속 점수
     if HistGradientBoostingRegressor is not None and soft_tr.size >= MIN_TOTAL_SAMPLES // 2:
@@ -1185,14 +1356,44 @@ def fit_or_load_classifier(
             reg_pipe = None
 
     cal_table: list[dict[str, float]] = []
-    if X_cal.shape[0] > 0:
-        raw_cal = pipe.predict_proba(X_cal)[:, 1]
-        cal_table = _build_prob_calibration_table(raw_cal, y_cal)
+    cal_population_rate: float | None = None
+    X_cal_precision = X_cal[p_keep_cal]
+    y_cal_precision = y_cal[p_keep_cal]
+    if X_cal_precision.shape[0] > 0:
+        pop = returns_ml.loc[
+            pd.to_datetime(returns_ml["Date"]).dt.date.isin(cal_day_set)
+            & returns_ml["Code"].astype(str).str.zfill(6).isin(listing_names)
+        ]
+        pop_ret = pd.to_numeric(pop.get("return_pct"), errors="coerce").dropna()
+        if not pop_ret.empty:
+            cal_population_rate = float(
+                (pop_ret >= float(config.BIG_MOVE_THRESHOLD)).mean()
+            )
+        cal_model = precision_pipe if precision_pipe is not None else pipe
+        raw_cal = cal_model.predict_proba(X_cal_precision)[:, 1]
+        cal_table = _build_prob_calibration_table(
+            raw_cal,
+            y_cal_precision,
+            population_base_rate=cal_population_rate,
+        )
     bundle["pipeline"] = pipe
+    bundle["precision_pipeline"] = precision_pipe
     bundle["reg_pipeline"] = reg_pipe
     bundle["cal_base_rate"] = (
-        float(y_cal.mean()) if y_cal.size > 0 else float(np.mean(y_tr))
+        cal_population_rate
+        if cal_population_rate is not None
+        else (
+            float(y_cal_precision.mean())
+            if y_cal_precision.size > 0
+            else float(np.mean(y_tr[p_keep_tr]))
+        )
     )
+    bundle["cal_sample_rate"] = (
+        float(y_cal_precision.mean())
+        if y_cal_precision.size > 0
+        else float(np.mean(y_tr[p_keep_tr]))
+    )
+    bundle["cal_population_rate"] = cal_population_rate
     bundle["cal_table"] = cal_table
     bundle["news_ctx"] = news_ctx_tr
     _persist_joblib_bundle(path, bundle)
@@ -1225,6 +1426,7 @@ def rank_predictions_ml(
 ) -> list[predict.PredictionRow]:
     """종목 관련 신호가 있는 후보만 급등 확률을 매기고 상위 ``top_n`` ``PredictionRow`` 를 만듭니다."""
     t0 = time.perf_counter()
+    returns_ml = stocks.align_returns_ml_for_forecast(returns_ml, target_day)
     ctx = predict.build_scoring_context(news_text_blob, train_events)
     kw_news, profile = ctx
     if feedback_ctx is None:
@@ -1340,6 +1542,16 @@ def rank_predictions_ml(
         ind_cache=ind_cache,
     )
     proba_raw = pipeline.predict_proba(X)[:, 1]
+    precision_pipe = (ml_bundle or {}).get("precision_pipeline")
+    if precision_pipe is not None:
+        try:
+            precision_raw = np.asarray(
+                precision_pipe.predict_proba(X)[:, 1], dtype=np.float64
+            )
+        except Exception:
+            precision_raw = np.asarray(proba_raw, dtype=np.float64)
+    else:
+        precision_raw = np.asarray(proba_raw, dtype=np.float64)
     cal_table = list((ml_bundle or {}).get("cal_table") or [])
     cal_base = float((ml_bundle or {}).get("cal_base_rate") or 0.01)
     reg_pipe = (ml_bundle or {}).get("reg_pipeline")
@@ -1362,11 +1574,11 @@ def rank_predictions_ml(
         )
     else:
         rank_score = np.asarray(proba_raw, dtype=np.float64)
-    # 보정 테이블은 분류 raw 확률 기준 — 혼합 rank_score 에 적용하면 왜곡됨
+    # 보정 테이블은 confidence 전용 binary head 기준이다.
     proba = np.asarray(
         [
             calibrate_ml_probability(float(p), cal_table=cal_table, base_rate=cal_base)
-            for p in proba_raw
+            for p in precision_raw
         ],
         dtype=np.float64,
     )
@@ -1439,6 +1651,7 @@ def rank_predictions_ml(
             continue
         p = float(proba[int(fi)])
         pr.ml_prob = p
+        pr.ml_precision_score = float(precision_raw[int(fi)])
         pr.ml_rank_score = float(rank_score[int(fi)])
         pr.ks11_ret_lag1 = ks11_ret
         pr.momentum_score = momentum_for_code(ohlcv_idx, code, target_day)

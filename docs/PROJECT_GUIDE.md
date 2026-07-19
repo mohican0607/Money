@@ -1,12 +1,12 @@
 # Money 프로젝트 가이드
 
-KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까지)** 수집·분류한 **뉴스(시장·테마·종목·국제정세 등)**, **전일 급등·테마 가중치**, **시세·KOSPI 흐름**, (보조) 과거 급등 종목 프로필·오판 피드백을 이용해 **다음 거래일(관측일 T) 수익률** 후보를 HTML 리포트로 출력하는 도구입니다.
+KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 15:30 장 마감 후 확정된 일봉·뉴스**와 전일 급등·테마 가중치, KOSPI 흐름을 이용해 **다음 거래일(관측일 T) 20%↑ 확률** 후보를 HTML 리포트로 출력하는 도구입니다.
 
-예측은 **휴리스틱**과 **ML 랭커(HistGradientBoosting)** 를 함께 쓰며, `PRED_USE_ML_RANKER=0` 이면 휴리스틱만 사용합니다. 기본(**랭킹 모드**)에서는 후보 풀을 **키워드·시세 모멘텀·전체뉴스 TF-IDF 맥락**(`news_context_ml`)의 합집합으로 넓힌 뒤 **하이브리드 점수**(`pred_hybrid`: ML + 모멘텀 + 뉴스맥락)로 정렬하고, **고확신/중확신**만 `pred_high`·`pred_mid`로 표시합니다(`PRED_RANKING_MODE=1`, `PRED_USE_DISPLAY_RANK_MAPPING=0`). **예측 상승률(%)** 은 종목별 과거 급등 평균·키워드 보정값이며, ML 확률은 순위·확신만 반영합니다(확률을 %로 바꿔 붙이지 않음). 레거시 순위→20~30% 일괄 매핑은 `PRED_USE_DISPLAY_RANK_MAPPING=1` 로 되돌릴 수 있습니다.
+예측은 **휴리스틱**과 **ML 랭커(HistGradientBoosting)** 를 함께 쓰며, `PRED_USE_ML_RANKER=0` 이면 휴리스틱만 사용합니다. ML v24는 순위용 binary+soft-return head와 **확신용 binary head**를 분리하고, confidence는 모집단 사전확률로 보정된 `ml_prob`만 사용합니다. 전체 훈련 구간을 한꺼번에 본 비인과 TF-IDF 피처는 기본 비활성(`ML_USE_NEWS_CONTEXT_FEATURES=0`)입니다. 현재 외부표본 precision 미달로 `PRED_CONFIDENCE_OUTPUT_ENABLED=0`이 기본이며, 랭킹 watchlist만 표시합니다.
 
-**현재 ML·freeze 버전:** `ML_MODEL_VERSION=20`, `PREDICTION_FREEZE_SCHEMA_VERSION=25`
+**현재 ML·freeze 버전:** `ML_MODEL_VERSION=24`, `PREDICTION_FREEZE_SCHEMA_VERSION=44`
 
-**14:30 실행 → 30분 내 완료 목표:** ML 풀 cap 260·enrich 130·업종 피처 캐시·병렬 피처(12 workers). 캐시 히트 시 **ML 추론 ~1분**. 캐시 미스 경량 학습 **~5분**.
+**15:40 이후 실행:** `scripts/run_daily_1500.ps1`를 일찍 실행해도 15:40까지 기다립니다. 완성 일봉을 쓴 학습과 부분 일봉을 쓴 실전의 분포 불일치를 막기 위한 필수 조건입니다.
 
 ---
 
@@ -50,7 +50,7 @@ KOSPI·KOSDAQ 상장 종목에 대해, **N거래일 장 마감 전(14:30 KST까�
         ↓
 캘린더 일자별 뉴스(JSON) + OHLCV → BreakoutEvent 풀(과거 급등 라벨·보조 프로필)
         ↓
-관측일 T: N−1~N **14:30까지** early 뉴스·테마·시세·시장
+관측일 T: N일 **확정 일봉** + N−1~N **15:30까지** early 뉴스·테마·시장
         → 후보 = 키워드/종목명 ∪ **모멘텀** ∪ **수급** ∪ **뉴스맥락(TF-IDF)** ∪ **전일급등·업종 peer** (`candidate_pool.day_candidate_codes`)
         → ML 확률 → **하이브리드 순위** → finalize(섹터 다양화·캐리오버 재랭킹) → 상위 N·고/중 확신
         (학습 라벨·이벤트는 **T 직전**만 사용 — 워크포워드)
@@ -65,8 +65,8 @@ DayReport → HTML
 ### 2.2 기준일 N과 관측일 T
 
 - `python main.py YYYYMMDD` 에서 **YYYYMMDD = 관측일 T**, **N = T 직전 거래일**.
-- 시나리오: **N일 장 마감 전** 주문 → **T일 급등** 목표.
-- 예측 뉴스: **N−1 거래일 14:30(KST)까지**(early). `USE_DECISION_NEWS_INTRADAY_CUTOFF=1` 기본.
+- 시나리오: **N일 장 마감 후** 후보 확정 → **T일 급등** 목표.
+- 예측 뉴스: **N 거래일 15:30(KST)까지**(early). `USE_DECISION_NEWS_INTRADAY_CUTOFF=1` 기본.
 
 ### 2.3 학습 라벨 vs 관측(리포트)
 
@@ -187,7 +187,7 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 
 | 구분 | 시점·내용 | 학습/예측 반영 |
 |------|-----------|----------------|
-| **early 뉴스** | 관측일 `T` 직전 거래일 **14:30(KST)** 까지 (`USE_DECISION_NEWS_INTRADAY_CUTOFF`) | `train_events.news_keywords`, 휴리스틱·ML 랭커 피처 |
+| **early 뉴스** | 관측일 `T` 직전 거래일 **15:30(KST)** 까지 (`USE_DECISION_NEWS_INTRADAY_CUTOFF`) | `train_events.news_keywords`, 휴리스틱·ML 랭커 피처 |
 | **뉴스맥락(TF-IDF)** | T 직전 구간 전체 early 뉴스 + 급등일 프로필 | `news_context_ml` 5피처·맥락 후보·`news_ctx` joblib |
 | **테마 캐리오버** | `T` 직전일 급등·뉴스 → `daily_theme_snapshots.json` | `theme_carryover` 점수·ML `theme_kw_overlap` |
 | **`market_theme_flow`** | 당일 10%+ 상승 종목 vs early 뉴스 키워드·테마 시드 교집합 | 스냅샷 JSON·**리포트 표** (ML 피처로 직접 넣지 않음) |
@@ -223,7 +223,7 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 | `OHLCV_MAX_WORKERS` | OHLCV 다운로드 워커(기본 12) |
 | `USE_KRX_OHLCV` | KRX 일봉 우선 |
 | `SAMPLE_TICKERS` | 디버그용 상위 N종만 |
-| `USE_DECISION_NEWS_INTRADAY_CUTOFF` | N−1 14:30 KST early/late(기본 1) |
+| `USE_DECISION_NEWS_INTRADAY_CUTOFF` | N일 15:30 KST early/late(기본 1) |
 | `PRED_USE_ML_RANKER` | ML 랭커 사용(기본 1) |
 | `PREDICTION_FREEZE_ENABLED` | T별 예측 고정 캐시(기본 1) |
 | `PRED_ML_HIGH_CONFIDENCE_PROB` | 고확신 ML 확률 하한(기본 **0.10**, 코드 최소 0.08) |

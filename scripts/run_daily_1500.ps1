@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  KRX 거래일 14:30 자동 실행용: MOCK_NEWS=0 으로 main.py 실행 후(기본) 생성 리포트 HTML만 자동 오픈(main.py 동작).
+  KRX 거래일 장 마감 후(15:40) 자동 실행용: 완성 일봉으로 N+1 예측 리포트를 생성합니다.
 
 .DESCRIPTION
   - 오늘이 XKRX 거래일이 아니면 종료(스케줄러는 성공 코드).
@@ -26,7 +26,7 @@ Set-Location -LiteralPath $RepoRoot
 
 $env:MOCK_NEWS = "0"
 $env:PYTHONUTF8 = "1"
-# 14:30 라이브: 학습·과거일 백필로 창을 날리지 않음
+# 장후 N+1 예측: 학습·과거일 백필로 실행 시간을 늘리지 않음
 $env:ML_REUSE_PRIOR_FOR_FORWARD = "1"
 $env:PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD = "0"
 if (-not $env:MONEY_TEMP_DIR) { $env:MONEY_TEMP_DIR = "F:\temp\Money\tmp" }
@@ -54,6 +54,16 @@ if ($code -eq 4) {
 if ($code -ne 0) {
     Write-Error "거래일 검사 실패 (exit $code)"
     exit $code
+}
+
+# 학습은 완성된 N일 일봉을 사용한다. 15:30 이전 부분 일봉으로 실행하면
+# train/serve skew가 생기므로, 기존 14:30~15:00 스케줄도 15:40까지 기다린다.
+$now = Get-Date
+$postClose = Get-Date -Hour 15 -Minute 40 -Second 0
+if ($now -lt $postClose) {
+    $waitSeconds = [int][Math]::Ceiling(($postClose - $now).TotalSeconds)
+    Write-Host "[run_daily_1500] 완성 일봉 대기: $waitSeconds 초 (15:40 실행)"
+    Start-Sleep -Seconds $waitSeconds
 }
 
 & $PythonExe $MainPy

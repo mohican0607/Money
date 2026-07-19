@@ -211,7 +211,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 41
+PREDICTION_FREEZE_SCHEMA_VERSION = 44
 
 # --- 다요인(멀티팩터) 랭킹 가중치 (합≈1, 뉴스 최소) ---
 PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.48)
@@ -253,6 +253,11 @@ PRED_PRECISION_GATE_ENABLED = os.getenv("PRED_PRECISION_GATE_ENABLED", "1").stri
     "yes",
     "on",
 )
+# 외부표본 precision 기준을 통과하기 전에는 high/mid 배지를 내보내지 않는다.
+# 랭킹 watchlist는 유지된다.
+PRED_CONFIDENCE_OUTPUT_ENABLED = os.getenv(
+    "PRED_CONFIDENCE_OUTPUT_ENABLED", "0"
+).strip().lower() in ("1", "true", "yes", "on")
 PRED_PRECISION_MAX_HIGH = _positive_int_env("PRED_PRECISION_MAX_HIGH", 2)
 PRED_PRECISION_MIN_CONVICTION = _float_env("PRED_PRECISION_MIN_CONVICTION", 0.42)
 PRED_PRECISION_MIN_PILLARS = _positive_int_env("PRED_PRECISION_MIN_PILLARS", 1)
@@ -268,6 +273,29 @@ PRED_PRECISION_BUCKET_MIN_SAMPLES = _positive_int_env("PRED_PRECISION_BUCKET_MIN
 PRED_PRECISION_BUCKET_MIN_RATIO = _float_env("PRED_PRECISION_BUCKET_MIN_RATIO", 0.28)
 PRED_PRECISION_CODE_MIN_TRIES = _positive_int_env("PRED_PRECISION_CODE_MIN_TRIES", 5)
 PRED_PRECISION_CODE_MIN_HIT_RATE = _float_env("PRED_PRECISION_CODE_MIN_HIT_RATE", 0.12)
+# N일 → N+1일 실전 확신은 보정확률·최종 순위·뉴스 근거를 모두 통과해야 한다.
+# 통과자가 없으면 빈 슬롯을 허용한다(강제 high/mid 금지).
+# 모집단 보정 후 상위 확률도 대개 수 %대다. 0.30 같은 구버전 하한은 전부 기각한다.
+PRED_FORWARD_HIGH_CALIBRATED_MIN = _float_env(
+    "PRED_FORWARD_HIGH_CALIBRATED_MIN", 0.01
+)
+PRED_FORWARD_HIGH_MAX_RANK = _positive_int_env("PRED_FORWARD_HIGH_MAX_RANK", 3)
+PRED_FORWARD_HIGH_RELATIVE_PRECISION = _float_env(
+    "PRED_FORWARD_HIGH_RELATIVE_PRECISION", 0.85
+)
+PRED_FORWARD_HIGH_MIN_KEYWORD_HITS = _positive_int_env(
+    "PRED_FORWARD_HIGH_MIN_KEYWORD_HITS", 1
+)
+PRED_FORWARD_MID_ENABLED = os.getenv("PRED_FORWARD_MID_ENABLED", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+PRED_FORWARD_MID_CALIBRATED_MIN = _float_env(
+    "PRED_FORWARD_MID_CALIBRATED_MIN", 0.02
+)
+PRED_FORWARD_MID_MAX_RANK = _positive_int_env("PRED_FORWARD_MID_MAX_RANK", 5)
 
 # --- 랭킹 우선 예측(구조적 정확도 개선) ---
 # 1: ML 확률·순위 기반, pred_high=확신구간 / 0: 레거시(표시%≥20%)
@@ -410,6 +438,9 @@ ML_TRAIN_LOOKBACK_DAYS_FAST = _non_negative_int_env("ML_TRAIN_LOOKBACK_DAYS_FAST
 ML_TRAIN_MAX_NEG_PER_DAY = _positive_int_env("ML_TRAIN_MAX_NEG_PER_DAY", 160)
 ML_TRAIN_MAX_NEG_PER_DAY_FAST = _positive_int_env("ML_TRAIN_MAX_NEG_PER_DAY_FAST", 40)
 ML_TRAIN_DAY_CANDIDATE_CAP = _positive_int_env("ML_TRAIN_DAY_CANDIDATE_CAP", 110)
+ML_USE_NEWS_CONTEXT_FEATURES = os.getenv(
+    "ML_USE_NEWS_CONTEXT_FEATURES", "0"
+).strip().lower() in ("1", "true", "yes", "on")
 ML_MISS_BOOST_MAX_KEYS = _positive_int_env("ML_MISS_BOOST_MAX_KEYS", 320)
 ML_MISS_BOOST_DUP = _positive_int_env("ML_MISS_BOOST_DUP", 2)
 ML_MISS_BOOST_MAX_KEYS_FAST = _positive_int_env("ML_MISS_BOOST_MAX_KEYS_FAST", 48)
@@ -453,15 +484,15 @@ KRX_AD_HOC_SESSION_CLOSURES: tuple[date, ...] = (
     date(2026, 7, 17),  # 제헌절(2026~ 법정 공휴일·증시 휴장)
 )
 
-# 매수 시나리오: N거래일 장마감 전(약 14:00~14:50)에 주문해 N+1일 급등을 노릴 때,
-# 예측·훈련에 쓰는 뉴스는 'N-1 거래일' 14:30(KST)까지로 제한한다. (N = T 직전 거래일, T = 수익률 관측일)
+# 예측 시나리오: N거래일 15:30 장 마감 후 완성 일봉·뉴스로 N+1일 급등을 예측한다.
+# (N = T 직전 거래일, T = 수익률 관측일)
 USE_DECISION_NEWS_INTRADAY_CUTOFF = os.getenv("USE_DECISION_NEWS_INTRADAY_CUTOFF", "1").strip() in (
     "1",
     "true",
     "True",
     "yes",
 )
-NEWS_CUTOFF_KST_HOUR = 14
+NEWS_CUTOFF_KST_HOUR = 15
 NEWS_CUTOFF_KST_MINUTE = 30
 
 # HTML 리포트에 포함할 테스트 거래일(이 범위가 설정되면 MAX_TEST_DAYS는 무시)

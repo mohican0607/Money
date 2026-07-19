@@ -270,6 +270,11 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
                         if x.get("ml_prob") is not None
                         else None
                     ),
+                    ml_precision_score=(
+                        float(x["ml_precision_score"])
+                        if x.get("ml_precision_score") is not None
+                        else None
+                    ),
                     keyword_hits=int(x.get("keyword_hits", 0) or 0),
                     mention_score=float(x.get("mention_score", 0.0) or 0.0),
                     rank_score=(
@@ -317,6 +322,11 @@ def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[
             "matched_keywords": list(r.matched_keywords),
             "reasons": list(r.reasons),
             "ml_prob": (None if r.ml_prob is None else float(r.ml_prob)),
+            "ml_precision_score": (
+                None
+                if getattr(r, "ml_precision_score", None) is None
+                else float(r.ml_precision_score)
+            ),
             "keyword_hits": int(getattr(r, "keyword_hits", 0) or 0),
             "mention_score": float(getattr(r, "mention_score", 0.0) or 0.0),
             "rank_score": (

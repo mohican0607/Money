@@ -38,7 +38,11 @@ def _cutoff_error(n_day: date, *, now_kst: datetime | None = None) -> str | None
         tzinfo=KST,
     )
     if now < cutoff:
-        return f"N일({n_day.isoformat()}) 14:30분부터 실행 가능합니다."
+        return (
+            f"N일({n_day.isoformat()}) "
+            f"{config.NEWS_CUTOFF_KST_HOUR:02d}:"
+            f"{config.NEWS_CUTOFF_KST_MINUTE:02d}부터 실행 가능합니다."
+        )
     return None
 
 
@@ -53,7 +57,7 @@ def validate_range_from_to(
 
     - ``From``~``To`` 캘린더 구간(양 끝 포함).
     - ``To`` 는 현재 기준 ``N+1`` 거래일을 넘을 수 없음.
-    - 구간에 현재 ``N+1`` 이 포함되면 KST ``N`` 일 14:30 이후만 실행 가능.
+    - 구간에 현재 ``N+1`` 이 포함되면 N일 뉴스 컷오프 이후만 실행 가능.
     """
     if d_from > d_to:
         return f"구간 시작일({d_from.isoformat()})이 종료일({d_to.isoformat()})보다 늦습니다."
@@ -85,7 +89,7 @@ def validate_dated_t_day(
 
     - ``T`` 는 KRX 거래일이어야 함.
     - ``T`` 는 현재 기준 ``N+1`` 거래일을 넘을 수 없음.
-    - ``T`` 가 현재 ``N+1`` 이면 KST ``N`` 일 14:30 이후만 실행 가능.
+    - ``T`` 가 현재 ``N+1`` 이면 N일 뉴스 컷오프 이후만 실행 가능.
     """
     from src import trading_calendar
 

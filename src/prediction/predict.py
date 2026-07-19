@@ -1,7 +1,7 @@
 """
 익일(관측일 T) 수익률 후보 스코어링(휴리스틱 + 선택적 ML).
 
-**입력(의사결정 시점)**: N−1~N 거래일 **14:30(KST)까지** 수집·분류한 뉴스(시장·국제·테마·종목),
+**입력(의사결정 시점)**: N−1~N 거래일 **15:30(KST)까지** 수집·분류한 뉴스(시장·국제·테마·종목),
 전일 급등·테마 가중치, 시세·KOSPI 흐름, (보조) 과거 급등 종목의 뉴스 프로필·피드백 가중치.
 **출력**: T일 20%↑ 후보 **랭킹**(ML 확률·확신 구간). 레거시 표시 매핑은 ``PRED_USE_DISPLAY_RANK_MAPPING=1``.
 """
@@ -195,6 +195,8 @@ class PredictionRow:
     matched_keywords: list[str]
     reasons: list[str]
     ml_prob: float | None = None
+    # confidence 전용 binary head raw score. 순위용 ml_rank_score와 분리.
+    ml_precision_score: float | None = None
     # ML raw 혼합 점수(분류+회귀) — 하이브리드·Hit@K 정렬용. 보정 ml_prob 과 분리.
     ml_rank_score: float | None = None
     momentum_score: float = 0.0
@@ -745,7 +747,7 @@ def explain_return_gap_html(
         )
         parts.append(
             "<ul>"
-            "<li>14:30까지 뉴스·테마·시세 신호가 약하면 후보에서 제외될 수 있습니다.</li>"
+            "<li>15:30까지 뉴스·테마·시세 신호가 약하면 후보에서 제외될 수 있습니다.</li>"
             "<li>실제 급등은 공시·수급·테마·국제정세 등 뉴스만으로 설명되지 않는 경우가 있습니다.</li>"
             "<li>오른쪽「실제 맥락 뉴스」에서 당일 보도를 확인해 보세요.</li>"
             "</ul>"

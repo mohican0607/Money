@@ -602,6 +602,123 @@ def enrich_daily_returns_for_ml(returns_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def align_returns_ml_for_forecast(
+    returns_ml: pd.DataFrame,
+    target_day: date,
+) -> pd.DataFrame:
+    """
+    N일 장 마감 전 → N+1일(``target_day``) 예측에 맞춘 시세 피처 행을 보장합니다.
+
+    과거 백테스트에는 T일 ``open_gap``이 들어 있지만 실전 N일에는 알 수 없으므로
+    항상 0으로 지웁니다. 아직 T일 행이 없는 실전 예측은 N일까지의 일봉으로
+    T일용 lag/rolling 피처를 합성합니다. 이 정렬이 없으면 학습·백테스트에는
+    시세 피처가 있고 실전 추론에는 전부 0인 train/serve skew가 발생합니다.
+    """
+    if returns_ml is None or returns_ml.empty:
+        return returns_ml
+
+    target_ts = pd.Timestamp(target_day)
+    out = returns_ml.copy()
+    out["Date"] = pd.to_datetime(out["Date"]).dt.normalize()
+    target_mask = out["Date"] == target_ts
+    if target_mask.any():
+        if "open_gap" in out.columns:
+            out.loc[target_mask, "open_gap"] = 0.0
+        return out
+
+    history = out.loc[out["Date"] < target_ts].sort_values(["Code", "Date"])
+    if history.empty:
+        return out
+
+    rows: list[dict[str, Any]] = []
+    for code, group in history.groupby("Code", sort=False):
+        g = group.tail(20)
+        last = g.iloc[-1]
+        rets = pd.to_numeric(g.get("return_pct"), errors="coerce").dropna()
+        vols = (
+            pd.to_numeric(g.get("Volume"), errors="coerce")
+            .fillna(0.0)
+            .clip(lower=0.0)
+        )
+        closes = pd.to_numeric(g.get("Close"), errors="coerce").dropna()
+
+        row = {col: np.nan for col in out.columns}
+        row["Date"] = target_ts
+        row["Code"] = str(code).zfill(6)
+        if "Name" in out.columns:
+            row["Name"] = last.get("Name")
+
+        ret_last5 = rets.tail(5)
+        log_vol_last5 = np.log1p(vols.tail(5))
+        last_close = float(closes.iloc[-1]) if not closes.empty else 0.0
+        ma20 = float(closes.tail(20).mean()) if not closes.empty else 0.0
+        ma5 = float(closes.tail(5).mean()) if not closes.empty else 0.0
+        last_vol_log = float(np.log1p(vols.iloc[-1])) if not vols.empty else 0.0
+
+        row.update(
+            {
+                "ret_lag1": float(rets.iloc[-1]) if len(rets) >= 1 else 0.0,
+                "ret_lag3": float(rets.iloc[-3]) if len(rets) >= 3 else 0.0,
+                "log_vol_lag1": last_vol_log,
+                "ret_roll_std5": (
+                    float(ret_last5.std()) if len(ret_last5) >= 2 else 0.0
+                ),
+                "log_vol_roll_mean5": (
+                    float(log_vol_last5.mean()) if len(log_vol_last5) else 0.0
+                ),
+                "close_ma20_ratio": (
+                    (last_close - ma20) / ma20 if abs(ma20) > 1e-12 else 0.0
+                ),
+                "close_ma5_ratio": (
+                    (last_close - ma5) / ma5 if abs(ma5) > 1e-12 else 0.0
+                ),
+                "ret_roll_mean5": (
+                    float(ret_last5.mean()) if len(ret_last5) else 0.0
+                ),
+                "ret_max5": float(ret_last5.max()) if len(ret_last5) else 0.0,
+                "ret_min5": float(ret_last5.min()) if len(ret_last5) else 0.0,
+                "vol_surge_ratio": (
+                    last_vol_log - float(log_vol_last5.mean())
+                    if len(log_vol_last5)
+                    else 0.0
+                ),
+                # N일 의사결정 시 T일 시가는 미래 정보다.
+                "open_gap": 0.0,
+            }
+        )
+        try:
+            high = float(last.get("High") or 0.0)
+            low = float(last.get("Low") or 0.0)
+            close = float(last.get("Close") or 0.0)
+            row["hl_range_lag1"] = (
+                max(0.0, min(0.45, (high - low) / close))
+                if close > 0
+                else 0.0
+            )
+        except (TypeError, ValueError):
+            row["hl_range_lag1"] = 0.0
+        # 수급 컬럼은 이름 자체가 lag1이므로 마지막 가용 행 값을 이어 쓴다.
+        for col in (
+            "foreign_net_lag1",
+            "inst_net_lag1",
+            "individual_net_lag1",
+            "foreign_net_vol_ratio_lag1",
+            "inst_net_vol_ratio_lag1",
+            "foreign_holding_pct_lag1",
+            "foreign_net_sum3_ratio",
+            "investor_flow_score",
+        ):
+            if col in out.columns:
+                value = last.get(col)
+                row[col] = 0.0 if pd.isna(value) else value
+        rows.append(row)
+
+    if not rows:
+        return out
+    synthetic = pd.DataFrame(rows, columns=out.columns)
+    return pd.concat([out, synthetic], ignore_index=True)
+
+
 def returns_by_code_index(
     returns_df: pd.DataFrame,
     returns_ml: pd.DataFrame | None = None,

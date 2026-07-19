@@ -795,8 +795,6 @@ def _run_pipeline(
                 if not math.isfinite(float(pr.predicted_return_pct)):
                     continue
                 reasons_html = "<br/>".join(pr.reasons)
-                if str(getattr(pr, "confidence_tier", "none") or "none") == "none":
-                    pr.confidence_tier = "mid"
                 _append_compare_row_from_prediction(
                     rows_compare,
                     pr,
