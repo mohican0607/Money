@@ -4,9 +4,11 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from zoneinfo import ZoneInfo
 
-from src import config
-
 KST = ZoneInfo("Asia/Seoul")
+
+# N+1 포함 구간·단일 T 실행 허용 시각(KST). 뉴스 컷오프(15:30)와 별개 — 14:30 매수 창.
+CLI_FORWARD_RUN_KST_HOUR = 14
+CLI_FORWARD_RUN_KST_MINUTE = 30
 
 
 def current_n_and_n_plus_one(
@@ -34,14 +36,14 @@ def _cutoff_error(n_day: date, *, now_kst: datetime | None = None) -> str | None
     now = now_kst or datetime.now(KST)
     cutoff = datetime.combine(
         n_day,
-        time(config.NEWS_CUTOFF_KST_HOUR, config.NEWS_CUTOFF_KST_MINUTE),
+        time(CLI_FORWARD_RUN_KST_HOUR, CLI_FORWARD_RUN_KST_MINUTE),
         tzinfo=KST,
     )
     if now < cutoff:
         return (
             f"N일({n_day.isoformat()}) "
-            f"{config.NEWS_CUTOFF_KST_HOUR:02d}:"
-            f"{config.NEWS_CUTOFF_KST_MINUTE:02d}부터 실행 가능합니다."
+            f"{CLI_FORWARD_RUN_KST_HOUR:02d}:"
+            f"{CLI_FORWARD_RUN_KST_MINUTE:02d}부터 실행 가능합니다."
         )
     return None
 

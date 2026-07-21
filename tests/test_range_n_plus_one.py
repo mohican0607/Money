@@ -41,12 +41,21 @@ def test_range_rejects_beyond_current_n_plus_one() -> None:
 
 
 def test_range_rejects_before_n_cutoff_when_includes_n_plus_one() -> None:
-    # N=07-03, N+1=07-06, 장 마감 뉴스 컷오프 전
-    now = datetime(2026, 7, 3, 15, 29, tzinfo=trading_calendar.KST)
+    # N=07-03, N+1=07-06, 14:30 CLI 허용 시각 전
+    now = datetime(2026, 7, 3, 14, 29, tzinfo=trading_calendar.KST)
     err = validate_range_from_to(date(2026, 7, 1), date(2026, 7, 6), now_kst=now)
     assert err is not None
-    assert "15:30" in err
+    assert "14:30" in err
     assert "2026-07-03" in err
+
+
+def test_range_ok_n_plus_one_between_1430_and_1530() -> None:
+    # N=07-22, N+1=07-23 — 14:30~15:30 창에서는 15:30 오류 없이 허용
+    now = datetime(2026, 7, 22, 14, 45, tzinfo=trading_calendar.KST)
+    n, t = current_n_and_n_plus_one(now_kst=now)
+    assert validate_range_from_to(n, t, now_kst=now) is None
+    now = datetime(2026, 7, 22, 15, 29, tzinfo=trading_calendar.KST)
+    assert validate_range_from_to(n, t, now_kst=now) is None
 
 
 def test_range_ok_historical_before_cutoff() -> None:
@@ -82,7 +91,13 @@ def test_dated_t_rejects_non_trading() -> None:
 
 
 def test_dated_t_rejects_before_cutoff_for_forward() -> None:
-    now = datetime(2026, 7, 3, 15, 29, tzinfo=trading_calendar.KST)
+    now = datetime(2026, 7, 3, 14, 29, tzinfo=trading_calendar.KST)
     err = validate_dated_t_day(date(2026, 7, 6), now_kst=now)
     assert err is not None
-    assert "15:30" in err
+    assert "14:30" in err
+
+
+def test_dated_t_ok_current_n_plus_one_before_news_cutoff() -> None:
+    # 15:30 뉴스 컷오프 전이어도 14:30 이후면 T=N+1 단일 실행 허용
+    now = datetime(2026, 7, 22, 15, 15, tzinfo=trading_calendar.KST)
+    assert validate_dated_t_day(date(2026, 7, 23), now_kst=now) is None
