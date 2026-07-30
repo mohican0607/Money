@@ -1359,18 +1359,27 @@ def confidence_tier(
 
 
 def is_high_confidence_prediction(row: PredictionRow) -> bool:
-    """``pred_high`` 대체: 확신 ``high`` 또는 (레거시) 표시 % ≥ 급등 임계."""
+    """``pred_high`` 대체: 확신 ``high`` 또는 (레거시·freeze fallback) 표시 % ≥ 급등 임계."""
     if config.PRED_RANKING_MODE:
         tier = str(getattr(row, "confidence_tier", "") or "")
-        return tier == "high"
+        if tier == "high":
+            return True
+        if tier == "mid":
+            return False
+        # tier none/empty: 14:30 freeze·장중 fallback 후보와 동일하게 표시 %로 판정
     pct = float(getattr(row, "predicted_return_pct", 0.0) or 0.0)
     return pct >= float(config.BIG_MOVE_THRESHOLD) * 100.0 - 1e-9
 
 
 def is_mid_confidence_prediction(row: PredictionRow) -> bool:
-    """``pred_mid`` 판정: 랭킹 모드면 ``confidence_tier==mid``, 레거시면 표시 % 10~20% 구간."""
+    """``pred_mid`` 판정: 랭킹 모드면 ``confidence_tier==mid``, tier none 이면 표시 % 10~20% 구간."""
     if config.PRED_RANKING_MODE:
-        return str(getattr(row, "confidence_tier", "") or "") == "mid"
+        tier = str(getattr(row, "confidence_tier", "") or "")
+        if tier == "mid":
+            return True
+        if tier == "high":
+            return False
+        # tier none/empty: freeze·장중 fallback과 동일
     pct = float(getattr(row, "predicted_return_pct", 0.0) or 0.0)
     return 10.0 - 1e-9 <= pct < float(config.BIG_MOVE_THRESHOLD) * 100.0 - 1e-9
 
@@ -1381,8 +1390,9 @@ def row_pred_high_from_dict(row: dict) -> bool:
         tier = str(row.get("confidence_tier") or "")
         if tier == "high":
             return True
-        if tier:
+        if tier == "mid":
             return False
+        # tier none/empty: pred_ret fallback (freeze·장중 표와 장후 reconcile 일치)
     pr = row.get("pred_ret")
     if pr is None:
         return False
@@ -1392,7 +1402,12 @@ def row_pred_high_from_dict(row: dict) -> bool:
 def row_pred_mid_from_dict(row: dict) -> bool:
     """``rows_compare`` dict 에서 ``pred_mid`` 판정."""
     if config.PRED_RANKING_MODE:
-        return str(row.get("confidence_tier") or "") == "mid"
+        tier = str(row.get("confidence_tier") or "")
+        if tier == "mid":
+            return True
+        if tier == "high":
+            return False
+        # tier none/empty: pred_ret fallback
     pr = row.get("pred_ret")
     if pr is None:
         return False
