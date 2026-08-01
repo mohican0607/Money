@@ -211,7 +211,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 44
+PREDICTION_FREEZE_SCHEMA_VERSION = 47
 
 # --- 다요인(멀티팩터) 랭킹 가중치 (합≈1, 뉴스 최소) ---
 PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.48)
@@ -256,9 +256,9 @@ PRED_PRECISION_GATE_ENABLED = os.getenv("PRED_PRECISION_GATE_ENABLED", "1").stri
 # 외부표본 precision 기준을 통과하기 전에는 high/mid 배지를 내보내지 않는다.
 # 랭킹 watchlist는 유지된다.
 PRED_CONFIDENCE_OUTPUT_ENABLED = os.getenv(
-    "PRED_CONFIDENCE_OUTPUT_ENABLED", "0"
+    "PRED_CONFIDENCE_OUTPUT_ENABLED", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
-PRED_PRECISION_MAX_HIGH = _positive_int_env("PRED_PRECISION_MAX_HIGH", 2)
+PRED_PRECISION_MAX_HIGH = _positive_int_env("PRED_PRECISION_MAX_HIGH", 3)
 PRED_PRECISION_MIN_CONVICTION = _float_env("PRED_PRECISION_MIN_CONVICTION", 0.42)
 PRED_PRECISION_MIN_PILLARS = _positive_int_env("PRED_PRECISION_MIN_PILLARS", 1)
 PRED_PRECISION_MAX_RANK = _positive_int_env("PRED_PRECISION_MAX_RANK", 15)
@@ -279,14 +279,14 @@ PRED_PRECISION_CODE_MIN_HIT_RATE = _float_env("PRED_PRECISION_CODE_MIN_HIT_RATE"
 PRED_FORWARD_HIGH_CALIBRATED_MIN = _float_env(
     "PRED_FORWARD_HIGH_CALIBRATED_MIN", 0.01
 )
-PRED_FORWARD_HIGH_MAX_RANK = _positive_int_env("PRED_FORWARD_HIGH_MAX_RANK", 3)
+PRED_FORWARD_HIGH_MAX_RANK = _positive_int_env("PRED_FORWARD_HIGH_MAX_RANK", 5)
 PRED_FORWARD_HIGH_RELATIVE_PRECISION = _float_env(
     "PRED_FORWARD_HIGH_RELATIVE_PRECISION", 0.85
 )
 PRED_FORWARD_HIGH_MIN_KEYWORD_HITS = _positive_int_env(
     "PRED_FORWARD_HIGH_MIN_KEYWORD_HITS", 1
 )
-PRED_FORWARD_MID_ENABLED = os.getenv("PRED_FORWARD_MID_ENABLED", "0").strip().lower() in (
+PRED_FORWARD_MID_ENABLED = os.getenv("PRED_FORWARD_MID_ENABLED", "1").strip().lower() in (
     "1",
     "true",
     "yes",
@@ -295,7 +295,7 @@ PRED_FORWARD_MID_ENABLED = os.getenv("PRED_FORWARD_MID_ENABLED", "0").strip().lo
 PRED_FORWARD_MID_CALIBRATED_MIN = _float_env(
     "PRED_FORWARD_MID_CALIBRATED_MIN", 0.02
 )
-PRED_FORWARD_MID_MAX_RANK = _positive_int_env("PRED_FORWARD_MID_MAX_RANK", 5)
+PRED_FORWARD_MID_MAX_RANK = _positive_int_env("PRED_FORWARD_MID_MAX_RANK", 12)
 
 # --- 랭킹 우선 예측(구조적 정확도 개선) ---
 # 1: ML 확률·순위 기반, pred_high=확신구간 / 0: 레거시(표시%≥20%)
@@ -389,9 +389,9 @@ PRED_SECTOR_RESCUE_HIGH_ENABLED = os.getenv(
     "PRED_SECTOR_RESCUE_HIGH_ENABLED", "0"
 ).strip().lower() in ("1", "true", "yes", "on")
 PRED_OUTPUT_MAX = _positive_int_env("PRED_OUTPUT_MAX", 4)
-PRED_MID_OUTPUT_MAX = _positive_int_env("PRED_MID_OUTPUT_MAX", 4)
-# 예측 전용일(미래 거래일): 비교표에 최소 이만큼 상위 후보를 노출
-PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 15)
+PRED_MID_OUTPUT_MAX = _positive_int_env("PRED_MID_OUTPUT_MAX", 5)
+# 예측 전용일 표 노출 상한: 고확신(~3)+중확신(~5). 게이트 0건이면 순위 watchlist 로 채움(20분 검토).
+PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 8)
 # 고/중 확신: ML 급등 확률 하한(순위 상위 슬롯에만 적용)
 PRED_ML_HIGH_CONFIDENCE_PROB = max(0.08, _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.11))
 PRED_ML_MID_CONFIDENCE_PROB = max(0.04, _float_env("PRED_ML_MID_CONFIDENCE_PROB", 0.07))

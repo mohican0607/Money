@@ -163,11 +163,19 @@ def _freeze_entry_usable(items: list[dict]) -> bool:
     """관측일 T별 고정 캐시에 재사용할 예측 수익률이 하나라도 있으면 True."""
     if not items:
         return False
+    ok = False
     for x in items:
         p = _frozen_predicted_return_pct(x)
         if p is not None and math.isfinite(p):
-            return True
-    return False
+            ok = True
+            break
+    if not ok:
+        return False
+    cap = int(config.PRED_FORWARD_SHOW_MAX)
+    if len(items) >= 3 and cap >= 6 and len(items) < min(cap, 6):
+        if all(str(x.get("confidence_tier") or "none") == "high" for x in items):
+            return False
+    return True
 
 
 def effective_train_snapshot_cal_scope(
@@ -298,16 +306,23 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
 
 
 def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> list[predict.PredictionRow]:
-    """리포트 표에 고정할 예측 후보(고·중 확신)만 골라 freeze 에 저장합니다."""
-    shown = [
+    """리포트·freeze 에 고정할 예측 후보 — 고·중 확신 우선, ``PRED_FORWARD_SHOW_MAX`` 까지 순위로 보충."""
+    cap = max(1, int(config.PRED_FORWARD_SHOW_MAX))
+    tiered = [
         r
         for r in rows
         if prediction_ranking.is_high_confidence_prediction(r)
         or prediction_ranking.is_mid_confidence_prediction(r)
     ]
-    if shown:
-        return shown
-    cap = max(1, int(config.PRED_FORWARD_SHOW_MAX))
+    tiered.sort(
+        key=lambda r: (
+            0 if str(getattr(r, "confidence_tier", "") or "") == "high" else 1,
+            int(getattr(r, "rank_position", None) or 9999),
+            str(r.code).zfill(6),
+        )
+    )
+    if tiered:
+        return tiered[:cap]
     return list(rows[:cap])
 
 

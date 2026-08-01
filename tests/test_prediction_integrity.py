@@ -4,6 +4,8 @@ from __future__ import annotations
 from datetime import date
 from types import SimpleNamespace
 
+import pytest
+
 from src import config
 from src.pipeline.rows import (
     _compare_row_belongs_in_closed_day_table,
@@ -65,7 +67,7 @@ def test_freeze_roundtrip_preserves_prediction_codes_and_tiers() -> None:
     rows = [
         PredictionRow("000001", "A", 1.0, 25.0, [], [], confidence_tier="high", rank_position=1),
         PredictionRow("000002", "B", 1.0, 22.0, [], [], confidence_tier="mid", rank_position=2),
-        PredictionRow("000003", "C", 1.0, 21.0, [], [], confidence_tier="none", rank_position=3),
+        PredictionRow("000003", "C", 1.0, 8.0, [], [], confidence_tier="none", rank_position=3),
     ]
     frozen = _prediction_rows_to_frozen_items(_display_prediction_rows_for_freeze(rows))
     restored = _prediction_rows_from_frozen_items(frozen)
@@ -77,7 +79,7 @@ def test_freeze_roundtrip_preserves_prediction_codes_and_tiers() -> None:
 def test_freeze_keeps_display_candidates_only() -> None:
     rows = [
         PredictionRow("000001", "A", 1.0, 25.0, [], [], confidence_tier="high"),
-        PredictionRow("000002", "B", 1.0, 22.0, [], [], confidence_tier="none"),
+        PredictionRow("000002", "B", 1.0, 8.0, [], [], confidence_tier="none"),
         PredictionRow("000003", "C", 1.0, 21.0, [], [], confidence_tier="mid"),
     ]
     frozen = _display_prediction_rows_for_freeze(rows)
@@ -143,7 +145,120 @@ def test_append_learning_single_day_infers_cal_scope_from_day_reports() -> None:
     assert scope == (t, t)
 
 
-def test_append_learning_forward_day_skips_cal_scope() -> None:
+def test_observation_day_trading_halt_excludes_candidate() -> None:
+    import pandas as pd
+
+    from src import stocks
+
+    t = date(2026, 7, 29)
+    df = pd.DataFrame(
+        [
+            {
+                "Date": pd.Timestamp(t),
+                "Code": "123456",
+                "Name": "HALT",
+                "return_pct": 0.0,
+                "Volume": 0.0,
+            }
+        ]
+    )
+    assert stocks.is_observation_day_trading_halted(df, "123456", t)
+    df.iloc[0, df.columns.get_loc("Volume")] = 1200.0
+    assert not stocks.is_observation_day_trading_halted(df, "123456", t)
+
+
+def test_future_observation_day_without_bar_is_not_halted() -> None:
+    import pandas as pd
+
+    from src import stocks
+
+    last = date(2026, 7, 30)
+    future = date(2026, 8, 3)
+    df = pd.DataFrame(
+        [
+            {
+                "Date": pd.Timestamp(last),
+                "Code": "123456",
+                "Name": "A",
+                "return_pct": 0.01,
+                "Volume": 1000.0,
+            }
+        ]
+    )
+    assert not stocks.is_observation_day_trading_halted(df, "123456", future)
+
+
+def test_forecast_synthetic_row_without_volume_is_not_halted() -> None:
+    import pandas as pd
+
+    from src import stocks
+
+    t = date(2026, 8, 3)
+    df = pd.DataFrame(
+        [
+            {
+                "Date": pd.Timestamp(t),
+                "Code": "123456",
+                "Name": "A",
+                "return_pct": 0.0,
+                "open_gap": 0.0,
+            }
+        ]
+    )
+    assert not stocks.is_observation_day_trading_halted(df, "123456", t)
+
+
+def test_tier_none_with_high_display_pct_is_not_pred_high_when_confidence_gate_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
+    row = PredictionRow(
+        "000001",
+        "A",
+        1.0,
+        25.0,
+        [],
+        [],
+        confidence_tier="none",
+    )
+    assert not prk.is_high_confidence_prediction(row)
+    assert not prk.is_mid_confidence_prediction(row)
+    assert not prk.row_pred_high_from_dict(
+        {"confidence_tier": "none", "pred_ret": 25.0}
+    )
+
+
+def test_tier_high_is_pred_high_when_confidence_gate_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
+    row = PredictionRow(
+        "000001",
+        "A",
+        1.0,
+        25.0,
+        [],
+        [],
+        confidence_tier="high",
+    )
+    assert prk.is_high_confidence_prediction(row)
+
+
+def test_display_pct_fallback_when_confidence_gate_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", False)
+    row = PredictionRow(
+        "000001",
+        "A",
+        1.0,
+        25.0,
+        [],
+        [],
+        confidence_tier="none",
+    )
+    assert prk.is_high_confidence_prediction(row)
+
     t = date(2026, 7, 8)
     dr = SimpleNamespace(trading_day=t, forward_observation=True)
     scope = effective_train_snapshot_cal_scope(
@@ -153,3 +268,45 @@ def test_append_learning_forward_day_skips_cal_scope() -> None:
         forward_prediction_only=True,
     )
     assert scope is None
+
+
+def test_freeze_rejects_short_high_only_slate() -> None:
+    items = [
+        {"code": "000001", "predicted_return_pct": 25.0, "confidence_tier": "high"},
+        {"code": "000002", "predicted_return_pct": 24.0, "confidence_tier": "high"},
+        {"code": "000003", "predicted_return_pct": 23.0, "confidence_tier": "high"},
+    ]
+    assert not _should_reuse_prediction_freeze(
+        ignore_freeze_for_trading_day=False,
+        frozen_items=items,
+    )
+
+
+def test_fill_forward_review_slate_adds_mid_to_reach_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 8)
+    monkeypatch.setattr(config, "PRED_MID_OUTPUT_MAX", 5)
+    monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", True)
+    rows = [
+        PredictionRow(
+            f"{i:06d}",
+            f"N{i}",
+            1.0,
+            25.0,
+            ["kw"],
+            [],
+            confidence_tier="high" if i < 3 else "none",
+            keyword_hits=2,
+            rank_position=i + 1,
+            rank_score=1.0 - i * 0.05,
+        )
+        for i in range(12)
+    ]
+    prk.fill_forward_review_slate(rows)
+    tiered = [
+        r
+        for r in rows
+        if str(getattr(r, "confidence_tier", "") or "") in ("high", "mid")
+    ]
+    assert len(tiered) >= 8

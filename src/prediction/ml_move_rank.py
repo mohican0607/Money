@@ -1501,8 +1501,11 @@ def rank_predictions_ml(
     cand_ix: list[int] = []
     for c in score_codes:
         ix = code_to_ix.get(c)
-        if ix is not None:
-            cand_ix.append(ix)
+        if ix is None:
+            continue
+        if stocks.is_observation_day_trading_halted(returns_ml, c, target_day):
+            continue
+        cand_ix.append(ix)
     if not cand_ix:
         return []
 

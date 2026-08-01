@@ -784,6 +784,46 @@ def _run_pipeline(
             rows_compare = [
                 r for r in rows_compare if _compare_row_is_prediction_candidate(r)
             ]
+            cap = int(config.PRED_FORWARD_SHOW_MAX)
+            if len(rows_compare) > cap:
+                rows_compare.sort(
+                    key=lambda r: (
+                        0 if r.get("pred_high") else (1 if r.get("pred_mid") else 2),
+                        int(r["rank_position"])
+                        if r.get("rank_position") is not None
+                        else 9999,
+                        str(r.get("code", "")).zfill(6),
+                    )
+                )
+                rows_compare = rows_compare[:cap]
+            if len(rows_compare) < cap and preds:
+                seen = {str(r.get("code", "")).zfill(6) for r in rows_compare if r.get("code")}
+                for pr in preds:
+                    if len(rows_compare) >= cap:
+                        break
+                    code = str(pr.code).zfill(6)
+                    if code in seen:
+                        continue
+                    if not math.isfinite(float(pr.predicted_return_pct)):
+                        continue
+                    tier = str(getattr(pr, "confidence_tier", "") or "")
+                    if tier not in ("high", "mid"):
+                        pr.confidence_tier = "mid"
+                    reasons_html = "<br/>".join(pr.reasons)
+                    _append_compare_row_from_prediction(
+                        rows_compare,
+                        pr,
+                        market_by_code=market_by_code,
+                        pred_pct_min=pred_pct_min,
+                        pred_pct_mid_min=pred_pct_mid_min,
+                        actual_ret=None,
+                        reasons_html=reasons_html,
+                        blob=blob,
+                        kospi_hint=kospi_hint,
+                        late_blob=late_blob,
+                        pr_for_gap=pr,
+                    )
+                    seen.add(code)
             for r in rows_compare:
                 r["actual_ret"] = None
                 r["actual_big"] = False

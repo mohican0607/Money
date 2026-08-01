@@ -660,6 +660,7 @@ def align_returns_ml_for_forecast(
                 "ret_lag1": float(rets.iloc[-1]) if len(rets) >= 1 else 0.0,
                 "ret_lag3": float(rets.iloc[-3]) if len(rets) >= 3 else 0.0,
                 "log_vol_lag1": last_vol_log,
+                "Volume": float(vols.iloc[-1]) if not vols.empty else 0.0,
                 "ret_roll_std5": (
                     float(ret_last5.std()) if len(ret_last5) >= 2 else 0.0
                 ),
@@ -1076,6 +1077,78 @@ def actual_return_on_date(returns_df: pd.DataFrame, code: str, d: date) -> float
     if row.empty:
         return None
     return float(row.iloc[0]["return_pct"])
+
+
+def volume_on_date(returns_df: pd.DataFrame, code: str, d: date) -> float | None:
+    """거래일 ``d`` 의 종목 ``code`` 거래량. 행 없음·비수치면 ``None``."""
+    if returns_df is None or returns_df.empty:
+        return None
+    ts = pd.Timestamp(d)
+    c6 = str(code).zfill(6)
+    m = (returns_df["Date"] == ts) & (
+        returns_df["Code"].astype(str).str.zfill(6) == c6
+    )
+    sub = returns_df.loc[m]
+    if sub.empty:
+        return None
+    row = sub.iloc[0]
+    vol = row.get("Volume")
+    if vol is None:
+        vol = row.get("volume")
+    try:
+        v = float(vol)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v):
+        return None
+    return v
+
+
+def is_observation_day_trading_halted(
+    returns_df: pd.DataFrame, code: str, observation_day: date
+) -> bool:
+    """
+    관측일(14:30 의사결정 시점) 거래정지 여부.
+
+    거래량 0이면 정지로 보고 예측 후보에서 제외합니다.
+    직전 거래일 정지 → 관측일 재개(거래량 > 0)는 포함합니다.
+
+    - OHLCV 캐시 마지막 거래일보다 뒤인 미래 관측일(봉 없음): 정지 아님.
+    - ``align_returns_ml_for_forecast`` 가 만든 synthetic 행(Volume 미기입): 정지 아님.
+    - 해당 일 행이 있고 거래량 0: 정지.
+    """
+    if returns_df is None or returns_df.empty:
+        return True
+    ts = pd.Timestamp(observation_day)
+    c6 = str(code).zfill(6)
+    m = (returns_df["Date"] == ts) & (
+        returns_df["Code"].astype(str).str.zfill(6) == c6
+    )
+    sub = returns_df.loc[m]
+    if sub.empty:
+        last_bar = returns_df["Date"].max()
+        if last_bar is not pd.NaT and observation_day > last_bar.date():
+            return False
+        return True
+    vol = volume_on_date(returns_df, code, observation_day)
+    if vol is None:
+        return False
+    return vol <= 0.0
+
+
+def is_halt_resume_on_observation_day(
+    returns_df: pd.DataFrame, code: str, observation_day: date
+) -> bool:
+    """직전 거래일 거래정지(거래량 0) 후 관측일에 거래가 재개됐는지."""
+    today_vol = volume_on_date(returns_df, code, observation_day)
+    if today_vol is None or today_vol <= 0.0:
+        return False
+    try:
+        prev = trading_calendar.last_trading_day_before(observation_day)
+    except ValueError:
+        return False
+    prev_vol = volume_on_date(returns_df, code, prev)
+    return prev_vol is not None and prev_vol <= 0.0
 
 
 # --- market index (merged from market_index.py) ---

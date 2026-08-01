@@ -563,6 +563,9 @@ def day_candidate_codes(
         str(c).zfill(6)
         for c in listing_codes
         if stocks_mod.is_common_equity_code(str(c).zfill(6))
+        and not stocks_mod.is_observation_day_trading_halted(
+            returns_ml, str(c).zfill(6), target_day
+        )
     ]
     news = ml_scoring_candidate_codes(
         listing_codes,

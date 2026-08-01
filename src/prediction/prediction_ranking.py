@@ -1358,6 +1358,11 @@ def confidence_tier(
     return "none"
 
 
+def _use_confidence_tier_for_pred_flags() -> bool:
+    """확신 티어 게이트 ON 이면 tier none 은 pred_high/mid 로 승격하지 않음(표시 % fallback 금지)."""
+    return config.PRED_RANKING_MODE and config.PRED_CONFIDENCE_OUTPUT_ENABLED
+
+
 def is_high_confidence_prediction(row: PredictionRow) -> bool:
     """``pred_high`` 대체: 확신 ``high`` 또는 (레거시·freeze fallback) 표시 % ≥ 급등 임계."""
     if config.PRED_RANKING_MODE:
@@ -1366,7 +1371,9 @@ def is_high_confidence_prediction(row: PredictionRow) -> bool:
             return True
         if tier == "mid":
             return False
-        # tier none/empty: 14:30 freeze·장중 fallback 후보와 동일하게 표시 %로 판정
+        if _use_confidence_tier_for_pred_flags():
+            return False
+        # tier none/empty: 확신 게이트 OFF 일 때만 표시 % fallback
     pct = float(getattr(row, "predicted_return_pct", 0.0) or 0.0)
     return pct >= float(config.BIG_MOVE_THRESHOLD) * 100.0 - 1e-9
 
@@ -1379,7 +1386,8 @@ def is_mid_confidence_prediction(row: PredictionRow) -> bool:
             return True
         if tier == "high":
             return False
-        # tier none/empty: freeze·장중 fallback과 동일
+        if _use_confidence_tier_for_pred_flags():
+            return False
     pct = float(getattr(row, "predicted_return_pct", 0.0) or 0.0)
     return 10.0 - 1e-9 <= pct < float(config.BIG_MOVE_THRESHOLD) * 100.0 - 1e-9
 
@@ -1392,7 +1400,8 @@ def row_pred_high_from_dict(row: dict) -> bool:
             return True
         if tier == "mid":
             return False
-        # tier none/empty: pred_ret fallback (freeze·장중 표와 장후 reconcile 일치)
+        if _use_confidence_tier_for_pred_flags():
+            return False
     pr = row.get("pred_ret")
     if pr is None:
         return False
@@ -1407,7 +1416,8 @@ def row_pred_mid_from_dict(row: dict) -> bool:
             return True
         if tier == "high":
             return False
-        # tier none/empty: pred_ret fallback
+        if _use_confidence_tier_for_pred_flags():
+            return False
     pr = row.get("pred_ret")
     if pr is None:
         return False
@@ -1567,14 +1577,65 @@ def assign_forward_confidence_tiers(
         pillars = compute_pillar_scores(
             row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
         )
-        if count_non_news_strong_pillars(pillars, threshold=0.38) < 2:
+        if count_non_news_strong_pillars(pillars, threshold=0.38) < 1:
             continue
         row.confidence_tier = "mid"
         mid_n += 1
 
+    fill_forward_review_slate(pool, regime_scale=rs)
+
     for pos, row in enumerate(ranked, start=1):
         row.rank_position = pos
         row.rank_score = hybrid_rank_score(row)
+
+
+def fill_forward_review_slate(
+    pool: list[PredictionRow],
+    *,
+    regime_scale: float = 1.0,
+) -> None:
+    """
+    20분 검토용: 고·중 합이 ``PRED_FORWARD_SHOW_MAX`` 에 못 미치면 mid 슬롯을 순위로 채웁니다.
+
+    엄격 게이트 통과가 적어도 표·freeze 에 ``PRED_FORWARD_SHOW_MAX`` 근처 후보가 남도록 합니다.
+    """
+    if not pool or not config.PRED_CONFIDENCE_OUTPUT_ENABLED:
+        return
+    if not config.PRED_FORWARD_MID_ENABLED:
+        return
+    rs = max(0.25, min(1.0, float(regime_scale)))
+    max_mid = max(0, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
+    cap = int(config.PRED_FORWARD_SHOW_MAX)
+    target = min(cap, len(pool))
+    ranked = sorted(pool, key=rank_score_for_row, reverse=True)
+    mid_n = sum(
+        1 for r in pool if str(getattr(r, "confidence_tier", "") or "") == "mid"
+    )
+    mention_gate = float(config.PRED_MENTION_GATE_MIN)
+    rank_limit = max(int(config.PRED_FORWARD_MID_MAX_RANK), cap)
+
+    for pos, row in enumerate(ranked, start=1):
+        if mid_n >= max_mid:
+            break
+        tiered = sum(
+            1
+            for r in pool
+            if str(getattr(r, "confidence_tier", "") or "") in ("high", "mid")
+        )
+        if tiered >= target:
+            break
+        if str(getattr(row, "confidence_tier", "") or "") in ("high", "mid"):
+            continue
+        if pos > rank_limit:
+            break
+        nh = int(getattr(row, "keyword_hits", 0) or 0)
+        mention = float(getattr(row, "mention_score", 0.0) or 0.0)
+        if nh < 1 and mention + 1e-12 < mention_gate * 0.5:
+            continue
+        if prior_day_exhaustion_blocks_confidence(row):
+            continue
+        row.confidence_tier = "mid"
+        mid_n += 1
 
 
 def finalize_ranked_predictions(
@@ -1584,6 +1645,7 @@ def finalize_ranked_predictions(
     ks11_ret_lag1: float | None = None,
     forward_observation: bool = False,
     returns_ml: pd.DataFrame | None = None,
+    feedback_ctx: dict[str, object] | None = None,
 ) -> list[PredictionRow]:
     """
     순위·확신 구간·표시 % 를 일괄 확정합니다.
@@ -1594,6 +1656,19 @@ def finalize_ranked_predictions(
         return rows
 
     from . import predict
+
+    if returns_ml is not None:
+        from .. import stocks as stocks_mod
+
+        rows = [
+            r
+            for r in rows
+            if not stocks_mod.is_observation_day_trading_halted(
+                returns_ml, str(r.code), target_day
+            )
+        ]
+        if not rows:
+            return rows
 
     pool = _rerank_sector_diversity(rows)
     pool = _inject_hot_sector_leaders(pool)
@@ -1625,8 +1700,16 @@ def finalize_ranked_predictions(
     if config.PRED_RANKING_MODE:
         # 과거 재생과 실전이 같은 point-in-time 확신 규칙을 써야 검증 수치가
         # 실전 의미를 갖는다. 장후 재생에서만 permissive tier를 쓰지 않는다.
-        assign_forward_confidence_tiers(pool, regime_scale=r_scale)
+        if config.PRED_CONFIDENCE_OUTPUT_ENABLED:
+            assign_forward_confidence_tiers(pool, regime_scale=r_scale)
+            if config.PRED_PRECISION_GATE_ENABLED:
+                refine_confidence_tiers(
+                    pool,
+                    feedback_ctx=feedback_ctx,
+                    regime_scale=r_scale,
+                )
         pool = sorted(pool, key=rank_score_for_row, reverse=True)
+        fill_forward_review_slate(pool, regime_scale=r_scale)
     else:
         for pos, row in enumerate(pool, start=1):
             row.confidence_tier = confidence_tier(
