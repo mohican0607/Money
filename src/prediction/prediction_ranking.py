@@ -99,6 +99,10 @@ def high_precision_select_score(row: PredictionRow) -> float:
     pillars = compute_pillar_scores(row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None))
     if pillars["news"] + 1e-12 >= 0.55 and count_non_news_strong_pillars(pillars, threshold=0.40) < 1:
         score *= 0.72
+    if int(getattr(row, "keyword_hits", 0) or 0) <= 0:
+        score *= 0.62
+    if _carryover_without_news(row):
+        score *= 0.55
     return float(score)
 
 
@@ -280,6 +284,97 @@ def _ml_rank_signal(row: PredictionRow) -> float:
         return float(getattr(row, "ml_prob", 0.0) or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _calibrated_ml_prob(row: PredictionRow) -> float | None:
+    """보정 급등 확률(0~1). 없으면 None — raw ``ml_rank_score`` 와 구분."""
+    p = getattr(row, "ml_prob", None)
+    if p is None:
+        return None
+    try:
+        v = float(p)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(v) or v < 0.0:
+        return None
+    return v
+
+
+def _pool_top_calibrated_ml(pool: list[PredictionRow]) -> float:
+    best = 0.0
+    for row in pool:
+        p = _calibrated_ml_prob(row)
+        if p is not None and p > best:
+            best = p
+    return best
+
+
+def _adaptive_calibrated_high_floor(
+    pool: list[PredictionRow],
+    *,
+    regime_scale: float,
+) -> float:
+    """풀 상위 보정확률·레짐에 따른 고확신 ML 하한."""
+    rs = max(0.25, min(1.0, float(regime_scale)))
+    top = _pool_top_calibrated_ml(pool)
+    rel = float(config.PRED_HIGH_CALIBRATED_RELATIVE)
+    abs_min = float(config.PRED_HIGH_CALIBRATED_ABS_MIN) / rs
+    base = float(config.PRED_FORWARD_HIGH_CALIBRATED_MIN) / rs
+    if top > 1e-12:
+        return max(base, abs_min, top * rel)
+    return max(base, abs_min)
+
+
+def _news_evidence_strength(row: PredictionRow) -> float:
+    """
+    early 뉴스·키워드·종목명 언급·TF-IDF 맥락 합성 근거(0~1).
+
+    테마 캐리오버·섹터만 강하고 뉴스가 없으면 0.5 미만으로 떨어집니다.
+    """
+    nh = int(getattr(row, "keyword_hits", 0) or 0)
+    mention = float(getattr(row, "mention_score", 0.0) or 0.0)
+    nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
+    gate = float(config.PRED_MENTION_GATE_MIN)
+
+    if nh >= 3:
+        return 1.0
+    if nh >= 2:
+        return min(1.0, 0.88 + 0.06 * min(1.0, mention / max(gate, 0.08)))
+    if nh >= 1 and mention + 1e-12 >= gate * 0.25:
+        return 0.72
+    if nh >= 1:
+        return 0.58
+    if mention + 1e-12 >= gate:
+        return 0.78
+    if mention + 1e-12 >= gate * 0.45:
+        return 0.48
+    if nctx + 1e-12 >= 0.42:
+        return 0.40
+    return 0.0
+
+
+def _high_tier_news_ok(row: PredictionRow) -> bool:
+    return _news_evidence_strength(row) + 1e-12 >= float(
+        config.PRED_HIGH_NEWS_EVIDENCE_MIN
+    )
+
+
+def _carryover_without_news(row: PredictionRow) -> bool:
+    """섹터·캐리오버만 강하고 뉴스 근거가 약한 패턴(7월 오탐 다수)."""
+    pillars = compute_pillar_scores(
+        row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
+    )
+    news_ev = _news_evidence_strength(row)
+    sector_hot = pillars["sector"] + 1e-12 >= 0.52
+    if sector_hot and news_ev + 1e-12 < float(config.PRED_HIGH_NEWS_EVIDENCE_MIN):
+        return True
+    if (
+        pillars["ml"] + 1e-12 >= 0.82
+        and news_ev + 1e-12 < 0.50
+        and int(getattr(row, "keyword_hits", 0) or 0) <= 0
+    ):
+        return True
+    return False
 
 
 def compute_pillar_scores(
@@ -1364,30 +1459,27 @@ def _use_confidence_tier_for_pred_flags() -> bool:
 
 
 def is_high_confidence_prediction(row: PredictionRow) -> bool:
-    """``pred_high`` 대체: 확신 ``high`` 또는 (레거시·freeze fallback) 표시 % ≥ 급등 임계."""
+    """``pred_high``: 랭킹 모드면 ``confidence_tier==high`` 만. 레거시 모드만 표시 % fallback."""
     if config.PRED_RANKING_MODE:
-        tier = str(getattr(row, "confidence_tier", "") or "")
-        if tier == "high":
-            return True
-        if tier == "mid":
-            return False
-        if _use_confidence_tier_for_pred_flags():
-            return False
-        # tier none/empty: 확신 게이트 OFF 일 때만 표시 % fallback
+        return str(getattr(row, "confidence_tier", "") or "").strip().lower() == "high"
+    tier = str(getattr(row, "confidence_tier", "") or "")
+    if tier == "high":
+        return True
+    if tier == "mid":
+        return False
     pct = float(getattr(row, "predicted_return_pct", 0.0) or 0.0)
     return pct >= float(config.BIG_MOVE_THRESHOLD) * 100.0 - 1e-9
 
 
 def is_mid_confidence_prediction(row: PredictionRow) -> bool:
-    """``pred_mid`` 판정: 랭킹 모드면 ``confidence_tier==mid``, tier none 이면 표시 % 10~20% 구간."""
+    """``pred_mid`` 판정: 랭킹 모드면 ``confidence_tier==mid`` 만."""
     if config.PRED_RANKING_MODE:
-        tier = str(getattr(row, "confidence_tier", "") or "")
-        if tier == "mid":
-            return True
-        if tier == "high":
-            return False
-        if _use_confidence_tier_for_pred_flags():
-            return False
+        return str(getattr(row, "confidence_tier", "") or "").strip().lower() == "mid"
+    tier = str(getattr(row, "confidence_tier", "") or "")
+    if tier == "mid":
+        return True
+    if tier == "high":
+        return False
     pct = float(getattr(row, "predicted_return_pct", 0.0) or 0.0)
     return 10.0 - 1e-9 <= pct < float(config.BIG_MOVE_THRESHOLD) * 100.0 - 1e-9
 
@@ -1395,13 +1487,12 @@ def is_mid_confidence_prediction(row: PredictionRow) -> bool:
 def row_pred_high_from_dict(row: dict) -> bool:
     """``rows_compare`` dict 에서 ``pred_high`` 판정."""
     if config.PRED_RANKING_MODE:
-        tier = str(row.get("confidence_tier") or "")
-        if tier == "high":
-            return True
-        if tier == "mid":
-            return False
-        if _use_confidence_tier_for_pred_flags():
-            return False
+        return str(row.get("confidence_tier") or "").strip().lower() == "high"
+    tier = str(row.get("confidence_tier") or "")
+    if tier == "high":
+        return True
+    if tier == "mid":
+        return False
     pr = row.get("pred_ret")
     if pr is None:
         return False
@@ -1411,13 +1502,12 @@ def row_pred_high_from_dict(row: dict) -> bool:
 def row_pred_mid_from_dict(row: dict) -> bool:
     """``rows_compare`` dict 에서 ``pred_mid`` 판정."""
     if config.PRED_RANKING_MODE:
-        tier = str(row.get("confidence_tier") or "")
-        if tier == "mid":
-            return True
-        if tier == "high":
-            return False
-        if _use_confidence_tier_for_pred_flags():
-            return False
+        return str(row.get("confidence_tier") or "").strip().lower() == "mid"
+    tier = str(row.get("confidence_tier") or "")
+    if tier == "mid":
+        return True
+    if tier == "high":
+        return False
     pr = row.get("pred_ret")
     if pr is None:
         return False
@@ -1521,7 +1611,7 @@ def assign_forward_confidence_tiers(
         ),
         default=0.0,
     )
-    high_prob_floor = float(config.PRED_FORWARD_HIGH_CALIBRATED_MIN) / rs
+    high_prob_floor = _adaptive_calibrated_high_floor(pool, regime_scale=rs)
     high_rank_max = int(config.PRED_FORWARD_HIGH_MAX_RANK)
     high_kw_min = int(config.PRED_FORWARD_HIGH_MIN_KEYWORD_HITS)
     high_relative = float(config.PRED_FORWARD_HIGH_RELATIVE_PRECISION)
@@ -1531,7 +1621,9 @@ def assign_forward_confidence_tiers(
             break
         if blocks_high_confidence(row):
             continue
-        calibrated = float(getattr(row, "ml_prob", 0.0) or 0.0)
+        calibrated = _calibrated_ml_prob(row)
+        if calibrated is None:
+            continue
         if calibrated + 1e-12 < high_prob_floor:
             continue
         precision_raw = float(
@@ -1542,9 +1634,12 @@ def assign_forward_confidence_tiers(
             and precision_raw + 1e-12 < top_precision * high_relative
         ):
             continue
+        if not _high_tier_news_ok(row):
+            continue
+        if _carryover_without_news(row):
+            continue
         keyword_hits = int(getattr(row, "keyword_hits", 0) or 0)
         mention = float(getattr(row, "mention_score", 0.0) or 0.0)
-        # 종목명 직접 언급 또는 서로 다른 키워드 2개 이상을 요구한다.
         if keyword_hits < high_kw_min:
             continue
         if (
@@ -1680,6 +1775,13 @@ def finalize_ranked_predictions(
     pool = sorted(pool, key=rank_score_for_row, reverse=True)
     pool_size = len(pool)
     r_scale = regime_output_scale(ks11_ret_lag1)
+    if feedback_ctx and config.PRED_FEEDBACK_ADAPTIVE_ENABLED:
+        from . import feedback_loop
+
+        tightness = float(feedback_ctx.get("adaptive_tightness", 1.0) or 1.0)
+        r_scale *= tightness
+        feedback_loop.apply_feedback_rank_penalties(pool, feedback_ctx)
+        pool = sorted(pool, key=rank_score_for_row, reverse=True)
 
     if config.PRED_USE_DISPLAY_RANK_MAPPING:
         predict.apply_display_return_pct_ranking(
@@ -1709,7 +1811,11 @@ def finalize_ranked_predictions(
                     regime_scale=r_scale,
                 )
         pool = sorted(pool, key=rank_score_for_row, reverse=True)
-        fill_forward_review_slate(pool, regime_scale=r_scale)
+        if config.PRED_FEEDBACK_ADAPTIVE_ENABLED and feedback_ctx:
+            streak = int(feedback_ctx.get("recent_miss_streak_days", 0) or 0)
+            tightness = float(feedback_ctx.get("adaptive_tightness", 1.0) or 1.0)
+            if streak < 2 and tightness >= 0.72:
+                fill_forward_review_slate(pool, regime_scale=r_scale)
     else:
         for pos, row in enumerate(pool, start=1):
             row.confidence_tier = confidence_tier(
@@ -1809,28 +1915,41 @@ def passes_precision_gate(
     feedback_ctx: dict[str, object] | None = None,
 ) -> bool:
     """
-    고확신 슬롯 승격 조건(정밀도 우선).
+    고확신 슬롯 유지 조건(정밀도 우선).
 
-    - 비과열(``blocks_high_confidence``) 필수
-    - ML 절대·상대 하한은 **비과열 풀** 최고점 기준
-    - 기둥 합의는 완화하되 뉴스 단독은 차단
+    ``ml_prob``(보정)와 뉴스 근거를 우선하고, ``ml_rank_score`` 단독 승격을 막습니다.
     """
     if blocks_high_confidence(row):
         return False
     if rank_position > int(config.PRED_PRECISION_MAX_RANK):
         return False
-    ml = _ml_rank_signal(row)
-    abs_floor = float(config.PRED_HIGH_ABS_ML_FLOOR)
-    if getattr(row, "ml_rank_score", None) is None:
+    if not _high_tier_news_ok(row):
+        return False
+    if _carryover_without_news(row):
+        return False
+
+    cal = _calibrated_ml_prob(row)
+    if cal is not None:
         abs_floor = max(
-            float(config.PRED_ML_HIGH_CONFIDENCE_PROB),
+            float(config.PRED_HIGH_CALIBRATED_ABS_MIN),
             float(config.PRED_PRECISION_ML_FLOOR),
+            float(config.PRED_ML_HIGH_CONFIDENCE_PROB),
         )
-    if ml + 1e-12 < abs_floor:
-        return False
-    rel = float(config.PRED_HIGH_RELATIVE_ML)
-    if top_ml > 1e-9 and ml + 1e-12 < top_ml * rel:
-        return False
+        if cal + 1e-12 < abs_floor:
+            return False
+        rel = float(config.PRED_HIGH_CALIBRATED_RELATIVE)
+        if top_ml > 1e-9 and cal + 1e-12 < top_ml * rel:
+            return False
+        ml = cal
+    else:
+        ml = _ml_rank_signal(row)
+        abs_floor = float(config.PRED_HIGH_ABS_ML_FLOOR)
+        if ml + 1e-12 < abs_floor:
+            return False
+        rel = float(config.PRED_HIGH_RELATIVE_ML)
+        if top_ml > 1e-9 and ml + 1e-12 < top_ml * rel:
+            return False
+
     sel = high_precision_select_score(row)
     if sel + 1e-12 < float(config.PRED_HIGH_SELECT_FLOOR):
         return False
@@ -1840,15 +1959,12 @@ def passes_precision_gate(
         return False
     if pillars["news"] + 1e-12 >= 0.55 and non_news < 1:
         return False
-    # 과열 모멘텀만 강한 경우 배제
     if pillars["momentum"] + 1e-12 >= 0.70 and float(getattr(row, "ret_lag1", 0.0) or 0.0) >= 0.10:
         if ml + 1e-12 < abs_floor + 0.15:
             return False
     if not _code_history_ok(str(row.code).zfill(6)):
         return False
-    # 버킷은 표본 부족 시 통과 — 너무 공격적인 탈락 방지
     if not _bucket_ok(row, feedback_ctx):
-        # ML·선정점수가 매우 높으면 버킷 실패 무시
         if ml + 1e-12 < abs_floor + 0.20 or sel + 1e-12 < 0.50:
             return False
     return True
@@ -1861,48 +1977,26 @@ def refine_confidence_tiers(
     regime_scale: float = 1.0,
 ) -> None:
     """
-    고확신을 **비과열 후보 + 정밀 선정점수**로 재구성합니다.
+    고확신 **감사(audit) 전용** — 승격은 ``assign_forward_confidence_tiers`` 에만 맡깁니다.
 
-    과열 종목이 ML 최상위를 차지해도 top_ml 기준을 오염시키지 않으며,
-    슬롯을 억지로 채우지 않습니다(정밀도 > 개수).
+    ``ml_rank_score`` 로 raw ML100%·키워드 0인 행이 재승격되던 경로를 차단합니다.
     """
     if not pool or not config.PRED_PRECISION_GATE_ENABLED:
         return
-    rs = max(0.25, float(regime_scale))
-    max_high = max(1, int(round(int(config.PRED_PRECISION_MAX_HIGH) * rs)))
-
-    # 기존 high 전부 해제 후 재선정
-    for row in pool:
-        if str(getattr(row, "confidence_tier", "")) == "high":
-            row.confidence_tier = "mid"
-
     eligible = [r for r in pool if not blocks_high_confidence(r)]
-    if not eligible:
-        return
+    top_cal = _pool_top_calibrated_ml(eligible) if eligible else 0.0
+    if top_cal <= 1e-12:
+        top_cal = max((_ml_rank_signal(r) for r in eligible), default=0.0)
 
-    top_ml = max((_ml_rank_signal(r) for r in eligible), default=0.0)
-    ranked = sorted(eligible, key=high_precision_select_score, reverse=True)
-
-    promoted: list[str] = []
-    for pos, row in enumerate(ranked, start=1):
-        if len(promoted) >= max_high:
-            break
-        # 약한 ML 단독 승격 방지(빈 슬롯이 오탐보다 나음)
-        if _ml_rank_signal(row) + 1e-12 < 0.38:
-            continue
+    high_rows = [
+        r for r in pool if str(getattr(r, "confidence_tier", "") or "") == "high"
+    ]
+    ranked_high = sorted(high_rows, key=high_precision_select_score, reverse=True)
+    for pos, row in enumerate(ranked_high, start=1):
         if not passes_precision_gate(
-            row, top_ml=top_ml, rank_position=pos, feedback_ctx=feedback_ctx
+            row, top_ml=top_cal, rank_position=pos, feedback_ctx=feedback_ctx
         ):
-            continue
-        promoted.append(str(row.code).zfill(6))
-
-    promoted_set = set(promoted)
-    for row in pool:
-        code = str(row.code).zfill(6)
-        if code in promoted_set:
-            row.confidence_tier = "high"
-        elif str(getattr(row, "confidence_tier", "")) == "high":
-            row.confidence_tier = "mid"
+            row.confidence_tier = "none"
 
 
 def compute_hit_at_k_metrics(

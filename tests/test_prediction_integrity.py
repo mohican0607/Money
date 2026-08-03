@@ -247,6 +247,7 @@ def test_tier_high_is_pred_high_when_confidence_gate_on(
 def test_display_pct_fallback_when_confidence_gate_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(config, "PRED_RANKING_MODE", False)
     monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", False)
     row = PredictionRow(
         "000001",
@@ -268,6 +269,25 @@ def test_display_pct_fallback_when_confidence_gate_off(
         forward_prediction_only=True,
     )
     assert scope is None
+
+
+def test_ranking_mode_never_pred_high_on_tier_none_even_with_high_display(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PRED_RANKING_MODE", True)
+    row = PredictionRow(
+        "000001",
+        "A",
+        1.0,
+        28.0,
+        [],
+        [],
+        confidence_tier="none",
+    )
+    assert not prk.is_high_confidence_prediction(row)
+    assert not prk.row_pred_high_from_dict(
+        {"confidence_tier": "none", "pred_ret": 28.0}
+    )
 
 
 def test_freeze_rejects_short_high_only_slate() -> None:

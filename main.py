@@ -45,6 +45,37 @@ if ROOT not in sys.path:
 _KST = ZoneInfo("Asia/Seoul")
 
 
+def _guard_no_report_expand_would_shrink(test_days: list[date]) -> None:
+    """``--no-report-expand`` 가 기존 월간 HTML 일자를 삭제하려 하면 중단."""
+    if "--no-report-expand" not in sys.argv[1:]:
+        return
+    from src import config
+    from src.report import parse_monthly_report_trading_days
+
+    batch_by_month: dict[tuple[int, int], set[date]] = {}
+    for t in test_days:
+        batch_by_month.setdefault((t.year, t.month), set()).add(t)
+    for (y, m), batch_days in sorted(batch_by_month.items()):
+        for fname, label in (
+            (f"report_{y}.{m:02d}.html", "메인"),
+            (f"report_theme_25pct_{y}.{m:02d}.html", "테마"),
+        ):
+            path = config.OUTPUT_DIR / fname
+            if not path.is_file():
+                continue
+            existing = parse_monthly_report_trading_days(path)
+            lost = [d for d in existing if d not in batch_days]
+            if lost:
+                print(
+                    f"오류: --no-report-expand 는 {label} 월간 리포트({path.name})에서 "
+                    f"기존 {len(lost)}거래일을 삭제합니다 "
+                    f"({lost[0].isoformat()} ~ {lost[-1].isoformat()} 등). "
+                    "백업 후 진행하거나 플래그를 빼세요.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+
 def main() -> None:
     """
     CLI 진입점: ``_parse_cli`` 결과에 따라 주간/구간/단일일 모드로 파이프라인 실행 후 HTML 저장.
@@ -147,6 +178,7 @@ def main() -> None:
                 "--no-report-expand: 파이프라인·월간 HTML 모두 From~To 일자만 반영합니다.",
                 flush=True,
             )
+        _guard_no_report_expand_would_shrink(test_days)
 
         future_td = [t for t in test_days if t > today]
         if future_td:

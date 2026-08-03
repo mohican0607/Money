@@ -1199,6 +1199,12 @@ def fit_or_load_classifier(
                 return bundle
 
     pos_boost, neg_boost = snapshot_miss_diagnosis.load_ml_boost_sets_from_snapshot()
+    if config.ML_INCREMENTAL_MISS_BOOST_ENABLED:
+        from . import feedback_loop
+
+        inc_pos, inc_neg = feedback_loop.load_incremental_miss_boost()
+        pos_boost |= inc_pos
+        neg_boost |= inc_neg
     if pos_boost or neg_boost:
         print(
             f"ML 랭커: 스냅샷 miss_diagnosis 가중 - 급등 보강 {len(pos_boost)}건·오판 보강 {len(neg_boost)}건",
@@ -1430,7 +1436,9 @@ def rank_predictions_ml(
     ctx = predict.build_scoring_context(news_text_blob, train_events)
     kw_news, profile = ctx
     if feedback_ctx is None:
-        feedback_ctx = prediction_accuracy_cache.build_feedback_context()
+        from . import feedback_loop
+
+        feedback_ctx = feedback_loop.build_enriched_feedback_context()
     tw = theme_weights or {}
     ohlcv_idx = ohlcv_lookup(returns_ml)
     from .. import investor_flow
@@ -1694,6 +1702,10 @@ def rank_predictions_ml(
     pre_pool = pred_hybrid.select_pre_pool_with_hot_promotion(
         buf, finalize_n=min(len(buf), finalize_n)
     )
+    if feedback_ctx and config.PRED_FEEDBACK_ADAPTIVE_ENABLED:
+        from . import feedback_loop
+
+        feedback_loop.apply_feedback_rank_penalties(pre_pool, feedback_ctx)
     t_ml = time.perf_counter() - t0
     cap_note = f" 풀 {n_raw}→{len(cand_ix)}" if n_raw != len(cand_ix) else ""
     print(
@@ -1707,9 +1719,10 @@ def rank_predictions_ml(
         ks11_ret_lag1=ks11_ret,
         forward_observation=forward_observation,
         returns_ml=returns_ml,
+        feedback_ctx=feedback_ctx,
     )
     out = out[:top_n]
-    if config.PRED_USE_DISPLAY_RANK_MAPPING and config.PRED_ERROR_FEEDBACK_ENABLED:
+    if config.PRED_ERROR_FEEDBACK_ENABLED:
         for pr in out:
             n_hit = int(getattr(pr, "keyword_hits", 0) or 0)
             mention = float(getattr(pr, "mention_score", 0.0) or 0.0)

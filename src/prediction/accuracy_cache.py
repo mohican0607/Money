@@ -216,8 +216,21 @@ def merge_keyword_feedback_from_day_reports(
             if not kws:
                 continue
 
-            is_fp = pred_pct is not None and pred_pct + 1e-9 >= thr_pct and act_pct < thr_pct - 1e-9
-            is_fn = pred_pct is not None and pred_pct < thr_pct - 1e-9 and act_pct + 1e-9 >= thr_pct
+            if config.PRED_RANKING_MODE:
+                is_fp = bool(r.get("pred_high")) and act_pct + 1e-9 < thr_pct
+                is_fn = (
+                    bool(r.get("pred_mid"))
+                    and act_pct + 1e-9 >= thr_pct
+                ) or (
+                    not bool(r.get("pred_high"))
+                    and not bool(r.get("pred_mid"))
+                    and pred_pct is not None
+                    and pred_pct < thr_pct - 1e-9
+                    and act_pct + 1e-9 >= thr_pct
+                )
+            else:
+                is_fp = pred_pct is not None and pred_pct + 1e-9 >= thr_pct and act_pct < thr_pct - 1e-9
+                is_fn = pred_pct is not None and pred_pct < thr_pct - 1e-9 and act_pct + 1e-9 >= thr_pct
             if not (is_fp or is_fn):
                 continue
 
@@ -314,6 +327,9 @@ def merge_from_day_reports(day_reports: list) -> None:
                 if act_pct.get(k) != ap:
                     act_pct[k] = ap
                     changed = True
+            if config.PRED_RANKING_MODE:
+                if not (bool(r.get("pred_high")) or bool(r.get("pred_mid"))):
+                    continue
             cur = _ratio(r.get("pred_ret"), r.get("actual_ret"))
             if cur is None:
                 continue
@@ -794,6 +810,10 @@ def merge_feedback_buckets_from_day_reports(day_reports: list) -> None:
         if getattr(dr, "forward_observation", False):
             continue
         for r in dr.rows_compare:
+            if config.PRED_RANKING_MODE and not (
+                bool(r.get("pred_high")) or bool(r.get("pred_mid"))
+            ):
+                continue
             pred_ret = r.get("pred_ret")
             actual_ret = r.get("actual_ret")
             if pred_ret is None or actual_ret is None:

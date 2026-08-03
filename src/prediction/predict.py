@@ -235,23 +235,10 @@ def _chronic_miss_blocks_prediction(
     mention: float,
     feedback_ctx: dict[str, object] | None,
 ) -> bool:
-    """누적 적중률이 매우 낮은 종목은 종목명 직접 언급 없이 후보에서 제외."""
-    if mention >= float(config.PRED_MENTION_GATE_MIN):
-        return False
-    if not config.PRED_CHRONIC_MISS_BLOCK_ENABLED or not feedback_ctx:
-        return False
-    by_mean = feedback_ctx.get("by_code_mean_ratio")
-    by_count = feedback_ctx.get("by_code_count")
-    if not isinstance(by_mean, dict) or not isinstance(by_count, dict):
-        return False
-    code_key = str(code).zfill(6)
-    n = int(by_count.get(code_key, 0) or 0)
-    if n < int(config.PRED_CHRONIC_MISS_MIN_SAMPLES):
-        return False
-    mean = by_mean.get(code_key)
-    if not isinstance(mean, (int, float)):
-        return False
-    return float(mean) < float(config.PRED_CHRONIC_MISS_RATIO_MAX)
+    """누적·최근 적중률이 매우 낮은 종목은 종목명 직접 언급 없이 후보에서 제외."""
+    from . import feedback_loop
+
+    return feedback_loop.should_block_code_fast(code, mention, feedback_ctx)
 
 
 def _historical_mean_return(train_events: list[BreakoutEvent], code: str) -> float:
@@ -374,7 +361,10 @@ def _feedback_calibrated_return(
     prior = float(global_mean) if isinstance(global_mean, (int, float)) else 0.70
     shrink = max(1.0, float(config.PRED_ERROR_FEEDBACK_SHRINK_STRENGTH))
     mean_ratio = (float(c_mean) * c_n + prior * shrink) / (float(c_n) + shrink)
-    target_mult = max(0.78, min(1.02, mean_ratio))
+    from . import feedback_loop
+
+    lo_mult, hi_mult = feedback_loop.adaptive_feedback_shrink_bounds(feedback_ctx)
+    target_mult = max(lo_mult, min(hi_mult, mean_ratio))
 
     bucket_stats = feedback_ctx.get("signal_bucket_stats")
     if isinstance(bucket_stats, dict):
@@ -389,7 +379,7 @@ def _feedback_calibrated_return(
             bn = int(b.get("count", 0) or 0)
             b_ratio = b.get("mean_ratio")
             if bn >= int(config.PRED_ERROR_FEEDBACK_MIN_SAMPLES) and isinstance(b_ratio, (int, float)):
-                b_mult = max(0.78, min(1.02, float(b_ratio)))
+                b_mult = max(lo_mult, min(hi_mult, float(b_ratio)))
                 w = min(0.45, bn / 80.0)
                 target_mult = target_mult * (1.0 - w) + b_mult * w
 
@@ -637,7 +627,9 @@ def predict_for_trading_day(
 
     ctx = build_scoring_context(news_text_blob, train_events)
     if feedback_ctx is None:
-        feedback_ctx = prediction_accuracy_cache.build_feedback_context()
+        from . import feedback_loop
+
+        feedback_ctx = feedback_loop.build_enriched_feedback_context()
     ranked: list[PredictionRow] = []
 
     for code in listing_codes:
@@ -671,6 +663,7 @@ def predict_for_trading_day(
         ks11_ret_lag1=ks11_ret,
         forward_observation=forward_observation,
         returns_ml=returns_ml,
+        feedback_ctx=feedback_ctx,
     )
 
 

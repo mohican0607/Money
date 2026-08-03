@@ -115,10 +115,10 @@ def test_forward_high_requires_calibrated_probability_and_news_evidence(
 ) -> None:
     monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
     monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", False)
-    strong = _row(probability=0.05, keyword_hits=2, mention_score=0.5)
-    weak_news = _row(probability=0.05, keyword_hits=0)
+    strong = _row(probability=0.08, keyword_hits=2, mention_score=0.5)
+    weak_news = _row(probability=0.08, keyword_hits=0)
     weak_news.code = "000002"
-    no_evidence = _row(probability=0.05, keyword_hits=1, mention_score=0.0)
+    no_evidence = _row(probability=0.08, keyword_hits=1, mention_score=0.0)
     no_evidence.code = "000003"
 
     prediction_ranking.assign_forward_confidence_tiers(
@@ -128,6 +128,30 @@ def test_forward_high_requires_calibrated_probability_and_news_evidence(
     assert strong.confidence_tier == "high"
     assert weak_news.confidence_tier == "none"
     assert no_evidence.confidence_tier == "none"
+
+
+def test_refine_does_not_promote_zero_keyword_raw_ml100(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``refine_confidence_tiers`` 가 ml_rank_score 만으로 high 승격하지 않음."""
+    monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_PRECISION_GATE_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", False)
+    carryover = _row(probability=0.03, keyword_hits=0, mention_score=0.0)
+    carryover.industry_theme_overlap = 0.85
+    carryover.industry_momentum = 0.75
+    carryover.industry_limit_up_heat = 0.55
+    carryover.prior_industry_hot = 0.35
+    carryover.sector_breadth_hot = 0.40
+    carryover.ml_rank_score = 0.92
+    carryover.confidence_tier = "none"
+
+    prediction_ranking.assign_forward_confidence_tiers([carryover])
+    assert carryover.confidence_tier == "none"
+
+    carryover.confidence_tier = "high"
+    prediction_ranking.refine_confidence_tiers([carryover])
+    assert carryover.confidence_tier == "none"
 
 
 def test_case_control_calibration_is_rebased_to_population_prevalence() -> None:

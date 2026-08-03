@@ -352,10 +352,25 @@ def _run_pipeline(
         _load_prediction_freeze_payload() if config.PREDICTION_FREEZE_ENABLED else {}
     )
     freeze_changed = False
-    pipeline_feedback_ctx = prediction_accuracy_cache.build_feedback_context()
+    from ..prediction import feedback_loop as prediction_feedback_loop
+
+    pipeline_feedback_ctx = prediction_feedback_loop.build_enriched_feedback_context(
+        as_of=today_kst,
+    )
 
     for T in tqdm(test_days, desc="테스트일별 예측"):
         t_loop0 = time.perf_counter()
+        pipeline_feedback_ctx = prediction_feedback_loop.build_enriched_feedback_context(
+            as_of=T,
+        )
+        tightness = float(pipeline_feedback_ctx.get("adaptive_tightness", 1.0) or 1.0)
+        if tightness < 0.85 and config.PRED_FEEDBACK_ADAPTIVE_ENABLED:
+            streak = int(pipeline_feedback_ctx.get("recent_miss_streak_days", 0) or 0)
+            print(
+                f"오판 반성: T={T.isoformat()} 적응 보수화 tightness={tightness:.2f} "
+                f"miss_streak={streak}일",
+                flush=True,
+            )
         day_forward = _observation_day_forward_mode(
             T,
             today=today_kst,
@@ -1061,6 +1076,15 @@ def _run_pipeline(
                 forward_pred_rationale_html=forward_pred_rationale_html,
             )
         )
+        if not day_forward:
+            _dr = day_reports[-1]
+            prediction_accuracy_cache.merge_from_day_reports([_dr])
+            prediction_accuracy_cache.merge_hit_at_k_from_day_reports([_dr])
+            prediction_accuracy_cache.merge_feedback_buckets_from_day_reports([_dr])
+            prediction_accuracy_cache.merge_keyword_feedback_from_day_reports(
+                [_dr], threshold=config.BIG_MOVE_THRESHOLD
+            )
+            prediction_feedback_loop.append_incremental_miss_from_day_report(_dr)
 
     # 장중 시작 실행이 장마감 이후까지 이어진 경우: 확정된 관측 거래일 일봉을 다시 읽어 실제값 보정.
     now_end_kst = datetime.now(trading_calendar.KST)
@@ -1098,6 +1122,13 @@ def _run_pipeline(
             universe_size=len(codes),
         ):
             reconciled += 1
+            prediction_feedback_loop.append_incremental_miss_from_day_report(dr)
+            prediction_accuracy_cache.merge_from_day_reports([dr])
+            prediction_accuracy_cache.merge_hit_at_k_from_day_reports([dr])
+            prediction_accuracy_cache.merge_feedback_buckets_from_day_reports([dr])
+            prediction_accuracy_cache.merge_keyword_feedback_from_day_reports(
+                [dr], threshold=config.BIG_MOVE_THRESHOLD
+            )
     if reconciled:
         print(
             f"장 마감 반영: 종가 기준 실적·Hit@K·테마 재구성 {reconciled}일",
