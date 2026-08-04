@@ -687,3 +687,28 @@ ML_INCREMENTAL_MISS_BOOST_ENABLED = os.getenv(
 ML_INCREMENTAL_MISS_MAX_ENTRIES = _positive_int_env(
     "ML_INCREMENTAL_MISS_MAX_ENTRIES", 480
 )
+
+# --- 스케줄 리포트 이메일 (scripts/run_daily_email.py) ---
+EMAIL_ENABLED = os.getenv("EMAIL_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+EMAIL_SMTP_HOST = _env_str("EMAIL_SMTP_HOST", "smtp-mail.outlook.com")
+EMAIL_SMTP_PORT = _positive_int_env("EMAIL_SMTP_PORT", 587)
+EMAIL_SMTP_USER = _env_str("EMAIL_SMTP_USER")
+EMAIL_SMTP_PASSWORD = _env_str("EMAIL_SMTP_PASSWORD")
+EMAIL_FROM = _env_str("EMAIL_FROM")
+EMAIL_RECIPIENTS_RAW = _env_str(
+    "EMAIL_RECIPIENTS",
+    "mohican0607@hotmail.com,mohican0607@gmail.com",
+)
+EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+EMAIL_SMTP_TIMEOUT_SEC = _positive_int_env("EMAIL_SMTP_TIMEOUT_SEC", 60)
+EMAIL_SUBJECT_PREFIX = _env_str("EMAIL_SUBJECT_PREFIX", "[Money]")
