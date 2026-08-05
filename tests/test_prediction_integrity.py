@@ -71,20 +71,30 @@ def test_freeze_roundtrip_preserves_prediction_codes_and_tiers() -> None:
     ]
     frozen = _prediction_rows_to_frozen_items(_display_prediction_rows_for_freeze(rows))
     restored = _prediction_rows_from_frozen_items(frozen)
-    assert [r.code for r in restored] == ["000001", "000002"]
-    assert [r.confidence_tier for r in restored] == ["high", "mid"]
-    assert [round(r.predicted_return_pct, 1) for r in restored] == [25.0, 22.0]
+    assert [r.code for r in restored] == ["000001", "000002", "000003"]
+    assert [r.confidence_tier for r in restored] == ["high", "mid", "mid"]
+    assert [round(r.predicted_return_pct, 1) for r in restored] == [25.0, 22.0, 8.0]
 
 
-def test_freeze_keeps_display_candidates_only() -> None:
+def test_freeze_pads_to_forward_show_max_when_few_tiered(monkeypatch) -> None:
+    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 4)
     rows = [
-        PredictionRow("000001", "A", 1.0, 25.0, [], [], confidence_tier="high"),
-        PredictionRow("000002", "B", 1.0, 8.0, [], [], confidence_tier="none"),
-        PredictionRow("000003", "C", 1.0, 21.0, [], [], confidence_tier="mid"),
+        PredictionRow(
+            f"{i:06d}",
+            f"N{i}",
+            1.0,
+            20.0,
+            [],
+            [],
+            confidence_tier="mid" if i == 1 else "none",
+            rank_position=i,
+        )
+        for i in range(1, 8)
     ]
     frozen = _display_prediction_rows_for_freeze(rows)
-    codes = {r.code for r in frozen}
-    assert codes == {"000001", "000003"}
+    assert len(frozen) == 4
+    assert frozen[0].code == "000001"
+    assert all(r.confidence_tier in ("high", "mid") for r in frozen)
 
 
 def test_prior_day_exhaustion_blocks_after_limit_up() -> None:

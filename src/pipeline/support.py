@@ -321,9 +321,40 @@ def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> li
             str(r.code).zfill(6),
         )
     )
-    if tiered:
-        return tiered[:cap]
-    return list(rows[:cap])
+    if not tiered:
+        ranked = sorted(
+            rows,
+            key=lambda r: (
+                int(getattr(r, "rank_position", None) or 9999),
+                str(r.code).zfill(6),
+            ),
+        )
+        return list(ranked[:cap])
+
+    out = list(tiered[:cap])
+    if len(out) >= cap:
+        return out
+
+    seen = {str(r.code).zfill(6) for r in out}
+    ranked = sorted(
+        rows,
+        key=lambda r: (
+            int(getattr(r, "rank_position", None) or 9999),
+            str(r.code).zfill(6),
+        ),
+    )
+    for pr in ranked:
+        if len(out) >= cap:
+            break
+        code = str(pr.code).zfill(6)
+        if code in seen:
+            continue
+        tier = str(getattr(pr, "confidence_tier", "") or "")
+        if tier not in ("high", "mid"):
+            pr.confidence_tier = "mid"
+        out.append(pr)
+        seen.add(code)
+    return out
 
 
 def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[dict]:
