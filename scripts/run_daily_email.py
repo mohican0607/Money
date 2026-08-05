@@ -26,6 +26,37 @@ SLOT_LABELS = {
     "1530": "15:30",
 }
 
+_LOG_DIR = ROOT / "scripts" / "logs"
+
+
+def _append_run_log(lines: list[str]) -> Path:
+    """스케줄 실행 기록 — 작업 스케줄러 콘솔 없을 때 확인용."""
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    day = datetime.now(KST).strftime("%Y%m%d")
+    path = _LOG_DIR / f"run_daily_{day}.log"
+    stamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST")
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(f"\n=== {stamp} ===\n")
+        fh.write("\n".join(lines))
+        if lines and not lines[-1].endswith("\n"):
+            fh.write("\n")
+    return path
+
+
+def _smtp_auth_hint(exc: BaseException) -> str:
+    msg = str(exc).lower()
+    if "authentication" in msg or "535" in msg:
+        if "basic authentication is disabled" in msg:
+            return (
+                "Hotmail/Outlook SMTP 기본 인증이 Microsoft 에서 막혀 있습니다. "
+                "Gmail(smtp.gmail.com) + 앱 비밀번호로 바꾸세요."
+            )
+        return (
+            "SMTP 인증 실패 — Gmail 이면 myaccount.google.com/apppasswords 앱 비밀번호를 "
+            "EMAIL_SMTP_PASSWORD 에 넣었는지 확인하세요."
+        )
+    return ""
+
 
 def _ensure_env_defaults() -> None:
     os.environ.setdefault("MOCK_NEWS", "0")
@@ -154,18 +185,22 @@ def main(argv: list[str] | None = None) -> int:
     from src.notify.email_report import email_configured, parse_recipients, send_report_email
     from src.pipeline.early_validate import current_n_and_n_plus_one
 
+    log_lines: list[str] = [f"slot={args.slot} skip_email={args.skip_email}"]
+
     check_code = _check_trading_day_exit()
     if check_code != 0:
+        log_lines.append(f"거래일 검사 종료 code={check_code}")
+        _append_run_log(log_lines)
         return 0 if check_code in (2, 3, 4) else check_code
 
     n_day, t_day = current_n_and_n_plus_one()
     slot_label = SLOT_LABELS[args.slot]
-    print(
-        f"[run_daily_email] {slot_label} — N={n_day.isoformat()} → T={t_day.isoformat()}",
-        flush=True,
-    )
+    header = f"[run_daily_email] {slot_label} — N={n_day.isoformat()} → T={t_day.isoformat()}"
+    print(header, flush=True)
+    log_lines.append(header)
 
     main_exit, log_text = _run_main_py()
+    log_lines.append(f"main.py exit={main_exit}")
     report_path = _expected_report_path(n_day, t_day)
     if not report_path.is_file():
         candidates = sorted(
@@ -176,15 +211,26 @@ def main(argv: list[str] | None = None) -> int:
         if candidates:
             report_path = candidates[0]
 
+    if report_path.is_file():
+        mtime = datetime.fromtimestamp(report_path.stat().st_mtime, tz=KST)
+        report_note = f"리포트: {report_path.name} (mtime {mtime:%H:%M:%S})"
+    else:
+        report_note = "리포트: 없음"
+    print(report_note, flush=True)
+    log_lines.append(report_note)
+
     if args.skip_email:
+        _append_run_log(log_lines)
         return main_exit
 
     if not email_configured():
-        print(
+        msg = (
             "[run_daily_email] 이메일 설정 미비 — "
-            "EMAIL_SMTP_USER, EMAIL_SMTP_PASSWORD, EMAIL_RECIPIENTS 를 .env 에 추가하세요.",
-            file=sys.stderr,
+            "EMAIL_SMTP_USER, EMAIL_SMTP_PASSWORD, EMAIL_RECIPIENTS 를 .env 에 추가하세요."
         )
+        print(msg, file=sys.stderr)
+        log_lines.append(msg)
+        _append_run_log(log_lines)
         return main_exit if main_exit == 0 else main_exit
 
     prefix = config.EMAIL_SUBJECT_PREFIX.strip()
@@ -205,11 +251,21 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         send_report_email(subject=subject, body_text=body, attachment_paths=attachments)
-        print(f"[run_daily_email] 이메일 발송 완료 → {', '.join(parse_recipients())}")
+        ok = f"[run_daily_email] 이메일 발송 완료 → {', '.join(parse_recipients())}"
+        print(ok)
+        log_lines.append(ok)
     except Exception as exc:
-        print(f"[run_daily_email] 이메일 발송 실패: {exc}", file=sys.stderr)
+        err = f"[run_daily_email] 이메일 발송 실패: {exc}"
+        print(err, file=sys.stderr)
+        log_lines.append(err)
+        hint = _smtp_auth_hint(exc)
+        if hint:
+            print(f"[run_daily_email] {hint}", file=sys.stderr)
+            log_lines.append(hint)
+        _append_run_log(log_lines)
         return 1 if main_exit == 0 else main_exit
 
+    _append_run_log(log_lines)
     return main_exit
 
 

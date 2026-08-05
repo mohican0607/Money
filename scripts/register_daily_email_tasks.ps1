@@ -16,6 +16,9 @@ $Tr1530 = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$Ps1530`" -
 
 # schtasks /Create /TN "MoneyKRX_Daily1430_Email" /TR $Tr1430 /SC DAILY /ST 14:30 /RL HIGHEST /F
 # schtasks /Create /TN "MoneyKRX_Daily1530_Email" /TR $Tr1530 /SC DAILY /ST 15:30 /RL HIGHEST /F
+#
+# 등록 후 실행 로그: scripts/logs/run_daily_YYYYMMDD.log
+# 작업 스케줄러 '마지막 실행 결과' 1 = main.py 는 됐는데 이메일 SMTP 실패일 수 있음
 
 Write-Host "[예시] 작업 스케줄 등록은 비활성화되어 있습니다. 활성화하려면 schtasks 줄의 선행 # 을 제거하세요."
 Write-Host "등록 예정:"
