@@ -70,6 +70,7 @@ class PredictionEvalContext:
         *,
         top_n: int | None = None,
         ml_bundle: dict[str, Any] | None = None,
+        feedback_ctx: dict[str, object] | None = None,
     ) -> list[predict.PredictionRow]:
         bundle = ml_bundle if ml_bundle is not None else self.fit_ml_bundle()
         if bundle is None or bundle.get("pipeline") is None:
@@ -77,6 +78,12 @@ class PredictionEvalContext:
         n = int(top_n or config.PRED_RANK_POOL_N)
         eval_k = max(config.PRED_EVAL_HIT_AT_K) if config.PRED_EVAL_HIT_AT_K else 40
         n = max(n, eval_k)
+        if feedback_ctx is None:
+            from ..prediction import feedback_loop
+
+            feedback_ctx = feedback_loop.build_enriched_feedback_context(
+                as_of=self.target_day
+            )
         return ml_move_rank.rank_predictions_ml(
             target_day=self.target_day,
             listing_codes=self.listing_codes,
@@ -87,6 +94,7 @@ class PredictionEvalContext:
             pipeline=bundle["pipeline"],
             theme_weights=self.theme_weights(),
             ml_bundle=bundle,
+            feedback_ctx=feedback_ctx,
             top_n=n,
         )
 

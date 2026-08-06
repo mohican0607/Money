@@ -72,7 +72,7 @@ def test_freeze_roundtrip_preserves_prediction_codes_and_tiers() -> None:
     frozen = _prediction_rows_to_frozen_items(_display_prediction_rows_for_freeze(rows))
     restored = _prediction_rows_from_frozen_items(frozen)
     assert [r.code for r in restored] == ["000001", "000002", "000003"]
-    assert [r.confidence_tier for r in restored] == ["high", "mid", "mid"]
+    assert [r.confidence_tier for r in restored] == ["high", "mid", "none"]
     assert [round(r.predicted_return_pct, 1) for r in restored] == [25.0, 22.0, 8.0]
 
 
@@ -94,7 +94,9 @@ def test_freeze_pads_to_forward_show_max_when_few_tiered(monkeypatch) -> None:
     frozen = _display_prediction_rows_for_freeze(rows)
     assert len(frozen) == 4
     assert frozen[0].code == "000001"
-    assert all(r.confidence_tier in ("high", "mid") for r in frozen)
+    # 패딩 행은 tier none 유지(약한 종목 mid 승격 없음)
+    assert frozen[0].confidence_tier == "mid"
+    assert sum(1 for r in frozen if r.confidence_tier in ("high", "mid")) >= 1
 
 
 def test_prior_day_exhaustion_blocks_after_limit_up() -> None:
@@ -333,7 +335,10 @@ def test_fill_forward_review_slate_adds_mid_to_reach_cap(
         )
         for i in range(12)
     ]
-    prk.fill_forward_review_slate(rows)
+    prk.fill_forward_review_slate(
+        rows,
+        feedback_ctx={"recent_miss_streak_days": 0, "adaptive_tightness": 1.0},
+    )
     tiered = [
         r
         for r in rows

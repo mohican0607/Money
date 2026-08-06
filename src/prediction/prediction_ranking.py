@@ -1559,6 +1559,7 @@ def assign_forward_confidence_tiers(
     pool: list[PredictionRow],
     *,
     regime_scale: float = 1.0,
+    feedback_ctx: dict[str, object] | None = None,
 ) -> None:
     """
     N일 → N+1일 실전 확신 게이트.
@@ -1576,6 +1577,15 @@ def assign_forward_confidence_tiers(
             int(round(int(config.PRED_PRECISION_MAX_HIGH) * rs)),
         ),
     )
+    if feedback_ctx and config.PRED_FEEDBACK_ADAPTIVE_ENABLED:
+        streak = int(feedback_ctx.get("recent_miss_streak_days", 0) or 0)
+        # tightness는 regime_scale·확률 하한에 이미 반영. 연속 장기 오판만 슬롯 축소.
+        if streak >= 6:
+            max_high = 0
+        elif streak >= 4:
+            max_high = min(max_high, 1)
+        elif streak >= 2:
+            max_high = min(max_high, max(1, max_high))
     max_mid = (
         max(0, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
         if config.PRED_FORWARD_MID_ENABLED
@@ -1651,6 +1661,8 @@ def assign_forward_confidence_tiers(
         non_news = count_non_news_strong_pillars(pillars, threshold=0.40)
         if non_news < 2:
             continue
+        if not _code_history_ok(str(row.code).zfill(6)):
+            continue
         row.confidence_tier = "high"
         high_n += 1
 
@@ -1677,8 +1689,6 @@ def assign_forward_confidence_tiers(
         row.confidence_tier = "mid"
         mid_n += 1
 
-    fill_forward_review_slate(pool, regime_scale=rs)
-
     for pos, row in enumerate(ranked, start=1):
         row.rank_position = pos
         row.rank_score = hybrid_rank_score(row)
@@ -1688,15 +1698,26 @@ def fill_forward_review_slate(
     pool: list[PredictionRow],
     *,
     regime_scale: float = 1.0,
+    feedback_ctx: dict[str, object] | None = None,
 ) -> None:
     """
     20분 검토용: 고·중 합이 ``PRED_FORWARD_SHOW_MAX`` 에 못 미치면 mid 슬롯을 순위로 채웁니다.
 
     엄격 게이트 통과가 적어도 표·freeze 에 ``PRED_FORWARD_SHOW_MAX`` 근처 후보가 남도록 합니다.
+    연속 오판·낮은 tightness 구간에서는 패딩을 건너뜁니다(약한 종목 mid 승격 방지).
     """
     if not pool or not config.PRED_CONFIDENCE_OUTPUT_ENABLED:
         return
     if not config.PRED_FORWARD_MID_ENABLED:
+        return
+    streak = 0
+    tightness = 1.0
+    if feedback_ctx and config.PRED_FEEDBACK_ADAPTIVE_ENABLED:
+        streak = int(feedback_ctx.get("recent_miss_streak_days", 0) or 0)
+        tightness = float(feedback_ctx.get("adaptive_tightness", 1.0) or 1.0)
+    if streak > int(config.PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK):
+        return
+    if tightness + 1e-12 < float(config.PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS):
         return
     rs = max(0.25, min(1.0, float(regime_scale)))
     max_mid = max(0, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
@@ -1803,7 +1824,9 @@ def finalize_ranked_predictions(
         # 과거 재생과 실전이 같은 point-in-time 확신 규칙을 써야 검증 수치가
         # 실전 의미를 갖는다. 장후 재생에서만 permissive tier를 쓰지 않는다.
         if config.PRED_CONFIDENCE_OUTPUT_ENABLED:
-            assign_forward_confidence_tiers(pool, regime_scale=r_scale)
+            assign_forward_confidence_tiers(
+                pool, regime_scale=r_scale, feedback_ctx=feedback_ctx
+            )
             if config.PRED_PRECISION_GATE_ENABLED:
                 refine_confidence_tiers(
                     pool,
@@ -1814,8 +1837,14 @@ def finalize_ranked_predictions(
         if config.PRED_FEEDBACK_ADAPTIVE_ENABLED and feedback_ctx:
             streak = int(feedback_ctx.get("recent_miss_streak_days", 0) or 0)
             tightness = float(feedback_ctx.get("adaptive_tightness", 1.0) or 1.0)
-            if streak < 2 and tightness >= 0.72:
-                fill_forward_review_slate(pool, regime_scale=r_scale)
+            if (
+                streak <= int(config.PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK)
+                and tightness + 1e-12
+                >= float(config.PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS)
+            ):
+                fill_forward_review_slate(
+                    pool, regime_scale=r_scale, feedback_ctx=feedback_ctx
+                )
     else:
         for pos, row in enumerate(pool, start=1):
             row.confidence_tier = confidence_tier(
@@ -1884,7 +1913,7 @@ def _code_history_ok(code: str) -> bool:
         return True
     hist = hp.get(str(code).zfill(6))
     if not isinstance(hist, list) or len(hist) < int(config.PRED_PRECISION_CODE_MIN_TRIES):
-        return True
+        return not config.PRED_PRECISION_CODE_FAIL_CLOSED
     hits = 0
     n = 0
     thr = float(config.BIG_MOVE_THRESHOLD) * 100.0
@@ -1902,7 +1931,7 @@ def _code_history_ok(code: str) -> bool:
         if float(act) + 1e-9 >= thr:
             hits += 1
     if n < int(config.PRED_PRECISION_CODE_MIN_TRIES):
-        return True
+        return not config.PRED_PRECISION_CODE_FAIL_CLOSED
     rate = hits / n
     return rate + 1e-12 >= float(config.PRED_PRECISION_CODE_MIN_HIT_RATE)
 

@@ -273,6 +273,17 @@ PRED_PRECISION_BUCKET_MIN_SAMPLES = _positive_int_env("PRED_PRECISION_BUCKET_MIN
 PRED_PRECISION_BUCKET_MIN_RATIO = _float_env("PRED_PRECISION_BUCKET_MIN_RATIO", 0.28)
 PRED_PRECISION_CODE_MIN_TRIES = _positive_int_env("PRED_PRECISION_CODE_MIN_TRIES", 5)
 PRED_PRECISION_CODE_MIN_HIT_RATE = _float_env("PRED_PRECISION_CODE_MIN_HIT_RATE", 0.12)
+# True: 고확신 이력 표본 부족 종목은 high 슬롯 불가(미검증 승격 차단)
+PRED_PRECISION_CODE_FAIL_CLOSED = os.getenv(
+    "PRED_PRECISION_CODE_FAIL_CLOSED", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+# forward 슬레이트 패딩: miss streak·tightness 조건 미달 시 mid 승격 금지
+PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS = _float_env(
+    "PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS", 0.85
+)
+PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK = _non_negative_int_env(
+    "PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK", 0
+)
 # N일 → N+1일 실전 확신은 보정확률·최종 순위·뉴스 근거를 모두 통과해야 한다.
 # 통과자가 없으면 빈 슬롯을 허용한다(강제 high/mid 금지).
 # 모집단 보정 후 상위 확률도 대개 수 %대다. 0.30 같은 구버전 하한은 전부 기각한다.

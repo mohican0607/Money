@@ -115,6 +115,7 @@ def test_forward_high_requires_calibrated_probability_and_news_evidence(
 ) -> None:
     monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
     monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", False)
+    monkeypatch.setattr(config, "PRED_PRECISION_CODE_FAIL_CLOSED", False)
     strong = _row(probability=0.08, keyword_hits=2, mention_score=0.5)
     weak_news = _row(probability=0.08, keyword_hits=0)
     weak_news.code = "000002"

@@ -1438,7 +1438,9 @@ def rank_predictions_ml(
     if feedback_ctx is None:
         from . import feedback_loop
 
-        feedback_ctx = feedback_loop.build_enriched_feedback_context()
+        feedback_ctx = feedback_loop.build_enriched_feedback_context(
+            as_of=target_day
+        )
     tw = theme_weights or {}
     ohlcv_idx = ohlcv_lookup(returns_ml)
     from .. import investor_flow

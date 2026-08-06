@@ -349,9 +349,6 @@ def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> li
         code = str(pr.code).zfill(6)
         if code in seen:
             continue
-        tier = str(getattr(pr, "confidence_tier", "") or "")
-        if tier not in ("high", "mid"):
-            pr.confidence_tier = "mid"
         out.append(pr)
         seen.add(code)
     return out
