@@ -71,13 +71,13 @@ def test_freeze_roundtrip_preserves_prediction_codes_and_tiers() -> None:
     ]
     frozen = _prediction_rows_to_frozen_items(_display_prediction_rows_for_freeze(rows))
     restored = _prediction_rows_from_frozen_items(frozen)
-    assert [r.code for r in restored] == ["000001", "000002", "000003"]
-    assert [r.confidence_tier for r in restored] == ["high", "mid", "none"]
-    assert [round(r.predicted_return_pct, 1) for r in restored] == [25.0, 22.0, 8.0]
+    assert [r.code for r in restored] == ["000001", "000002"]
+    assert [r.confidence_tier for r in restored] == ["high", "mid"]
+    assert [round(r.predicted_return_pct, 1) for r in restored] == [25.0, 22.0]
 
 
-def test_freeze_pads_to_forward_show_max_when_few_tiered(monkeypatch) -> None:
-    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 4)
+def test_freeze_does_not_pad_when_few_tiered(monkeypatch) -> None:
+    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 10)
     rows = [
         PredictionRow(
             f"{i:06d}",
@@ -92,11 +92,9 @@ def test_freeze_pads_to_forward_show_max_when_few_tiered(monkeypatch) -> None:
         for i in range(1, 8)
     ]
     frozen = _display_prediction_rows_for_freeze(rows)
-    assert len(frozen) == 4
+    assert len(frozen) == 1
     assert frozen[0].code == "000001"
-    # 패딩 행은 tier none 유지(약한 종목 mid 승격 없음)
     assert frozen[0].confidence_tier == "mid"
-    assert sum(1 for r in frozen if r.confidence_tier in ("high", "mid")) >= 1
 
 
 def test_prior_day_exhaustion_blocks_after_limit_up() -> None:

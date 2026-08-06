@@ -306,7 +306,11 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
 
 
 def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> list[predict.PredictionRow]:
-    """리포트·freeze 에 고정할 예측 후보 — 고·중 확신 우선, ``PRED_FORWARD_SHOW_MAX`` 까지 순위로 보충."""
+    """리포트·freeze 에 고정할 예측 후보 — **고·중 확신 tier 만** 저장(순위 보충 없음).
+
+    14:30에 확정된 2~3종목 slate 가 이후 실행에서 10종목으로 늘어나지 않도록 합니다.
+    tier 통과가 0이면 ML 순위 상위 ``PRED_FORWARD_SHOW_MAX`` 까지만 fallback.
+    """
     cap = max(1, int(config.PRED_FORWARD_SHOW_MAX))
     tiered = [
         r
@@ -321,21 +325,9 @@ def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> li
             str(r.code).zfill(6),
         )
     )
-    if not tiered:
-        ranked = sorted(
-            rows,
-            key=lambda r: (
-                int(getattr(r, "rank_position", None) or 9999),
-                str(r.code).zfill(6),
-            ),
-        )
-        return list(ranked[:cap])
+    if tiered:
+        return list(tiered[:cap])
 
-    out = list(tiered[:cap])
-    if len(out) >= cap:
-        return out
-
-    seen = {str(r.code).zfill(6) for r in out}
     ranked = sorted(
         rows,
         key=lambda r: (
@@ -343,15 +335,7 @@ def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> li
             str(r.code).zfill(6),
         ),
     )
-    for pr in ranked:
-        if len(out) >= cap:
-            break
-        code = str(pr.code).zfill(6)
-        if code in seen:
-            continue
-        out.append(pr)
-        seen.add(code)
-    return out
+    return list(ranked[:cap])
 
 
 def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[dict]:

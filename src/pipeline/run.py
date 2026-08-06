@@ -532,10 +532,16 @@ def _run_pipeline(
                     and not _freeze_entry_usable(freeze_payload.get(t_key) or [])
                 )
             ):
-                freeze_payload[t_key] = _prediction_rows_to_frozen_items(
-                    _display_prediction_rows_for_freeze(preds)
-                )
-                freeze_changed = True
+                existing = freeze_payload.get(t_key) or []
+                if not (
+                    existing
+                    and _freeze_entry_usable(existing)
+                    and not ignore_freeze_for_t
+                ):
+                    freeze_payload[t_key] = _prediction_rows_to_frozen_items(
+                        _display_prediction_rows_for_freeze(preds)
+                    )
+                    freeze_changed = True
         scoring_ctx = predict.build_scoring_context(blob, train_events_t)
 
         kospi_r = market_index.index_daily_return_pct(ks11, T)
@@ -811,7 +817,7 @@ def _run_pipeline(
                     )
                 )
                 rows_compare = rows_compare[:cap]
-            if len(rows_compare) < cap and preds:
+            if len(rows_compare) < cap and preds and not use_frozen:
                 seen = {str(r.get("code", "")).zfill(6) for r in rows_compare if r.get("code")}
                 for pr in preds:
                     if len(rows_compare) >= cap:
