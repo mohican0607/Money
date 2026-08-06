@@ -723,3 +723,5 @@ EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "1").strip().lower() in (
 )
 EMAIL_SMTP_TIMEOUT_SEC = _positive_int_env("EMAIL_SMTP_TIMEOUT_SEC", 60)
 EMAIL_SUBJECT_PREFIX = _env_str("EMAIL_SUBJECT_PREFIX", "[Money]")
+# scripts/run_daily_email.py — main.py 최대 대기(초). 초과 시 프로세스 종료 + 실패 메일.
+RUN_DAILY_MAIN_TIMEOUT_SEC = _positive_int_env("RUN_DAILY_MAIN_TIMEOUT_SEC", 5400)

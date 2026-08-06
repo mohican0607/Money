@@ -4,7 +4,8 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
 실행 (프로젝트 루트, 출력: output/):
 
   python main.py
-    → 오늘이 거래일 N일 때, N+1 거래일(T) 급등 후보. output/report_dated_by_MMDD.html 에 해당 N 블록 갱신(표는 예측 후보만)
+    → 오늘이 거래일 N일 때, N+1 거래일(T) 급등 후보.
+      output/report_dated_by_MMDD.html 및 report_YYYY.MM.html(해당 월) 갱신(표는 예측 후보만)
     → 거래일 14:30·15:30 자동 실행·이메일: scripts/run_daily_1430_email.ps1, scripts/run_daily_1530_email.ps1
       (등록 예: scripts/register_daily_email_tasks.ps1)
 
@@ -364,11 +365,18 @@ def main() -> None:
         rollup_path=rollup_path,
         row_id_prefix=f"n{n_day.strftime('%Y%m%d')}-",
     )
+    monthly_paths = render_monthly_batch(
+        po,
+        test_range_label=meta_compact["test_range"],
+        merge_existing_monthly_days=True,
+    )
     print(
         f"완료: {rollup_path} "
         f"(기준일 N={n_day.isoformat()} · 관측일 T={t_day.isoformat()} 블록 반영)"
     )
-    open_report_outputs([rollup_path])
+    for mp in monthly_paths:
+        print(f"월간 리포트: {mp}", flush=True)
+    open_report_outputs([rollup_path, *monthly_paths])
 
 
 if __name__ == "__main__":

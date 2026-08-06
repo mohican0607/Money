@@ -1,6 +1,8 @@
 """
 거래일 14:30 / 15:30 스케줄: ``python main.py`` (N→N+1) 실행 후 리포트를 이메일로 발송.
 
+성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` 제외).
+
 사용:
   python scripts/run_daily_email.py --slot 1430
   python scripts/run_daily_email.py --slot 1530
@@ -11,6 +13,8 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
+import traceback
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -27,6 +31,9 @@ SLOT_LABELS = {
 }
 
 _LOG_DIR = ROOT / "scripts" / "logs"
+_RUN_STATUS_OK = "ok"
+_RUN_STATUS_TIMEOUT = "timeout"
+_RUN_STATUS_ERROR = "error"
 
 
 def _append_run_log(lines: list[str]) -> Path:
@@ -105,33 +112,136 @@ def _check_trading_day_exit() -> int:
     return 0
 
 
-def _expected_report_path(n_day: date, t_day: date) -> Path:
+def _expected_dated_report_path(t_day: date) -> Path:
     from src import config
 
     return config.OUTPUT_DIR / f"report_dated_by_{t_day.strftime('%m%d')}.html"
 
 
-def _run_main_py() -> tuple[int, str]:
+def _expected_monthly_report_path(t_day: date) -> Path:
+    from src import config
+
+    return config.OUTPUT_DIR / f"report_{t_day.year}.{t_day.month:02d}.html"
+
+
+def _kill_process_tree(pid: int) -> None:
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            check=False,
+        )
+        return
+    try:
+        os.kill(pid, 9)
+    except OSError:
+        pass
+
+
+def _run_main_py(timeout_sec: int) -> tuple[int | None, str, str]:
+    """
+    main.py 실행. stdout/stderr 는 임시 파일로 받아 파이프 교착을 피합니다.
+
+    Returns:
+        (exit_code, combined_log, status) — status: ok | timeout | error
+    """
     py = _python_exe()
     main_py = ROOT / "main.py"
-    proc = subprocess.run(
-        [str(py), str(main_py)],
-        cwd=str(ROOT),
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=os.environ.copy(),
-    )
+    with tempfile.TemporaryDirectory(prefix="money_main_") as td:
+        stdout_path = Path(td) / "stdout.txt"
+        stderr_path = Path(td) / "stderr.txt"
+        with stdout_path.open("w", encoding="utf-8", errors="replace") as out_fh, stderr_path.open(
+            "w", encoding="utf-8", errors="replace"
+        ) as err_fh:
+            proc = subprocess.Popen(
+                [str(py), str(main_py)],
+                cwd=str(ROOT),
+                stdout=out_fh,
+                stderr=err_fh,
+                env=os.environ.copy(),
+            )
+            try:
+                proc.wait(timeout=timeout_sec)
+            except subprocess.TimeoutExpired:
+                _kill_process_tree(proc.pid)
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    pass
+                combined = _read_log_files(stdout_path, stderr_path)
+                combined += (
+                    f"\n[run_daily_email] main.py 타임아웃 ({timeout_sec}초 초과) — "
+                    "프로세스를 강제 종료했습니다.\n"
+                )
+                print(combined, end="" if combined.endswith("\n") else "\n", flush=True)
+                return None, combined, _RUN_STATUS_TIMEOUT
+
+        combined = _read_log_files(stdout_path, stderr_path)
+        print(combined, end="" if combined.endswith("\n") else "\n", flush=True)
+        return proc.returncode, combined, _RUN_STATUS_OK
+
+
+def _read_log_files(stdout_path: Path, stderr_path: Path) -> str:
+    parts: list[str] = []
+    for path in (stdout_path, stderr_path):
+        if path.is_file() and path.stat().st_size:
+            parts.append(path.read_text(encoding="utf-8", errors="replace"))
     combined = ""
-    if proc.stdout:
-        combined += proc.stdout
-        if not combined.endswith("\n"):
+    for chunk in parts:
+        combined += chunk
+        if chunk and not chunk.endswith("\n"):
             combined += "\n"
-    if proc.stderr:
-        combined += proc.stderr
-    print(combined, end="" if combined.endswith("\n") else "\n", flush=True)
-    return proc.returncode, combined
+    return combined
+
+
+def _resolve_report_paths(t_day: date) -> tuple[Path | None, Path | None]:
+    from src import config
+
+    dated = _expected_dated_report_path(t_day)
+    monthly = _expected_monthly_report_path(t_day)
+    if not dated.is_file():
+        candidates = sorted(
+            config.OUTPUT_DIR.glob("report_dated_by_*.html"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if candidates:
+            dated = candidates[0]
+    if not dated.is_file():
+        dated = None
+    if not monthly.is_file():
+        monthly = None
+    return dated, monthly
+
+
+def _format_report_note(path: Path | None, *, label: str) -> str:
+    if path and path.is_file():
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=KST)
+        return f"{label}: {path.name} (mtime {mtime:%H:%M:%S})"
+    return f"{label}: 없음"
+
+
+def _build_email_subject(
+    *,
+    prefix: str,
+    n_day: date,
+    t_day: date,
+    slot_label: str,
+    run_status: str,
+    main_exit: int | None,
+) -> str:
+    base = (
+        f"N={n_day:%Y-%m-%d} → T={t_day:%Y-%m-%d} ({slot_label})"
+        if not prefix
+        else f"{prefix} N={n_day:%Y-%m-%d} → T={t_day:%Y-%m-%d} ({slot_label})"
+    )
+    if run_status == _RUN_STATUS_TIMEOUT:
+        tag = "실패·타임아웃"
+    elif run_status == _RUN_STATUS_ERROR or (main_exit is not None and main_exit != 0):
+        tag = "실패"
+    else:
+        tag = "완료"
+    return f"{base} [{tag}]"
 
 
 def _build_email_body(
@@ -139,22 +249,36 @@ def _build_email_body(
     slot: str,
     n_day: date,
     t_day: date,
-    main_exit: int,
+    main_exit: int | None,
+    run_status: str,
     log_text: str,
-    report_path: Path | None,
+    dated_path: Path | None,
+    monthly_path: Path | None,
+    extra_notes: list[str] | None = None,
 ) -> str:
     label = SLOT_LABELS.get(slot, slot)
+    if run_status == _RUN_STATUS_TIMEOUT:
+        status_line = f"실행 결과: 타임아웃 (main.py 미완료, exit={main_exit})"
+    elif run_status == _RUN_STATUS_ERROR:
+        status_line = f"실행 결과: 오류 (main.py exit={main_exit})"
+    elif main_exit is None:
+        status_line = "실행 결과: main.py 종료 코드를 확인하지 못함"
+    elif main_exit == 0:
+        status_line = f"실행 결과: 성공 (main.py exit=0)"
+    else:
+        status_line = f"실행 결과: 실패 (main.py exit={main_exit})"
+
     lines = [
         f"Money KRX 예측 리포트 ({label} 스케줄)",
         f"기준일 N: {n_day.isoformat()}",
         f"관측일 T (N+1): {t_day.isoformat()}",
-        f"main.py 종료 코드: {main_exit}",
+        status_line,
         "",
+        _format_report_note(dated_path, label="일별 리포트"),
+        _format_report_note(monthly_path, label="월간 리포트"),
     ]
-    if report_path and report_path.is_file():
-        lines.append(f"리포트: {report_path.name} (첨부)")
-    else:
-        lines.append("리포트 HTML: 생성되지 않았거나 찾을 수 없음")
+    if extra_notes:
+        lines.extend(extra_notes)
     lines.extend(["", "--- main.py 출력 ---", ""])
     tail = log_text.strip()
     if len(tail) > 12000:
@@ -162,6 +286,65 @@ def _build_email_body(
         lines.append("(… 출력 일부 생략 …)\n")
     lines.append(tail or "(출력 없음)")
     return "\n".join(lines)
+
+
+def _send_run_email(
+    *,
+    slot: str,
+    n_day: date,
+    t_day: date,
+    main_exit: int | None,
+    run_status: str,
+    log_text: str,
+    dated_path: Path | None,
+    monthly_path: Path | None,
+    extra_notes: list[str] | None = None,
+) -> tuple[bool, str]:
+    from src import config
+    from src.notify.email_report import email_configured, parse_recipients, send_report_email
+
+    if not email_configured():
+        return False, (
+            "[run_daily_email] 이메일 설정 미비 — "
+            "EMAIL_SMTP_USER, EMAIL_SMTP_PASSWORD, EMAIL_RECIPIENTS 를 .env 에 추가하세요."
+        )
+
+    prefix = config.EMAIL_SUBJECT_PREFIX.strip()
+    subject = _build_email_subject(
+        prefix=prefix,
+        n_day=n_day,
+        t_day=t_day,
+        slot_label=SLOT_LABELS[slot],
+        run_status=run_status,
+        main_exit=main_exit,
+    )
+    body = _build_email_body(
+        slot=slot,
+        n_day=n_day,
+        t_day=t_day,
+        main_exit=main_exit,
+        run_status=run_status,
+        log_text=log_text,
+        dated_path=dated_path,
+        monthly_path=monthly_path,
+        extra_notes=extra_notes,
+    )
+    attachments: list[Path] = []
+    for path in (dated_path, monthly_path):
+        if path and path.is_file():
+            attachments.append(path)
+
+    try:
+        send_report_email(subject=subject, body_text=body, attachment_paths=attachments)
+    except Exception as exc:
+        hint = _smtp_auth_hint(exc)
+        msg = f"[run_daily_email] 이메일 발송 실패: {exc}"
+        if hint:
+            msg += f" — {hint}"
+        return False, msg
+
+    ok = f"[run_daily_email] 이메일 발송 완료 → {', '.join(parse_recipients())}"
+    return True, ok
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -182,10 +365,10 @@ def main(argv: list[str] | None = None) -> int:
     _ensure_env_defaults()
 
     from src import config
-    from src.notify.email_report import email_configured, parse_recipients, send_report_email
     from src.pipeline.early_validate import current_n_and_n_plus_one
 
-    log_lines: list[str] = [f"slot={args.slot} skip_email={args.skip_email}"]
+    log_lines: list[str] = [f"slot={args.slot} skip_email={args.skip_email}", "status=started"]
+    _append_run_log(log_lines)
 
     check_code = _check_trading_day_exit()
     if check_code != 0:
@@ -199,74 +382,76 @@ def main(argv: list[str] | None = None) -> int:
     print(header, flush=True)
     log_lines.append(header)
 
-    main_exit, log_text = _run_main_py()
-    log_lines.append(f"main.py exit={main_exit}")
-    report_path = _expected_report_path(n_day, t_day)
-    if not report_path.is_file():
-        candidates = sorted(
-            config.OUTPUT_DIR.glob("report_dated_by_*.html"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if candidates:
-            report_path = candidates[0]
-
-    if report_path.is_file():
-        mtime = datetime.fromtimestamp(report_path.stat().st_mtime, tz=KST)
-        report_note = f"리포트: {report_path.name} (mtime {mtime:%H:%M:%S})"
-    else:
-        report_note = "리포트: 없음"
-    print(report_note, flush=True)
-    log_lines.append(report_note)
-
-    if args.skip_email:
-        _append_run_log(log_lines)
-        return main_exit
-
-    if not email_configured():
-        msg = (
-            "[run_daily_email] 이메일 설정 미비 — "
-            "EMAIL_SMTP_USER, EMAIL_SMTP_PASSWORD, EMAIL_RECIPIENTS 를 .env 에 추가하세요."
-        )
-        print(msg, file=sys.stderr)
-        log_lines.append(msg)
-        _append_run_log(log_lines)
-        return main_exit if main_exit == 0 else main_exit
-
-    prefix = config.EMAIL_SUBJECT_PREFIX.strip()
-    subject = (
-        f"{prefix} N={n_day:%Y-%m-%d} → T={t_day:%Y-%m-%d} ({slot_label})"
-        if prefix
-        else f"Money 리포트 N={n_day:%Y-%m-%d} → T={t_day:%Y-%m-%d} ({slot_label})"
-    )
-    body = _build_email_body(
-        slot=args.slot,
-        n_day=n_day,
-        t_day=t_day,
-        main_exit=main_exit,
-        log_text=log_text,
-        report_path=report_path if report_path.is_file() else None,
-    )
-    attachments = [report_path] if report_path.is_file() else []
+    main_exit: int | None = None
+    log_text = ""
+    run_status = _RUN_STATUS_OK
+    dated_path: Path | None = None
+    monthly_path: Path | None = None
 
     try:
-        send_report_email(subject=subject, body_text=body, attachment_paths=attachments)
-        ok = f"[run_daily_email] 이메일 발송 완료 → {', '.join(parse_recipients())}"
-        print(ok)
-        log_lines.append(ok)
-    except Exception as exc:
-        err = f"[run_daily_email] 이메일 발송 실패: {exc}"
-        print(err, file=sys.stderr)
-        log_lines.append(err)
-        hint = _smtp_auth_hint(exc)
-        if hint:
-            print(f"[run_daily_email] {hint}", file=sys.stderr)
-            log_lines.append(hint)
-        _append_run_log(log_lines)
-        return 1 if main_exit == 0 else main_exit
+        timeout_sec = config.RUN_DAILY_MAIN_TIMEOUT_SEC
+        log_lines.append(f"main.py timeout={timeout_sec}s")
+        main_exit, log_text, run_status = _run_main_py(timeout_sec)
+        log_lines.append(f"main.py exit={main_exit} status={run_status}")
 
-    _append_run_log(log_lines)
-    return main_exit
+        dated_path, monthly_path = _resolve_report_paths(t_day)
+        dated_note = _format_report_note(dated_path, label="일별 리포트")
+        monthly_note = _format_report_note(monthly_path, label="월간 리포트")
+        print(dated_note, flush=True)
+        print(monthly_note, flush=True)
+        log_lines.extend([dated_note, monthly_note])
+
+        if args.skip_email:
+            _append_run_log(log_lines)
+            if run_status == _RUN_STATUS_TIMEOUT:
+                return 124
+            return main_exit if main_exit is not None else 1
+
+        sent, msg = _send_run_email(
+            slot=args.slot,
+            n_day=n_day,
+            t_day=t_day,
+            main_exit=main_exit,
+            run_status=run_status,
+            log_text=log_text,
+            dated_path=dated_path,
+            monthly_path=monthly_path,
+        )
+        print(msg, file=sys.stderr if not sent else sys.stdout, flush=True)
+        log_lines.append(msg)
+        _append_run_log(log_lines)
+
+        if run_status == _RUN_STATUS_TIMEOUT:
+            return 124
+        if not sent:
+            return 1 if main_exit in (None, 0) else (main_exit or 1)
+        return main_exit if main_exit is not None else 1
+
+    except Exception as exc:
+        run_status = _RUN_STATUS_ERROR
+        tb = traceback.format_exc()
+        log_text = (log_text + "\n" + tb).strip()
+        log_lines.append(f"예외: {exc}")
+        print(tb, file=sys.stderr, flush=True)
+
+        dated_path, monthly_path = _resolve_report_paths(t_day)
+        if not args.skip_email:
+            sent, msg = _send_run_email(
+                slot=args.slot,
+                n_day=n_day,
+                t_day=t_day,
+                main_exit=main_exit,
+                run_status=run_status,
+                log_text=log_text,
+                dated_path=dated_path,
+                monthly_path=monthly_path,
+                extra_notes=[f"스크립트 예외: {exc}"],
+            )
+            print(msg, file=sys.stderr if not sent else sys.stdout, flush=True)
+            log_lines.append(msg)
+
+        _append_run_log(log_lines)
+        return 1
 
 
 if __name__ == "__main__":

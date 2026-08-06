@@ -1,0 +1,7 @@
+
+=== 2026-08-06 15:58:23 KST ===
+slot=1530 skip_email=False
+[run_daily_email] 15:30 — N=2026-08-06 → T=2026-08-07
+main.py exit=0
+리포트: report_dated_by_0807.html (mtime 15:58:16)
+[run_daily_email] 이메일 발송 완료 → mohican0607@gmail.com, mohican0607@hotmail.com
