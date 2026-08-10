@@ -26,11 +26,26 @@ from src.prediction import prediction_ranking as prk
 def test_compare_table_excludes_actual_only_rows_on_forward_days() -> None:
     assert not _compare_row_is_prediction_candidate({"actual_big": True, "pred_high": False})
     assert _compare_row_is_prediction_candidate({"pred_high": True, "actual_big": False})
+    assert _compare_row_is_prediction_candidate(
+        {"pred_high": False, "pred_mid": False, "pred_ret": 20.0, "confidence_tier": "none"}
+    )
 
 
 def test_closed_day_table_keeps_actual_big_movers() -> None:
     assert _compare_row_belongs_in_closed_day_table({"actual_big": True, "pred_high": False})
     assert not _compare_row_belongs_in_closed_day_table({"actual_big": False, "pred_high": False})
+
+
+def test_closed_day_table_keeps_frozen_pred_at_threshold() -> None:
+    assert _compare_row_belongs_in_closed_day_table(
+        {
+            "actual_big": False,
+            "pred_high": False,
+            "pred_mid": False,
+            "pred_ret": 21.81,
+            "confidence_tier": "none",
+        }
+    )
 
 
 def test_merge_actual_big_movers_adds_missing_rows() -> None:

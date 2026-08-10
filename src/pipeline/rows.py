@@ -76,14 +76,27 @@ def _append_compare_row_from_prediction(
     )
 
 
+def _row_has_displayed_prediction(r: dict) -> bool:
+    """14:30 freeze·표시 % 기준 예측 후보 — tier none 이어도 pred_ret≥임계면 후보."""
+    if r.get("pred_high") or r.get("pred_mid"):
+        return True
+    pr = r.get("pred_ret")
+    if pr is None:
+        return False
+    try:
+        return float(pr) >= float(config.BIG_MOVE_THRESHOLD) * 100.0 - 1e-9
+    except (TypeError, ValueError):
+        return False
+
+
 def _compare_row_is_prediction_candidate(r: dict) -> bool:
-    """비교 표 행이 14:30 예측 후보(고·중 확신)인지 — 실제 급등만인 행은 제외."""
-    return bool(r.get("pred_high") or r.get("pred_mid"))
+    """비교 표 행이 14:30 예측 후보(고·중 확신 또는 pred≥임계)인지 — 실제 급등만인 행은 제외."""
+    return _row_has_displayed_prediction(r)
 
 
 def _compare_row_belongs_in_closed_day_table(r: dict) -> bool:
     """장 마감 확정일: 예측 후보 또는 당일 실제 20%↑ 급등."""
-    return _compare_row_is_prediction_candidate(r) or bool(r.get("actual_big"))
+    return _row_has_displayed_prediction(r) or bool(r.get("actual_big"))
 
 
 def _merge_actual_big_movers_into_rows_compare(
@@ -1244,6 +1257,22 @@ def _reconcile_closed_day_report(
         dr.actual_big_movers or [],
         market_by_code=market_by_code,
     )
+    if dr.predictions:
+
+        def _act_for_pred(code: str) -> float | None:
+            return stocks.actual_return_on_date(returns, code, t)
+
+        _sync_forward_day_rows_from_predictions(
+            dr.rows_compare,
+            dr.predictions,
+            market_by_code=market_by_code,
+            pred_pct_min=float(config.BIG_MOVE_THRESHOLD) * 100.0,
+            pred_pct_mid_min=10.0,
+            blob="",
+            kospi_hint=None,
+            late_blob="",
+            actual_ret_for_code=_act_for_pred,
+        )
     dr.rows_compare = [
         r for r in dr.rows_compare if _compare_row_belongs_in_closed_day_table(r)
     ]
