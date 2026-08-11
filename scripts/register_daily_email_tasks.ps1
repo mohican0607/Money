@@ -1,7 +1,8 @@
-# 작업 스케줄러에 거래일 14:30 / 15:30 이메일 리포트 등록
+# 작업 스케줄러에 거래일 14:30 / 15:00 / 15:30 리포트 등록
 #
 # - 매일 14:30: N→N+1 예측 + 이메일
-# - 매일 15:30: N→N+1 예측 + 이메일 (장마감 직후 actual·테마 갱신)
+# - 매일 15:00: main.py --append-rebuild-learning --n-day N (14:30 freeze·리포트 보강, 이메일 없음)
+# - 매일 15:30: 장마감 직후 actual·테마 갱신 + 이메일
 # - 토·일·공휴일은 스크립트가 즉시 종료(exit 0)
 # - PowerShell 창 없이 pythonw.exe 로 실행 (콘솔 클릭으로 멈추는 문제 방지)
 #
@@ -30,10 +31,12 @@ function New-DailyEmailTaskTr([string] $Slot) {
 }
 
 $Tr1430 = New-DailyEmailTaskTr "1430"
+$Tr1500 = New-DailyEmailTaskTr "1500"
 $Tr1530 = New-DailyEmailTaskTr "1530"
 
 $Tasks = @(
     @{ Name = "MoneyKRX_Daily1430_Email"; Time = "14:30"; Tr = $Tr1430 }
+    @{ Name = "MoneyKRX_Daily1500_Append"; Time = "15:00"; Tr = $Tr1500 }
     @{ Name = "MoneyKRX_Daily1530_Email"; Time = "15:30"; Tr = $Tr1530 }
 )
 
@@ -61,6 +64,6 @@ foreach ($t in $Tasks) {
 }
 
 Write-Host ""
-Write-Host "확인: schtasks /Query /TN MoneyKRX_Daily1430_Email /V /FO LIST"
+Write-Host "확인: schtasks /Query /TN MoneyKRX_Daily1500_Append /V /FO LIST"
 Write-Host "로그: scripts/logs/run_daily_YYYYMMDD.log"
-Write-Host "수동(콘솔 확인): .venv\Scripts\python.exe scripts\run_daily_email.py --slot 1430"
+Write-Host "수동(콘솔): .venv\Scripts\python.exe scripts\run_daily_email.py --slot 1500"

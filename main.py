@@ -6,7 +6,8 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
   python main.py
     → 오늘이 거래일 N일 때, N+1 거래일(T) 급등 후보.
       output/report_dated_by_MMDD.html 및 report_YYYY.MM.html(해당 월) 갱신(표는 예측 후보만)
-    → 거래일 14:30·15:30 자동 실행·이메일: scripts/run_daily_1430_email.ps1, scripts/run_daily_1530_email.ps1
+    → 거래일 14:30·15:00·15:30 자동 실행: scripts/run_daily_1430_email.ps1,
+      scripts/run_daily_1500_append.ps1, scripts/run_daily_1530_email.ps1
       (등록 예: scripts/register_daily_email_tasks.ps1)
 
   python main.py 20260401
@@ -102,7 +103,7 @@ def main() -> None:
             except (AttributeError, OSError, ValueError):
                 pass
 
-    mode, arg_date, range_end, snap_mode, use_freeze = parse_cli()
+    mode, arg_date, range_end, snap_mode, use_freeze, use_n_day = parse_cli()
     if mode == "usage":
         print_usage()
         sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 2)
@@ -256,12 +257,20 @@ def main() -> None:
             return
     else:
         assert arg_date is not None
-        t_day = arg_date
-        try:
-            n_day = trading_calendar.last_trading_day_before(t_day)
-        except ValueError as e:
-            print(e)
-            return
+        if use_n_day:
+            n_day = arg_date
+            try:
+                t_day = trading_calendar.next_trading_day_after(n_day)
+            except ValueError as e:
+                print(e)
+                return
+        else:
+            t_day = arg_date
+            try:
+                n_day = trading_calendar.last_trading_day_before(t_day)
+            except ValueError as e:
+                print(e)
+                return
 
     end_date = max(today, t_day)
     end_date = min(end_date, date(2026, 12, 31))
@@ -386,8 +395,8 @@ if __name__ == "__main__":
         from src.pipeline.cli import _parse_cli
         from src.pipeline.early_validate import validate_cli_or_none
 
-        _mode, _arg_date, _range_end, _, _ = _parse_cli()
-        _cli_err = validate_cli_or_none(_mode, _arg_date, _range_end)
+        _mode, _arg_date, _range_end, _, _, _use_n_day = _parse_cli()
+        _cli_err = validate_cli_or_none(_mode, _arg_date, _range_end, use_n_day=_use_n_day)
         if _cli_err:
             print(_cli_err, file=sys.stderr)
             sys.exit(2)

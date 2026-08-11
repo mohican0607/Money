@@ -1,10 +1,11 @@
 """
-거래일 14:30 / 15:30 스케줄: ``python main.py`` (N→N+1) 실행 후 리포트를 이메일로 발송.
+거래일 14:30 / 15:00 / 15:30 스케줄: ``python main.py`` (N→N+1) 실행 후 리포트를 이메일로 발송.
 
-성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` 제외).
+성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` · 15:00 슬롯 제외).
 
 사용:
   python scripts/run_daily_email.py --slot 1430
+  python scripts/run_daily_email.py --slot 1500
   python scripts/run_daily_email.py --slot 1530
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 from datetime import date, datetime
 from pathlib import Path
@@ -25,15 +27,19 @@ if str(ROOT) not in sys.path:
 
 KST = ZoneInfo("Asia/Seoul")
 
-SLOT_LABELS = {
-    "1430": "14:30",
-    "1530": "15:30",
-}
-
 _LOG_DIR = ROOT / "scripts" / "logs"
 _RUN_STATUS_OK = "ok"
 _RUN_STATUS_TIMEOUT = "timeout"
 _RUN_STATUS_ERROR = "error"
+
+SLOT_LABELS = {
+    "1430": "14:30",
+    "1500": "15:00",
+    "1530": "15:30",
+}
+
+_LOCK_1430 = _LOG_DIR / ".run_1430.lock"
+_WAIT_1430_MAX_SEC = 25 * 60  # 14:30 실행이 길어질 때 15:00이 겹치지 않도록
 
 
 def _append_run_log(lines: list[str]) -> Path:
@@ -124,6 +130,30 @@ def _expected_monthly_report_path(t_day: date) -> Path:
     return config.OUTPUT_DIR / f"report_{t_day.year}.{t_day.month:02d}.html"
 
 
+def _acquire_1430_lock() -> None:
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    _LOCK_1430.write_text(f"pid={os.getpid()}\n", encoding="utf-8")
+
+
+def _release_1430_lock() -> None:
+    try:
+        _LOCK_1430.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _wait_for_1430_lock(*, max_wait_sec: int = _WAIT_1430_MAX_SEC) -> bool:
+    """14:30 lock 이 풀릴 때까지 대기. 타임아웃 시 False."""
+    if not _LOCK_1430.is_file():
+        return True
+    deadline = time.monotonic() + max_wait_sec
+    while _LOCK_1430.is_file():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(30)
+    return True
+
+
 def _kill_process_tree(pid: int) -> None:
     if sys.platform == "win32":
         subprocess.run(
@@ -138,7 +168,12 @@ def _kill_process_tree(pid: int) -> None:
         pass
 
 
-def _run_main_py(timeout_sec: int, *, slot: str) -> tuple[int | None, str, str]:
+def _run_main_py(
+    timeout_sec: int,
+    *,
+    slot: str,
+    n_day: date | None = None,
+) -> tuple[int | None, str, str]:
     """
     main.py 실행. stdout/stderr 는 임시 파일로 받아 파이프 교착을 피합니다.
 
@@ -148,44 +183,56 @@ def _run_main_py(timeout_sec: int, *, slot: str) -> tuple[int | None, str, str]:
     py = _python_exe()
     main_py = ROOT / "main.py"
     cmd = [str(py), str(main_py)]
-    if slot == "1530":
+    if slot == "1500":
+        # 14:30 완료·freeze 확인 후 리포트 보강 (N 명시)
+        assert n_day is not None
+        cmd.extend(["--append-rebuild-learning", "--n-day", n_day.strftime("%Y%m%d")])
+    elif slot == "1530":
         # 장마감 직후: 14:30 freeze 유지 + actual·테마·증분 학습 갱신
         cmd.append("--append-rebuild-learning")
-    with tempfile.TemporaryDirectory(prefix="money_main_") as td:
-        stdout_path = Path(td) / "stdout.txt"
-        stderr_path = Path(td) / "stderr.txt"
-        with stdout_path.open("w", encoding="utf-8", errors="replace") as out_fh, stderr_path.open(
-            "w", encoding="utf-8", errors="replace"
-        ) as err_fh:
-            popen_kw: dict = {
-                "args": cmd,
-                "cwd": str(ROOT),
-                "stdout": out_fh,
-                "stderr": err_fh,
-                "env": os.environ.copy(),
-            }
-            if sys.platform == "win32":
-                popen_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
-            proc = subprocess.Popen(**popen_kw)
-            try:
-                proc.wait(timeout=timeout_sec)
-            except subprocess.TimeoutExpired:
-                _kill_process_tree(proc.pid)
-                try:
-                    proc.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    pass
-                combined = _read_log_files(stdout_path, stderr_path)
-                combined += (
-                    f"\n[run_daily_email] main.py 타임아웃 ({timeout_sec}초 초과) — "
-                    "프로세스를 강제 종료했습니다.\n"
-                )
-                print(combined, end="" if combined.endswith("\n") else "\n", flush=True)
-                return None, combined, _RUN_STATUS_TIMEOUT
 
-        combined = _read_log_files(stdout_path, stderr_path)
-        print(combined, end="" if combined.endswith("\n") else "\n", flush=True)
-        return proc.returncode, combined, _RUN_STATUS_OK
+    hold_1430_lock = slot == "1430"
+    if hold_1430_lock:
+        _acquire_1430_lock()
+    try:
+        with tempfile.TemporaryDirectory(prefix="money_main_") as td:
+            stdout_path = Path(td) / "stdout.txt"
+            stderr_path = Path(td) / "stderr.txt"
+            with stdout_path.open("w", encoding="utf-8", errors="replace") as out_fh, stderr_path.open(
+                "w", encoding="utf-8", errors="replace"
+            ) as err_fh:
+                popen_kw: dict = {
+                    "args": cmd,
+                    "cwd": str(ROOT),
+                    "stdout": out_fh,
+                    "stderr": err_fh,
+                    "env": os.environ.copy(),
+                }
+                if sys.platform == "win32":
+                    popen_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+                proc = subprocess.Popen(**popen_kw)
+                try:
+                    proc.wait(timeout=timeout_sec)
+                except subprocess.TimeoutExpired:
+                    _kill_process_tree(proc.pid)
+                    try:
+                        proc.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    combined = _read_log_files(stdout_path, stderr_path)
+                    combined += (
+                        f"\n[run_daily_email] main.py 타임아웃 ({timeout_sec}초 초과) — "
+                        "프로세스를 강제 종료했습니다.\n"
+                    )
+                    print(combined, end="" if combined.endswith("\n") else "\n", flush=True)
+                    return None, combined, _RUN_STATUS_TIMEOUT
+
+            combined = _read_log_files(stdout_path, stderr_path)
+            print(combined, end="" if combined.endswith("\n") else "\n", flush=True)
+            return proc.returncode, combined, _RUN_STATUS_OK
+    finally:
+        if hold_1430_lock:
+            _release_1430_lock()
 
 
 def _read_log_files(stdout_path: Path, stderr_path: Path) -> str:
@@ -360,14 +407,16 @@ def main(argv: list[str] | None = None) -> int:
         "--slot",
         required=True,
         choices=sorted(SLOT_LABELS),
-        help="실행 슬롯 (1430=장중, 1530=장마감 직후)",
+        help="실행 슬롯 (1430=장중, 1500=14:30 보강, 1530=장마감 직후)",
     )
     parser.add_argument(
         "--skip-email",
         action="store_true",
-        help="main.py 만 실행하고 이메일은 보내지 않음",
+        help="main.py 만 실행하고 이메일은 보내지 않음 (1500 슬롯은 기본 생략)",
     )
     args = parser.parse_args(argv)
+    if args.slot == "1500":
+        args.skip_email = True
 
     _ensure_env_defaults()
 
@@ -396,11 +445,28 @@ def main(argv: list[str] | None = None) -> int:
     monthly_path: Path | None = None
 
     try:
+        if args.slot == "1500":
+            if not _wait_for_1430_lock():
+                msg = (
+                    f"[run_daily_email] 14:30 실행 lock 대기 {_WAIT_1430_MAX_SEC}초 초과 — "
+                    "15:00 보강 실행을 건너뜁니다."
+                )
+                print(msg, flush=True)
+                log_lines.append(msg)
+                _append_run_log(log_lines)
+                return 0
+
         timeout_sec = config.RUN_DAILY_MAIN_TIMEOUT_SEC
         log_lines.append(f"main.py timeout={timeout_sec}s")
-        if args.slot == "1530":
+        if args.slot == "1500":
+            log_lines.append(
+                f"main.py args=--append-rebuild-learning --n-day {n_day.strftime('%Y%m%d')}"
+            )
+        elif args.slot == "1530":
             log_lines.append("main.py args=--append-rebuild-learning")
-        main_exit, log_text, run_status = _run_main_py(timeout_sec, slot=args.slot)
+        main_exit, log_text, run_status = _run_main_py(
+            timeout_sec, slot=args.slot, n_day=n_day if args.slot == "1500" else None
+        )
         log_lines.append(f"main.py exit={main_exit} status={run_status}")
 
         dated_path, monthly_path = _resolve_report_paths(t_day)

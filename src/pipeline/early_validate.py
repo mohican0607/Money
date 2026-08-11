@@ -124,11 +124,14 @@ def validate_cli_or_none(
     arg_date: date | None,
     range_end: date | None,
     *,
+    use_n_day: bool = False,
     now_kst: datetime | None = None,
 ) -> str | None:
     """range·dated 모드에서 검증 실패 시 오류 메시지, 통과 시 ``None``."""
     if mode == "range" and arg_date is not None and range_end is not None:
         return validate_range_from_to(arg_date, range_end, now_kst=now_kst)
     if mode == "dated" and arg_date is not None:
+        if use_n_day:
+            return validate_dated_n_day(arg_date, now_kst=now_kst)
         return validate_dated_t_day(arg_date, now_kst=now_kst)
     return None

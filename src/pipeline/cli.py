@@ -17,17 +17,19 @@ def _parse_yyyymmdd(s: str) -> date | None:
     return date(y, m, d)
 
 
-def _parse_cli() -> tuple[str, date | None, date | None, str, bool]:
+def _parse_cli() -> tuple[str, date | None, date | None, str, bool, bool]:
     """
     ``sys.argv`` 를 파싱해 실행 모드와 날짜 인자를 돌려줍니다.
 
     Returns:
-        ``(mode, arg_date, range_end, train_snapshot_mode)``.
-        ``train_snapshot_mode`` 는 ``none`` | ``use`` | ``rebuild``.
+        ``(mode, arg_date, range_end, train_snapshot_mode, use_freeze, use_n_day)``.
+        ``train_snapshot_mode`` 는 ``none`` | ``use`` | ``rebuild`` | ``append_learning``.
         ``range`` 일 때만 ``arg_date`` 와 ``range_end`` 가 둘 다 채워짐.
+        ``use_n_day`` 이면 단일 ``YYYYMMDD`` 는 관측일 T 가 아니라 기준일 N.
     """
     raw = [a for a in sys.argv[1:] if a]
     use_freeze = "--use-freeze" in raw
+    use_n_day = "--n-day" in raw
     has_rebuild = "--rebuild-train-snapshot" in raw
     has_append = "--append-rebuild-learning" in raw
     has_no_snap = "--no-train-snapshot" in raw
@@ -51,28 +53,29 @@ def _parse_cli() -> tuple[str, date | None, date | None, str, bool]:
             "--no-train-snapshot",
             "--no-report-expand",
             "--use-freeze",
+            "--n-day",
         )
     ]
     if not argv:
-        return "daily", None, None, snap_mode, use_freeze
+        return "daily", None, None, snap_mode, use_freeze, use_n_day
     if argv[0] in ("--weekly", "--weekly-report", "-w"):
-        return "weekly", None, None, snap_mode, use_freeze
+        return "weekly", None, None, snap_mode, use_freeze, use_n_day
     if argv[0] in ("--serve-live-quotes", "--live-quotes"):
-        return "serve_live_quotes", None, None, snap_mode, use_freeze
+        return "serve_live_quotes", None, None, snap_mode, use_freeze, use_n_day
     if argv[0] in ("-h", "--help"):
-        return "usage", None, None, snap_mode, use_freeze
+        return "usage", None, None, snap_mode, use_freeze, use_n_day
     if len(argv) >= 2:
         d0 = _parse_yyyymmdd(argv[0])
         d1 = _parse_yyyymmdd(argv[1])
         if d0 is not None and d1 is not None:
             if d0 > d1:
                 d0, d1 = d1, d0
-            return "range", d0, d1, snap_mode, use_freeze
+            return "range", d0, d1, snap_mode, use_freeze, use_n_day
     d = _parse_yyyymmdd(argv[0])
     if d is not None:
-        return "dated", d, None, snap_mode, use_freeze
+        return "dated", d, None, snap_mode, use_freeze, use_n_day
     print(f"인식할 수 없는 인자: {argv[0]}", file=sys.stderr)
-    return "usage", None, None, snap_mode, use_freeze
+    return "usage", None, None, snap_mode, use_freeze, use_n_day
 
 
 def _print_usage() -> None:
@@ -84,6 +87,9 @@ def _print_usage() -> None:
   python main.py YYYYMMDD
       관측일 T(거래일). T는 현재 기준 N+1 거래일 이하. T=현재 N+1이면 N일 14:30부터.
       output/report_dated_by_MMDD.html 에 해당 T 블록만 추가·갱신
+  python main.py --n-day YYYYMMDD
+      기준일 N(거래일). T=N 다음 거래일. N=현재 N 이면 N일 14:30(KST)부터.
+      (--append-rebuild-learning 과 함께 14:30 freeze 유지·리포트 갱신에 사용)
   python main.py YYYYMMDD YYYYMMDD
       관측일 From~To 구간(양 끝 포함, **KRX 거래일만**). To는 현재 기준 N+1 거래일 이하.
       구간에 현재 N+1이 포함되면 N일 14:30(KST)부터 실행.

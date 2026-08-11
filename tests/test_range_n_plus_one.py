@@ -6,6 +6,7 @@ from datetime import date, datetime
 from src import trading_calendar
 from src.pipeline.early_validate import (
     current_n_and_n_plus_one,
+    validate_dated_n_day,
     validate_dated_t_day,
     validate_range_from_to,
 )
@@ -101,3 +102,9 @@ def test_dated_t_ok_current_n_plus_one_before_news_cutoff() -> None:
     # 15:30 뉴스 컷오프 전이어도 14:30 이후면 T=N+1 단일 실행 허용
     now = datetime(2026, 7, 22, 15, 15, tzinfo=trading_calendar.KST)
     assert validate_dated_t_day(date(2026, 7, 23), now_kst=now) is None
+
+
+def test_dated_n_ok_at_1500_after_1430_cutoff() -> None:
+    # N=07-22, 15:00 — 14:30 이후면 --n-day N 실행 허용
+    now = datetime(2026, 7, 22, 15, 0, tzinfo=trading_calendar.KST)
+    assert validate_dated_n_day(date(2026, 7, 22), now_kst=now) is None
