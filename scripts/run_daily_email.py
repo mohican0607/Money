@@ -1,11 +1,11 @@
 """
-거래일 14:30 / 15:00 / 15:30 스케줄: ``python main.py`` (N→N+1) 실행 후 리포트를 이메일로 발송.
+거래일 14:30 / 16:00 / 15:30 스케줄: ``python main.py`` (N→N+1) 실행 후 리포트를 이메일로 발송.
 
-성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` · 15:00 슬롯 제외).
+성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` · 16:00 슬롯 제외).
 
 사용:
   python scripts/run_daily_email.py --slot 1430
-  python scripts/run_daily_email.py --slot 1500
+  python scripts/run_daily_email.py --slot 1600
   python scripts/run_daily_email.py --slot 1530
 """
 from __future__ import annotations
@@ -34,12 +34,13 @@ _RUN_STATUS_ERROR = "error"
 
 SLOT_LABELS = {
     "1430": "14:30",
-    "1500": "15:00",
     "1530": "15:30",
+    "1600": "16:00",
 }
 
 _LOCK_1430 = _LOG_DIR / ".run_1430.lock"
-_WAIT_1430_MAX_SEC = 25 * 60  # 14:30 실행이 길어질 때 15:00이 겹치지 않도록
+_LOCK_1530 = _LOG_DIR / ".run_1530.lock"
+_WAIT_PRIOR_MAX_SEC = 90 * 60  # 선행 슬롯(main.py timeout과 동일) 대기 상한
 
 
 def _append_run_log(lines: list[str]) -> Path:
@@ -130,28 +131,39 @@ def _expected_monthly_report_path(t_day: date) -> Path:
     return config.OUTPUT_DIR / f"report_{t_day.year}.{t_day.month:02d}.html"
 
 
-def _acquire_1430_lock() -> None:
+def _acquire_run_lock(path: Path) -> None:
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    _LOCK_1430.write_text(f"pid={os.getpid()}\n", encoding="utf-8")
+    path.write_text(f"pid={os.getpid()}\n", encoding="utf-8")
 
 
-def _release_1430_lock() -> None:
+def _release_run_lock(path: Path) -> None:
     try:
-        _LOCK_1430.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
     except OSError:
         pass
 
 
-def _wait_for_1430_lock(*, max_wait_sec: int = _WAIT_1430_MAX_SEC) -> bool:
-    """14:30 lock 이 풀릴 때까지 대기. 타임아웃 시 False."""
-    if not _LOCK_1430.is_file():
+def _wait_for_run_lock(path: Path, *, label: str, max_wait_sec: int = _WAIT_PRIOR_MAX_SEC) -> bool:
+    """선행 슬롯 lock 이 풀릴 때까지 대기. 타임아웃 시 False."""
+    if not path.is_file():
         return True
     deadline = time.monotonic() + max_wait_sec
-    while _LOCK_1430.is_file():
+    while path.is_file():
         if time.monotonic() >= deadline:
+            print(
+                f"[run_daily_email] {label} lock 대기 {max_wait_sec}초 초과",
+                flush=True,
+            )
             return False
         time.sleep(30)
     return True
+
+
+def _wait_for_prior_slots_1600() -> bool:
+    """16:00 — 14:30·15:30 선행 실행 종료 대기."""
+    if not _wait_for_run_lock(_LOCK_1430, label="14:30"):
+        return False
+    return _wait_for_run_lock(_LOCK_1530, label="15:30")
 
 
 def _kill_process_tree(pid: int) -> None:
@@ -183,17 +195,21 @@ def _run_main_py(
     py = _python_exe()
     main_py = ROOT / "main.py"
     cmd = [str(py), str(main_py)]
-    if slot == "1500":
-        # 14:30 완료·freeze 확인 후 리포트 보강 (N 명시)
+    if slot == "1600":
+        # 15:30 장마감 갱신 이후 — freeze·리포트·학습 보강 (N 명시)
         assert n_day is not None
         cmd.extend(["--append-rebuild-learning", "--n-day", n_day.strftime("%Y%m%d")])
     elif slot == "1530":
         # 장마감 직후: 14:30 freeze 유지 + actual·테마·증분 학습 갱신
         cmd.append("--append-rebuild-learning")
 
-    hold_1430_lock = slot == "1430"
-    if hold_1430_lock:
-        _acquire_1430_lock()
+    slot_lock: Path | None = None
+    if slot == "1430":
+        slot_lock = _LOCK_1430
+    elif slot == "1530":
+        slot_lock = _LOCK_1530
+    if slot_lock is not None:
+        _acquire_run_lock(slot_lock)
     try:
         with tempfile.TemporaryDirectory(prefix="money_main_") as td:
             stdout_path = Path(td) / "stdout.txt"
@@ -231,8 +247,8 @@ def _run_main_py(
             print(combined, end="" if combined.endswith("\n") else "\n", flush=True)
             return proc.returncode, combined, _RUN_STATUS_OK
     finally:
-        if hold_1430_lock:
-            _release_1430_lock()
+        if slot_lock is not None:
+            _release_run_lock(slot_lock)
 
 
 def _read_log_files(stdout_path: Path, stderr_path: Path) -> str:
@@ -407,15 +423,15 @@ def main(argv: list[str] | None = None) -> int:
         "--slot",
         required=True,
         choices=sorted(SLOT_LABELS),
-        help="실행 슬롯 (1430=장중, 1500=14:30 보강, 1530=장마감 직후)",
+        help="실행 슬롯 (1430=장중, 1530=장마감 직후, 1600=15:30 이후 보강)",
     )
     parser.add_argument(
         "--skip-email",
         action="store_true",
-        help="main.py 만 실행하고 이메일은 보내지 않음 (1500 슬롯은 기본 생략)",
+        help="main.py 만 실행하고 이메일은 보내지 않음 (1600 슬롯은 기본 생략)",
     )
     args = parser.parse_args(argv)
-    if args.slot == "1500":
+    if args.slot == "1600":
         args.skip_email = True
 
     _ensure_env_defaults()
@@ -445,11 +461,11 @@ def main(argv: list[str] | None = None) -> int:
     monthly_path: Path | None = None
 
     try:
-        if args.slot == "1500":
-            if not _wait_for_1430_lock():
+        if args.slot == "1600":
+            if not _wait_for_prior_slots_1600():
                 msg = (
-                    f"[run_daily_email] 14:30 실행 lock 대기 {_WAIT_1430_MAX_SEC}초 초과 — "
-                    "15:00 보강 실행을 건너뜁니다."
+                    f"[run_daily_email] 선행 슬롯 lock 대기 {_WAIT_PRIOR_MAX_SEC}초 초과 — "
+                    "16:00 보강 실행을 건너뜁니다."
                 )
                 print(msg, flush=True)
                 log_lines.append(msg)
@@ -458,14 +474,14 @@ def main(argv: list[str] | None = None) -> int:
 
         timeout_sec = config.RUN_DAILY_MAIN_TIMEOUT_SEC
         log_lines.append(f"main.py timeout={timeout_sec}s")
-        if args.slot == "1500":
+        if args.slot == "1600":
             log_lines.append(
                 f"main.py args=--append-rebuild-learning --n-day {n_day.strftime('%Y%m%d')}"
             )
         elif args.slot == "1530":
             log_lines.append("main.py args=--append-rebuild-learning")
         main_exit, log_text, run_status = _run_main_py(
-            timeout_sec, slot=args.slot, n_day=n_day if args.slot == "1500" else None
+            timeout_sec, slot=args.slot, n_day=n_day if args.slot == "1600" else None
         )
         log_lines.append(f"main.py exit={main_exit} status={run_status}")
 

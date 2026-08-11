@@ -1,12 +1,10 @@
-# 작업 스케줄러에 거래일 14:30 / 15:00 / 15:30 리포트 등록
+# 작업 스케줄러에 거래일 14:30 / 15:30 / 16:00 리포트 등록
 #
 # - 매일 14:30: N→N+1 예측 + 이메일
-# - 매일 15:00: main.py --append-rebuild-learning --n-day N (14:30 freeze·리포트 보강, 이메일 없음)
 # - 매일 15:30: 장마감 직후 actual·테마 갱신 + 이메일
+# - 매일 16:00: main.py --append-rebuild-learning --n-day N (15:30 이후 보강, 이메일 없음)
 # - 토·일·공휴일은 스크립트가 즉시 종료(exit 0)
 # - PowerShell 창 없이 pythonw.exe 로 실행 (콘솔 클릭으로 멈추는 문제 방지)
-#
-# 사용 전 .env 에 EMAIL_SMTP_* / EMAIL_RECIPIENTS 를 설정하세요.
 #
 # 사용:
 #   powershell -ExecutionPolicy Bypass -File scripts\register_daily_email_tasks.ps1
@@ -26,19 +24,25 @@ if (-not (Test-Path -LiteralPath $PythonW)) {
 }
 
 function New-DailyEmailTaskTr([string] $Slot) {
-    # schtasks /TR: pythonw — 콘솔 창 없음. stdout/stderr는 run_daily_email.py 가 파일·이메일로 처리.
     return "`"$PythonW`" `"$RunnerPy`" --slot $Slot"
 }
 
 $Tr1430 = New-DailyEmailTaskTr "1430"
-$Tr1500 = New-DailyEmailTaskTr "1500"
 $Tr1530 = New-DailyEmailTaskTr "1530"
+$Tr1600 = New-DailyEmailTaskTr "1600"
 
 $Tasks = @(
     @{ Name = "MoneyKRX_Daily1430_Email"; Time = "14:30"; Tr = $Tr1430 }
-    @{ Name = "MoneyKRX_Daily1500_Append"; Time = "15:00"; Tr = $Tr1500 }
     @{ Name = "MoneyKRX_Daily1530_Email"; Time = "15:30"; Tr = $Tr1530 }
+    @{ Name = "MoneyKRX_Daily1600_Append"; Time = "16:00"; Tr = $Tr1600 }
 )
+
+# 구버전 15:00 작업 제거
+schtasks /Query /TN "MoneyKRX_Daily1500_Append" 2>$null | Out-Null
+if ($LASTEXITCODE -eq 0) {
+    schtasks /Delete /TN "MoneyKRX_Daily1500_Append" /F 2>$null | Out-Null
+    Write-Host "삭제: MoneyKRX_Daily1500_Append (15:00 → 16:00 이전)"
+}
 
 foreach ($t in $Tasks) {
     $exists = schtasks /Query /TN $t.Name 2>$null
@@ -48,7 +52,7 @@ foreach ($t in $Tasks) {
             Write-Error "작업 변경 실패: $($t.Name)"
             exit 1
         }
-        Write-Host "변경: $($t.Name) -> pythonw (창 없음)"
+        Write-Host "변경: $($t.Name} -> pythonw (창 없음)"
     }
     elseif (-not $UpdateOnly) {
         schtasks /Create /TN $t.Name /TR $t.Tr /SC DAILY /ST $t.Time /RL HIGHEST /F | Out-Null
@@ -56,14 +60,14 @@ foreach ($t in $Tasks) {
             Write-Error "작업 등록 실패: $($t.Name)"
             exit 1
         }
-        Write-Host "등록: $($t.Name) (매일 $($t.Time)) -> pythonw (창 없음)"
+        Write-Host "등록: $($t.Name} (매일 $($t.Time)) -> pythonw (창 없음)"
     }
     else {
-        Write-Warning "작업 없음(건너뜀): $($t.Name)"
+        Write-Warning "작업 없음(건너뜀): $($t.Name}"
     }
 }
 
 Write-Host ""
-Write-Host "확인: schtasks /Query /TN MoneyKRX_Daily1500_Append /V /FO LIST"
+Write-Host "확인: schtasks /Query /TN MoneyKRX_Daily1600_Append /V /FO LIST"
 Write-Host "로그: scripts/logs/run_daily_YYYYMMDD.log"
-Write-Host "수동(콘솔): .venv\Scripts\python.exe scripts\run_daily_email.py --slot 1500"
+Write-Host "수동(콘솔): .venv\Scripts\python.exe scripts\run_daily_email.py --slot 1600"

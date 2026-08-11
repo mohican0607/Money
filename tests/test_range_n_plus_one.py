@@ -104,7 +104,7 @@ def test_dated_t_ok_current_n_plus_one_before_news_cutoff() -> None:
     assert validate_dated_t_day(date(2026, 7, 23), now_kst=now) is None
 
 
-def test_dated_n_ok_at_1500_after_1430_cutoff() -> None:
-    # N=07-22, 15:00 — 14:30 이후면 --n-day N 실행 허용
-    now = datetime(2026, 7, 22, 15, 0, tzinfo=trading_calendar.KST)
+def test_dated_n_ok_at_1600_after_1430_cutoff() -> None:
+    # N=07-22, 16:00 — 14:30 이후면 --n-day N 실행 허용
+    now = datetime(2026, 7, 22, 16, 0, tzinfo=trading_calendar.KST)
     assert validate_dated_n_day(date(2026, 7, 22), now_kst=now) is None
