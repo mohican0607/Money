@@ -138,7 +138,7 @@ def _kill_process_tree(pid: int) -> None:
         pass
 
 
-def _run_main_py(timeout_sec: int) -> tuple[int | None, str, str]:
+def _run_main_py(timeout_sec: int, *, slot: str) -> tuple[int | None, str, str]:
     """
     main.py 실행. stdout/stderr 는 임시 파일로 받아 파이프 교착을 피합니다.
 
@@ -147,19 +147,26 @@ def _run_main_py(timeout_sec: int) -> tuple[int | None, str, str]:
     """
     py = _python_exe()
     main_py = ROOT / "main.py"
+    cmd = [str(py), str(main_py)]
+    if slot == "1530":
+        # 장마감 직후: 14:30 freeze 유지 + actual·테마·증분 학습 갱신
+        cmd.append("--append-rebuild-learning")
     with tempfile.TemporaryDirectory(prefix="money_main_") as td:
         stdout_path = Path(td) / "stdout.txt"
         stderr_path = Path(td) / "stderr.txt"
         with stdout_path.open("w", encoding="utf-8", errors="replace") as out_fh, stderr_path.open(
             "w", encoding="utf-8", errors="replace"
         ) as err_fh:
-            proc = subprocess.Popen(
-                [str(py), str(main_py)],
-                cwd=str(ROOT),
-                stdout=out_fh,
-                stderr=err_fh,
-                env=os.environ.copy(),
-            )
+            popen_kw: dict = {
+                "args": cmd,
+                "cwd": str(ROOT),
+                "stdout": out_fh,
+                "stderr": err_fh,
+                "env": os.environ.copy(),
+            }
+            if sys.platform == "win32":
+                popen_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+            proc = subprocess.Popen(**popen_kw)
             try:
                 proc.wait(timeout=timeout_sec)
             except subprocess.TimeoutExpired:
@@ -391,7 +398,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         timeout_sec = config.RUN_DAILY_MAIN_TIMEOUT_SEC
         log_lines.append(f"main.py timeout={timeout_sec}s")
-        main_exit, log_text, run_status = _run_main_py(timeout_sec)
+        if args.slot == "1530":
+            log_lines.append("main.py args=--append-rebuild-learning")
+        main_exit, log_text, run_status = _run_main_py(timeout_sec, slot=args.slot)
         log_lines.append(f"main.py exit={main_exit} status={run_status}")
 
         dated_path, monthly_path = _resolve_report_paths(t_day)

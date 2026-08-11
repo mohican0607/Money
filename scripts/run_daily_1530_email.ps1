@@ -8,11 +8,13 @@
   - 장마감(15:30) 직후 완성 일봉·뉴스 기준 리포트.
 #>
 param(
-    [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot)
+    [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [switch] $ShowWindow
 )
 
 $ErrorActionPreference = "Stop"
 $PythonExe = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+$PythonW = Join-Path $RepoRoot ".venv\Scripts\pythonw.exe"
 $RunnerPy = Join-Path $RepoRoot "scripts\run_daily_email.py"
 
 if (-not (Test-Path $PythonExe)) {
@@ -21,5 +23,13 @@ if (-not (Test-Path $PythonExe)) {
 }
 
 Set-Location -LiteralPath $RepoRoot
-& $PythonExe $RunnerPy --slot 1530
+if ($ShowWindow) {
+    & $PythonExe $RunnerPy --slot 1530
+} else {
+    if (-not (Test-Path $PythonW)) {
+        Write-Error "pythonw.exe 없음: $PythonW"
+        exit 1
+    }
+    & $PythonW $RunnerPy --slot 1530
+}
 exit $LASTEXITCODE

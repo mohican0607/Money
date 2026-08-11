@@ -59,7 +59,7 @@ def test_run_main_py_quick_exit(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("scripts.run_daily_email._python_exe", lambda: Path(sys.executable))
     (tmp_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
 
-    code, log, status = _run_main_py(timeout_sec=30)
+    code, log, status = _run_main_py(timeout_sec=30, slot="1430")
     assert status == _RUN_STATUS_OK
     assert code == 0
     assert "ok" in log

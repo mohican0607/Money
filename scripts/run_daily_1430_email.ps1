@@ -8,11 +8,13 @@
   - .env 의 EMAIL_* 설정 필요(SMTP 계정·수신자).
 #>
 param(
-    [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot)
+    [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot),
+    [switch] $ShowWindow
 )
 
 $ErrorActionPreference = "Stop"
 $PythonExe = Join-Path $RepoRoot ".venv\Scripts\python.exe"
+$PythonW = Join-Path $RepoRoot ".venv\Scripts\pythonw.exe"
 $RunnerPy = Join-Path $RepoRoot "scripts\run_daily_email.py"
 
 if (-not (Test-Path $PythonExe)) {
@@ -21,5 +23,15 @@ if (-not (Test-Path $PythonExe)) {
 }
 
 Set-Location -LiteralPath $RepoRoot
-& $PythonExe $RunnerPy --slot 1430
+# 스케줄러: register_daily_email_tasks.ps1 가 pythonw 로 직접 호출(창 없음).
+# 수동 실행 시 -ShowWindow 로 콘솔 로그 확인 가능.
+if ($ShowWindow) {
+    & $PythonExe $RunnerPy --slot 1430
+} else {
+    if (-not (Test-Path $PythonW)) {
+        Write-Error "pythonw.exe 없음: $PythonW"
+        exit 1
+    }
+    & $PythonW $RunnerPy --slot 1430
+}
 exit $LASTEXITCODE
