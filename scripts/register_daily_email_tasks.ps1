@@ -2,7 +2,7 @@
 #
 # - 매일 14:30: N→N+1 예측 + 이메일
 # - 매일 15:30: 장마감 직후 actual·테마 갱신 + 이메일
-# - 매일 16:00: main.py --append-rebuild-learning --n-day N (15:30 이후 보강, 이메일 없음)
+# - 매일 16:00: main.py --append-rebuild-learning YYYYMMDD (T=오늘 확정) + 이메일
 # - 토·일·공휴일은 스크립트가 즉시 종료(exit 0)
 # - PowerShell 창 없이 pythonw.exe 로 실행 (콘솔 클릭으로 멈추는 문제 방지)
 #
@@ -52,7 +52,7 @@ foreach ($t in $Tasks) {
             Write-Error "작업 변경 실패: $($t.Name)"
             exit 1
         }
-        Write-Host "변경: $($t.Name} -> pythonw (창 없음)"
+        Write-Host "변경: $($t.Name) -> pythonw (창 없음)"
     }
     elseif (-not $UpdateOnly) {
         schtasks /Create /TN $t.Name /TR $t.Tr /SC DAILY /ST $t.Time /RL HIGHEST /F | Out-Null
@@ -60,10 +60,10 @@ foreach ($t in $Tasks) {
             Write-Error "작업 등록 실패: $($t.Name)"
             exit 1
         }
-        Write-Host "등록: $($t.Name} (매일 $($t.Time)) -> pythonw (창 없음)"
+        Write-Host "등록: $($t.Name) (매일 $($t.Time)) -> pythonw (창 없음)"
     }
     else {
-        Write-Warning "작업 없음(건너뜀): $($t.Name}"
+        Write-Warning "작업 없음(건너뜀): $($t.Name)"
     }
 }
 

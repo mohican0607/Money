@@ -802,9 +802,18 @@ def _run_pipeline(
             )
 
         if day_forward:
-            rows_compare = [
-                r for r in rows_compare if _compare_row_is_prediction_candidate(r)
-            ]
+            if use_frozen:
+                # 이미 freeze 된 slate 는 그대로 표시(실제 확정 전).
+                rows_compare = [
+                    r for r in rows_compare if _compare_row_is_prediction_candidate(r)
+                ]
+            else:
+                # 신규 계산: 고·중 확신만. none-tier·pred% 더미로 cap 채우지 않음.
+                rows_compare = [
+                    r
+                    for r in rows_compare
+                    if r.get("pred_high") or r.get("pred_mid")
+                ]
             cap = int(config.PRED_FORWARD_SHOW_MAX)
             if len(rows_compare) > cap:
                 rows_compare.sort(
@@ -817,55 +826,11 @@ def _run_pipeline(
                     )
                 )
                 rows_compare = rows_compare[:cap]
-            if len(rows_compare) < cap and preds and not use_frozen:
-                seen = {str(r.get("code", "")).zfill(6) for r in rows_compare if r.get("code")}
-                for pr in preds:
-                    if len(rows_compare) >= cap:
-                        break
-                    code = str(pr.code).zfill(6)
-                    if code in seen:
-                        continue
-                    if not math.isfinite(float(pr.predicted_return_pct)):
-                        continue
-                    reasons_html = "<br/>".join(pr.reasons)
-                    _append_compare_row_from_prediction(
-                        rows_compare,
-                        pr,
-                        market_by_code=market_by_code,
-                        pred_pct_min=pred_pct_min,
-                        pred_pct_mid_min=pred_pct_mid_min,
-                        actual_ret=None,
-                        reasons_html=reasons_html,
-                        blob=blob,
-                        kospi_hint=kospi_hint,
-                        late_blob=late_blob,
-                        pr_for_gap=pr,
-                    )
-                    seen.add(code)
             for r in rows_compare:
                 r["actual_ret"] = None
                 r["actual_big"] = False
                 r.pop("actual_ret_intraday_pct", None)
                 r.pop("actual_cell_pre_close_snapshot", None)
-        if day_forward and not rows_compare and preds:
-            top_show = min(int(config.PRED_FORWARD_SHOW_MAX), len(preds))
-            for pr in preds[:top_show]:
-                if not math.isfinite(float(pr.predicted_return_pct)):
-                    continue
-                reasons_html = "<br/>".join(pr.reasons)
-                _append_compare_row_from_prediction(
-                    rows_compare,
-                    pr,
-                    market_by_code=market_by_code,
-                    pred_pct_min=pred_pct_min,
-                    pred_pct_mid_min=pred_pct_mid_min,
-                    actual_ret=None,
-                    reasons_html=reasons_html,
-                    blob=blob,
-                    kospi_hint=kospi_hint,
-                    late_blob=late_blob,
-                    pr_for_gap=pr,
-                )
         rows_compare.sort(key=lambda r: (not r["actual_big"], not r["pred_high"], r["code"]))
 
         today_td = now_kst_td.date()

@@ -14,6 +14,7 @@ from src.pipeline.rows import (
 )
 from src.pipeline.support import (
     _display_prediction_rows_for_freeze,
+    _freeze_entry_usable,
     _prediction_rows_from_frozen_items,
     _prediction_rows_to_frozen_items,
     _should_reuse_prediction_freeze,
@@ -63,7 +64,14 @@ def test_merge_actual_big_movers_adds_missing_rows() -> None:
 
 
 def test_reuse_prediction_freeze_after_market_close() -> None:
-    items = [{"code": "000001", "name": "A", "predicted_return_pct": 22.0}]
+    items = [
+        {
+            "code": "000001",
+            "name": "A",
+            "predicted_return_pct": 22.0,
+            "confidence_tier": "high",
+        }
+    ]
     assert _should_reuse_prediction_freeze(
         ignore_freeze_for_trading_day=False,
         frozen_items=items,
@@ -89,6 +97,43 @@ def test_freeze_roundtrip_preserves_prediction_codes_and_tiers() -> None:
     assert [r.code for r in restored] == ["000001", "000002"]
     assert [r.confidence_tier for r in restored] == ["high", "mid"]
     assert [round(r.predicted_return_pct, 1) for r in restored] == [25.0, 22.0]
+
+
+def test_freeze_empty_when_no_tiered(monkeypatch) -> None:
+    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 10)
+    rows = [
+        PredictionRow(
+            f"{i:06d}",
+            f"N{i}",
+            1.0,
+            21.81,
+            [],
+            [],
+            confidence_tier="none",
+            rank_position=i,
+        )
+        for i in range(1, 11)
+    ]
+    display = _display_prediction_rows_for_freeze(rows)
+    assert display == []
+    frozen = _prediction_rows_to_frozen_items(display)
+    assert frozen == [{"_empty_slate": True}]
+    assert _freeze_entry_usable(frozen)
+    assert _prediction_rows_from_frozen_items(frozen) == []
+
+
+def test_freeze_reuses_historical_none_tier() -> None:
+    # 과거 freeze(none-tier)도 재사용 가능 — 신규 더미 채움만 저장 경로에서 막음
+    junk = [
+        {
+            "code": "007810",
+            "name": "X",
+            "predicted_return_pct": 21.81,
+            "confidence_tier": "none",
+        }
+        for _ in range(10)
+    ]
+    assert _freeze_entry_usable(junk)
 
 
 def test_freeze_does_not_pad_when_few_tiered(monkeypatch) -> None:

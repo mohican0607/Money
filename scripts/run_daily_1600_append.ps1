@@ -1,11 +1,12 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  KRX 거래일 16:00 — 15:30 실행 이후 보강 (main.py --append-rebuild-learning --n-day N).
+  KRX 거래일 16:00 — 장마감된 당일(T=오늘) 확정 (main.py --append-rebuild-learning YYYYMMDD).
 
 .DESCRIPTION
-  - 14:30·15:30 선행 실행 lock 종료 후 freeze·리포트·학습 보강 (이메일 없음).
-  - 스케줄러: register_daily_email_tasks.ps1 의 MoneyKRX_Daily1600_Append.
+  - 15:30 선행 lock 종료 후, 당일 관측 블록을 actual·테마로 확정 후 이메일 발송.
+  - 고·중 확신 없는 none-tier 더미는 신규 freeze에 채우지 않음.
+  - 스케줄러: MoneyKRX_Daily1600_Append
 #>
 param(
     [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot),

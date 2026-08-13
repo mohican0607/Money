@@ -1,12 +1,12 @@
 """
-거래일 14:30 / 16:00 / 15:30 스케줄: ``python main.py`` (N→N+1) 실행 후 리포트를 이메일로 발송.
+거래일 14:30 / 15:30 / 16:00 스케줄: ``python main.py`` 실행 후 리포트를 이메일로 발송.
 
-성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` · 16:00 슬롯 제외).
+성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` 제외).
 
 사용:
   python scripts/run_daily_email.py --slot 1430
-  python scripts/run_daily_email.py --slot 1600
   python scripts/run_daily_email.py --slot 1530
+  python scripts/run_daily_email.py --slot 1600
 """
 from __future__ import annotations
 
@@ -196,11 +196,11 @@ def _run_main_py(
     main_py = ROOT / "main.py"
     cmd = [str(py), str(main_py)]
     if slot == "1600":
-        # 15:30 장마감 갱신 이후 — freeze·리포트·학습 보강 (N 명시)
+        # 장마감된 당일(T=오늘) 확정: freeze 유지 + actual·테마. N+1 forward 아님.
         assert n_day is not None
-        cmd.extend(["--append-rebuild-learning", "--n-day", n_day.strftime("%Y%m%d")])
+        cmd.extend(["--append-rebuild-learning", n_day.strftime("%Y%m%d")])
     elif slot == "1530":
-        # 장마감 직후: 14:30 freeze 유지 + actual·테마·증분 학습 갱신
+        # 장마감 직후: 다음날(T=N+1) forward 갱신 + 이메일
         cmd.append("--append-rebuild-learning")
 
     slot_lock: Path | None = None
@@ -423,20 +423,19 @@ def main(argv: list[str] | None = None) -> int:
         "--slot",
         required=True,
         choices=sorted(SLOT_LABELS),
-        help="실행 슬롯 (1430=장중, 1530=장마감 직후, 1600=15:30 이후 보강)",
+        help="실행 슬롯 (1430=장중, 1530=장마감 직후, 1600=당일 T 확정)",
     )
     parser.add_argument(
         "--skip-email",
         action="store_true",
-        help="main.py 만 실행하고 이메일은 보내지 않음 (1600 슬롯은 기본 생략)",
+        help="main.py 만 실행하고 이메일은 보내지 않음",
     )
     args = parser.parse_args(argv)
-    if args.slot == "1600":
-        args.skip_email = True
 
     _ensure_env_defaults()
 
     from src import config
+    from src import trading_calendar
     from src.pipeline.early_validate import current_n_and_n_plus_one
 
     log_lines: list[str] = [f"slot={args.slot} skip_email={args.skip_email}", "status=started"]
@@ -449,8 +448,22 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if check_code in (2, 3, 4) else check_code
 
     n_day, t_day = current_n_and_n_plus_one()
-    slot_label = SLOT_LABELS[args.slot]
-    header = f"[run_daily_email] {slot_label} — N={n_day.isoformat()} → T={t_day.isoformat()}"
+    # 16:00: 당일(T=오늘) 확정 — 이메일·첨부 리포트도 그 T 기준
+    if args.slot == "1600":
+        email_t = n_day
+        email_n = trading_calendar.last_trading_day_before(email_t)
+        report_t = email_t
+        header = (
+            f"[run_daily_email] {SLOT_LABELS[args.slot]} — "
+            f"T={email_t.isoformat()} 확정 (N={email_n.isoformat()})"
+        )
+    else:
+        email_n, email_t = n_day, t_day
+        report_t = t_day
+        header = (
+            f"[run_daily_email] {SLOT_LABELS[args.slot]} — "
+            f"N={n_day.isoformat()} → T={t_day.isoformat()}"
+        )
     print(header, flush=True)
     log_lines.append(header)
 
@@ -476,7 +489,7 @@ def main(argv: list[str] | None = None) -> int:
         log_lines.append(f"main.py timeout={timeout_sec}s")
         if args.slot == "1600":
             log_lines.append(
-                f"main.py args=--append-rebuild-learning --n-day {n_day.strftime('%Y%m%d')}"
+                f"main.py args=--append-rebuild-learning {n_day.strftime('%Y%m%d')} (T=오늘 확정)"
             )
         elif args.slot == "1530":
             log_lines.append("main.py args=--append-rebuild-learning")
@@ -485,7 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         log_lines.append(f"main.py exit={main_exit} status={run_status}")
 
-        dated_path, monthly_path = _resolve_report_paths(t_day)
+        dated_path, monthly_path = _resolve_report_paths(report_t)
         dated_note = _format_report_note(dated_path, label="일별 리포트")
         monthly_note = _format_report_note(monthly_path, label="월간 리포트")
         print(dated_note, flush=True)
@@ -500,8 +513,8 @@ def main(argv: list[str] | None = None) -> int:
 
         sent, msg = _send_run_email(
             slot=args.slot,
-            n_day=n_day,
-            t_day=t_day,
+            n_day=email_n,
+            t_day=email_t,
             main_exit=main_exit,
             run_status=run_status,
             log_text=log_text,
@@ -525,12 +538,12 @@ def main(argv: list[str] | None = None) -> int:
         log_lines.append(f"예외: {exc}")
         print(tb, file=sys.stderr, flush=True)
 
-        dated_path, monthly_path = _resolve_report_paths(t_day)
+        dated_path, monthly_path = _resolve_report_paths(report_t)
         if not args.skip_email:
             sent, msg = _send_run_email(
                 slot=args.slot,
-                n_day=n_day,
-                t_day=t_day,
+                n_day=email_n,
+                t_day=email_t,
                 main_exit=main_exit,
                 run_status=run_status,
                 log_text=log_text,

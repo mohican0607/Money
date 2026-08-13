@@ -159,12 +159,31 @@ def _frozen_predicted_return_pct(item: dict) -> float | None:
     return v if math.isfinite(v) else None
 
 
+_EMPTY_SLATE_KEY = "_empty_slate"
+
+
+def _is_empty_slate_freeze(items: list[dict] | None) -> bool:
+    """고·중 확신 0건으로 확정한 빈 slate 마커인지."""
+    if not items or len(items) != 1:
+        return False
+    return bool(items[0].get(_EMPTY_SLATE_KEY))
+
+
 def _freeze_entry_usable(items: list[dict]) -> bool:
-    """관측일 T별 고정 캐시에 재사용할 예측 수익률이 하나라도 있으면 True."""
+    """관측일 T별 고정 캐시에 재사용할 예측이 있으면 True(빈 slate 확정도 포함).
+
+    이미 저장된 freeze(고·중·none)는 재사용한다. none-tier 신규 채움 금지는
+    ``_display_prediction_rows_for_freeze`` 저장 경로에서만 막는다.
+    """
     if not items:
         return False
+    if _is_empty_slate_freeze(items):
+        return True
+    real = [x for x in items if not x.get(_EMPTY_SLATE_KEY)]
+    if not real:
+        return False
     ok = False
-    for x in items:
+    for x in real:
         p = _frozen_predicted_return_pct(x)
         if p is not None and math.isfinite(p):
             ok = True
@@ -172,8 +191,8 @@ def _freeze_entry_usable(items: list[dict]) -> bool:
     if not ok:
         return False
     cap = int(config.PRED_FORWARD_SHOW_MAX)
-    if len(items) >= 3 and cap >= 6 and len(items) < min(cap, 6):
-        if all(str(x.get("confidence_tier") or "none") == "high" for x in items):
+    if len(real) >= 3 and cap >= 6 and len(real) < min(cap, 6):
+        if all(str(x.get("confidence_tier") or "none") == "high" for x in real):
             return False
     return True
 
@@ -259,8 +278,12 @@ def _ignore_freeze_for_trading_day(
 
 def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.PredictionRow]:
     """고정 캐시 dict 목록을 ``PredictionRow`` 리스트로 변환합니다. 파싱 실패 항목은 건너뜁니다."""
+    if _is_empty_slate_freeze(items):
+        return []
     rows: list[predict.PredictionRow] = []
     for x in items:
+        if x.get(_EMPTY_SLATE_KEY):
+            continue
         try:
             pct = _frozen_predicted_return_pct(x)
             if pct is None:
@@ -306,10 +329,9 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
 
 
 def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> list[predict.PredictionRow]:
-    """리포트·freeze 에 고정할 예측 후보 — **고·중 확신 tier 만** 저장(순위 보충 없음).
+    """리포트·freeze 에 고정할 예측 후보 — **고·중 확신 tier 만**.
 
-    14:30에 확정된 2~3종목 slate 가 이후 실행에서 10종목으로 늘어나지 않도록 합니다.
-    tier 통과가 0이면 ML 순위 상위 ``PRED_FORWARD_SHOW_MAX`` 까지만 fallback.
+    tier 통과 0건이면 빈 목록(none-tier·동일 pred% 더미로 채우지 않음).
     """
     cap = max(1, int(config.PRED_FORWARD_SHOW_MAX))
     tiered = [
@@ -325,21 +347,16 @@ def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> li
             str(r.code).zfill(6),
         )
     )
-    if tiered:
-        return list(tiered[:cap])
-
-    ranked = sorted(
-        rows,
-        key=lambda r: (
-            int(getattr(r, "rank_position", None) or 9999),
-            str(r.code).zfill(6),
-        ),
-    )
-    return list(ranked[:cap])
+    return list(tiered[:cap])
 
 
 def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[dict]:
-    """``PredictionRow`` 리스트를 고정 캐시 JSON에 넣을 dict 목록으로 직렬화합니다."""
+    """``PredictionRow`` 리스트를 고정 캐시 JSON에 넣을 dict 목록으로 직렬화합니다.
+
+    고·중 확신이 없으면 빈 slate 마커만 저장(이후 실행이 더미로 채우지 않도록).
+    """
+    if not rows:
+        return [{_EMPTY_SLATE_KEY: True}]
     return [
         {
             "code": str(r.code).zfill(6),

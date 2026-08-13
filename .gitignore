@@ -1,9 +1,11 @@
 .venv/
 .env
-data/cache/
-__pycache__/
 *.pyc
-output/
-.pytest_cache/
-z_temp/
 _tmp_*.txt
+.pytest_cache/
+__pycache__/
+data/cache/
+output/
+scripts/logs/
+z_temp/
+
