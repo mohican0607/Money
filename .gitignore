@@ -6,6 +6,6 @@ _tmp_*.txt
 __pycache__/
 data/cache/
 output/
-scripts/logs/
+#scripts/logs/
 z_temp/
 

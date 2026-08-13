@@ -808,12 +808,20 @@ def _run_pipeline(
                     r for r in rows_compare if _compare_row_is_prediction_candidate(r)
                 ]
             else:
-                # 신규 계산: 고·중 확신만. none-tier·pred% 더미로 cap 채우지 않음.
-                rows_compare = [
+                # 신규 계산: 고·중 확신 우선. 0건이면 순위 상위 예측 후보를 남긴다.
+                tiered = [
                     r
                     for r in rows_compare
                     if r.get("pred_high") or r.get("pred_mid")
                 ]
+                if tiered:
+                    rows_compare = tiered
+                else:
+                    rows_compare = [
+                        r
+                        for r in rows_compare
+                        if _compare_row_is_prediction_candidate(r)
+                    ]
             cap = int(config.PRED_FORWARD_SHOW_MAX)
             if len(rows_compare) > cap:
                 rows_compare.sort(

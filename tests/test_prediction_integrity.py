@@ -99,7 +99,7 @@ def test_freeze_roundtrip_preserves_prediction_codes_and_tiers() -> None:
     assert [round(r.predicted_return_pct, 1) for r in restored] == [25.0, 22.0]
 
 
-def test_freeze_empty_when_no_tiered(monkeypatch) -> None:
+def test_freeze_pads_none_tier_when_no_high_mid(monkeypatch) -> None:
     monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 10)
     rows = [
         PredictionRow(
@@ -115,11 +115,19 @@ def test_freeze_empty_when_no_tiered(monkeypatch) -> None:
         for i in range(1, 11)
     ]
     display = _display_prediction_rows_for_freeze(rows)
-    assert display == []
+    assert [r.code for r in display] == [f"{i:06d}" for i in range(1, 11)]
     frozen = _prediction_rows_to_frozen_items(display)
-    assert frozen == [{"_empty_slate": True}]
+    assert len(frozen) == 10
     assert _freeze_entry_usable(frozen)
-    assert _prediction_rows_from_frozen_items(frozen) == []
+    assert [r.code for r in _prediction_rows_from_frozen_items(frozen)] == [
+        f"{i:06d}" for i in range(1, 11)
+    ]
+
+
+def test_empty_slate_marker_is_not_reused() -> None:
+    assert not _freeze_entry_usable([{"_empty_slate": True}])
+    assert _prediction_rows_from_frozen_items([{"_empty_slate": True}]) == []
+    assert _prediction_rows_to_frozen_items([]) == []
 
 
 def test_freeze_reuses_historical_none_tier() -> None:

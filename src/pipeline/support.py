@@ -170,15 +170,15 @@ def _is_empty_slate_freeze(items: list[dict] | None) -> bool:
 
 
 def _freeze_entry_usable(items: list[dict]) -> bool:
-    """관측일 T별 고정 캐시에 재사용할 예측이 있으면 True(빈 slate 확정도 포함).
+    """관측일 T별 고정 캐시에 재사용할 예측이 있으면 True.
 
-    이미 저장된 freeze(고·중·none)는 재사용한다. none-tier 신규 채움 금지는
-    ``_display_prediction_rows_for_freeze`` 저장 경로에서만 막는다.
+    빈 slate 마커는 재사용하지 않는다(다음 실행이 다시 후보를 채운다).
+    이미 저장된 freeze(고·중·none)는 재사용한다.
     """
     if not items:
         return False
     if _is_empty_slate_freeze(items):
-        return True
+        return False
     real = [x for x in items if not x.get(_EMPTY_SLATE_KEY)]
     if not real:
         return False
@@ -329,34 +329,40 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
 
 
 def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> list[predict.PredictionRow]:
-    """리포트·freeze 에 고정할 예측 후보 — **고·중 확신 tier 만**.
+    """리포트·freeze 에 고정할 예측 후보.
 
-    tier 통과 0건이면 빈 목록(none-tier·동일 pred% 더미로 채우지 않음).
+    고·중 확신을 우선한다. 0건이면 순위 상위 none-tier 로 cap 까지 채운다.
+    후보 풀이 있는데 표를 비우지 않는다.
     """
     cap = max(1, int(config.PRED_FORWARD_SHOW_MAX))
+    ranked = sorted(
+        rows,
+        key=lambda r: (
+            0
+            if str(getattr(r, "confidence_tier", "") or "") == "high"
+            else (1 if str(getattr(r, "confidence_tier", "") or "") == "mid" else 2),
+            int(getattr(r, "rank_position", None) or 9999),
+            str(r.code).zfill(6),
+        ),
+    )
     tiered = [
         r
-        for r in rows
+        for r in ranked
         if prediction_ranking.is_high_confidence_prediction(r)
         or prediction_ranking.is_mid_confidence_prediction(r)
     ]
-    tiered.sort(
-        key=lambda r: (
-            0 if str(getattr(r, "confidence_tier", "") or "") == "high" else 1,
-            int(getattr(r, "rank_position", None) or 9999),
-            str(r.code).zfill(6),
-        )
-    )
-    return list(tiered[:cap])
+    if tiered:
+        return list(tiered[:cap])
+    return list(ranked[:cap])
 
 
 def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[dict]:
     """``PredictionRow`` 리스트를 고정 캐시 JSON에 넣을 dict 목록으로 직렬화합니다.
 
-    고·중 확신이 없으면 빈 slate 마커만 저장(이후 실행이 더미로 채우지 않도록).
+    후보가 없으면 빈 목록(빈 slate 마커로 잠그지 않음 — 다음 실행이 재계산).
     """
     if not rows:
-        return [{_EMPTY_SLATE_KEY: True}]
+        return []
     return [
         {
             "code": str(r.code).zfill(6),
