@@ -325,6 +325,18 @@ def _adaptive_calibrated_high_floor(
     return max(base, abs_min)
 
 
+def row_has_news_evidence(row: PredictionRow) -> bool:
+    """early 뉴스 키워드·종목명 언급·TF-IDF 맥락 중 하나라도 있으면 True."""
+    return _news_evidence_strength(row) > 1e-12
+
+
+def _news_backed_rows(rows: list[PredictionRow]) -> list[PredictionRow]:
+    """``PRED_REQUIRE_NEWS_EVIDENCE`` 가 켜져 있으면 뉴스 근거 없는 행을 제외합니다."""
+    if not config.PRED_REQUIRE_NEWS_EVIDENCE:
+        return list(rows)
+    return [r for r in rows if row_has_news_evidence(r)]
+
+
 def _news_evidence_strength(row: PredictionRow) -> float:
     """
     early 뉴스·키워드·종목명 언급·TF-IDF 맥락 합성 근거(0~1).
@@ -1727,7 +1739,6 @@ def fill_forward_review_slate(
     mid_n = sum(
         1 for r in pool if str(getattr(r, "confidence_tier", "") or "") == "mid"
     )
-    mention_gate = float(config.PRED_MENTION_GATE_MIN)
     rank_limit = max(int(config.PRED_FORWARD_MID_MAX_RANK), cap)
 
     for pos, row in enumerate(ranked, start=1):
@@ -1744,10 +1755,15 @@ def fill_forward_review_slate(
             continue
         if pos > rank_limit:
             break
-        nh = int(getattr(row, "keyword_hits", 0) or 0)
-        mention = float(getattr(row, "mention_score", 0.0) or 0.0)
-        if nh < 1 and mention + 1e-12 < mention_gate * 0.5:
-            continue
+        if config.PRED_REQUIRE_NEWS_EVIDENCE:
+            if not row_has_news_evidence(row):
+                continue
+        else:
+            mention_gate = float(config.PRED_MENTION_GATE_MIN)
+            nh = int(getattr(row, "keyword_hits", 0) or 0)
+            mention = float(getattr(row, "mention_score", 0.0) or 0.0)
+            if nh < 1 and mention + 1e-12 < mention_gate * 0.5:
+                continue
         if prior_day_exhaustion_blocks_confidence(row):
             continue
         row.confidence_tier = "mid"
@@ -1785,6 +1801,10 @@ def finalize_ranked_predictions(
         ]
         if not rows:
             return rows
+
+    rows = _news_backed_rows(rows)
+    if not rows:
+        return rows
 
     pool = _rerank_sector_diversity(rows)
     pool = _inject_hot_sector_leaders(pool)

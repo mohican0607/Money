@@ -211,7 +211,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 49
+PREDICTION_FREEZE_SCHEMA_VERSION = 50
 
 # --- 다요인(멀티팩터) 랭킹 가중치 (합≈1, 뉴스 최소) ---
 PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.48)
@@ -340,6 +340,11 @@ PRED_ML_FEAT_WORKERS = _positive_int_env("PRED_ML_FEAT_WORKERS", 12)
 PRED_MIN_KEYWORD_HITS = _positive_int_env("PRED_MIN_KEYWORD_HITS", 2)
 # ML ``predict_proba`` 대상 풀만 완화(고확신 게이트는 ``PRED_MIN_KEYWORD_HITS`` 유지)
 PRED_ML_POOL_MIN_KEYWORD_HITS = _positive_int_env("PRED_ML_POOL_MIN_KEYWORD_HITS", 1)
+# 1: 리포트·freeze 예측 후보는 early 뉴스(키워드·종목명·TF-IDF 맥락)가 있어야 한다.
+# 모멘텀·수급·업종 must-keep 만으로는 표를 채우지 않는다.
+PRED_REQUIRE_NEWS_EVIDENCE = os.getenv(
+    "PRED_REQUIRE_NEWS_EVIDENCE", "1"
+).strip().lower() in ("1", "true", "yes", "on")
 # 종목명 직접 언급 없을 때 후보 통과에 필요한 mention 점수(0~1, 5회 이상=1.0)
 PRED_MENTION_GATE_MIN = _float_env("PRED_MENTION_GATE_MIN", 0.35)
 # 누적 오차로 반복 오탐 종목을 후보에서 제외(종목명 직접 언급 없을 때만)

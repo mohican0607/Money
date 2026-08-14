@@ -88,9 +88,38 @@ def test_reuse_prediction_freeze_after_market_close() -> None:
 
 def test_freeze_roundtrip_preserves_prediction_codes_and_tiers() -> None:
     rows = [
-        PredictionRow("000001", "A", 1.0, 25.0, [], [], confidence_tier="high", rank_position=1),
-        PredictionRow("000002", "B", 1.0, 22.0, [], [], confidence_tier="mid", rank_position=2),
-        PredictionRow("000003", "C", 1.0, 8.0, [], [], confidence_tier="none", rank_position=3),
+        PredictionRow(
+            "000001",
+            "A",
+            1.0,
+            25.0,
+            ["테마"],
+            [],
+            confidence_tier="high",
+            rank_position=1,
+            keyword_hits=2,
+        ),
+        PredictionRow(
+            "000002",
+            "B",
+            1.0,
+            22.0,
+            ["테마"],
+            [],
+            confidence_tier="mid",
+            rank_position=2,
+            keyword_hits=1,
+        ),
+        PredictionRow(
+            "000003",
+            "C",
+            1.0,
+            8.0,
+            [],
+            [],
+            confidence_tier="none",
+            rank_position=3,
+        ),
     ]
     frozen = _prediction_rows_to_frozen_items(_display_prediction_rows_for_freeze(rows))
     restored = _prediction_rows_from_frozen_items(frozen)
@@ -107,10 +136,11 @@ def test_freeze_pads_none_tier_when_no_high_mid(monkeypatch) -> None:
             f"N{i}",
             1.0,
             21.81,
-            [],
+            ["테마"],
             [],
             confidence_tier="none",
             rank_position=i,
+            keyword_hits=1,
         )
         for i in range(1, 11)
     ]
@@ -144,6 +174,39 @@ def test_freeze_reuses_historical_none_tier() -> None:
     assert _freeze_entry_usable(junk)
 
 
+def test_display_freeze_drops_rows_without_news(monkeypatch) -> None:
+    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 10)
+    monkeypatch.setattr(config, "PRED_REQUIRE_NEWS_EVIDENCE", True)
+    rows = [
+        PredictionRow(
+            "000001",
+            "뉴스있음",
+            1.0,
+            22.0,
+            ["테마"],
+            [],
+            confidence_tier="none",
+            rank_position=2,
+            keyword_hits=1,
+        ),
+        PredictionRow(
+            "000002",
+            "뉴스없음",
+            1.0,
+            25.0,
+            [],
+            [],
+            confidence_tier="high",
+            rank_position=1,
+            keyword_hits=0,
+            mention_score=0.0,
+            news_context_score=0.0,
+        ),
+    ]
+    display = _display_prediction_rows_for_freeze(rows)
+    assert [r.code for r in display] == ["000001"]
+
+
 def test_freeze_does_not_pad_when_few_tiered(monkeypatch) -> None:
     monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 10)
     rows = [
@@ -152,10 +215,11 @@ def test_freeze_does_not_pad_when_few_tiered(monkeypatch) -> None:
             f"N{i}",
             1.0,
             20.0,
-            [],
+            ["테마"] if i == 1 else [],
             [],
             confidence_tier="mid" if i == 1 else "none",
             rank_position=i,
+            keyword_hits=1 if i == 1 else 0,
         )
         for i in range(1, 8)
     ]

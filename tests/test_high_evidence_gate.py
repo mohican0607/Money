@@ -41,6 +41,14 @@ def _row(**kwargs) -> SimpleNamespace:
 def test_news_evidence_zero_for_no_keywords() -> None:
     row = _row(keyword_hits=0, mention_score=0.0, news_context_score=0.0)
     assert prk._news_evidence_strength(row) < 0.55
+    assert not prk.row_has_news_evidence(row)
+
+
+def test_row_has_news_evidence_for_keyword_or_mention() -> None:
+    assert prk.row_has_news_evidence(_row(keyword_hits=1, mention_score=0.0, news_context_score=0.0))
+    assert prk.row_has_news_evidence(
+        _row(keyword_hits=0, mention_score=0.35, news_context_score=0.0)
+    )
 
 
 def test_carryover_without_news_detects_sector_only() -> None:

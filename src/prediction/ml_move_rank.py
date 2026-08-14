@@ -1500,13 +1500,13 @@ def rank_predictions_ml(
     mom_only = set(
         pred_hybrid.momentum_candidate_codes(returns_ml, target_day, listing_codes)
     )
-    news_ctx_only: set[str] = set(score_codes) - news_only - mom_only
     flow_only = set(
         investor_flow.investor_flow_candidate_codes(
             returns_ml, target_day, listing_codes
         )
     )
     flow_only -= news_only | mom_only
+    news_ctx_only: set[str] = set(score_codes) - news_only - mom_only - flow_only
     code_to_ix = {c: i for i, c in enumerate(listing_codes)}
     cand_ix: list[int] = []
     for c in score_codes:
@@ -1643,6 +1643,7 @@ def rank_predictions_ml(
         c6 = str(code).zfill(6)
         is_rotation = c6 in rotation_code_set
         is_industry_must = c6 in must_enrich_codes
+        news_bypass = not config.PRED_REQUIRE_NEWS_EVIDENCE
         pr = predict.prediction_row_for_code(
             code,
             listing_names,
@@ -1653,12 +1654,19 @@ def rank_predictions_ml(
             feedback_ctx=feedback_ctx,
             theme_weights=tw,
             allow_momentum_only=(
-                (code in mom_only and code not in news_only)
-                or is_rotation
-                or is_industry_must
+                news_bypass
+                and (
+                    (code in mom_only and code not in news_only)
+                    or is_rotation
+                    or is_industry_must
+                )
             ),
-            allow_news_context_only=code in news_ctx_only or is_rotation or is_industry_must,
-            allow_investor_flow_only=code in flow_only or is_rotation or is_industry_must,
+            allow_news_context_only=code in news_ctx_only
+            or (news_bypass and (is_rotation or is_industry_must)),
+            allow_investor_flow_only=(
+                news_bypass
+                and (code in flow_only or is_rotation or is_industry_must)
+            ),
         )
         if pr is None:
             continue
@@ -1694,6 +1702,8 @@ def rank_predictions_ml(
         if news_ctx:
             _, nctx = feats_for_code(news_ctx, news_text_blob, code)
             pr.news_context_score = nctx
+        if config.PRED_REQUIRE_NEWS_EVIDENCE and not pred_hybrid.row_has_news_evidence(pr):
+            continue
         pr.reasons = [
             f"다요인 랭킹: {pred_hybrid.format_factor_summary(pr, ks11_ret_lag1=ks11_ret)} · "
             f"ML {p * 100:.1f}% · 키워드 {pr.keyword_hits} · "

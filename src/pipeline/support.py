@@ -332,9 +332,12 @@ def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> li
     """리포트·freeze 에 고정할 예측 후보.
 
     고·중 확신을 우선한다. 0건이면 순위 상위 none-tier 로 cap 까지 채운다.
-    후보 풀이 있는데 표를 비우지 않는다.
+    ``PRED_REQUIRE_NEWS_EVIDENCE`` 이면 뉴스 근거 없는 행은 제외한다.
     """
     cap = max(1, int(config.PRED_FORWARD_SHOW_MAX))
+    rows = prediction_ranking._news_backed_rows(rows)
+    if not rows:
+        return []
     ranked = sorted(
         rows,
         key=lambda r: (

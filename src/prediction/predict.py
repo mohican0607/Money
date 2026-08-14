@@ -466,6 +466,8 @@ def prediction_row_for_code(
 
     조건: 비범용 키워드 교집합이 ``min_keyword_hits`` 미만이고 종목명 언급도
     ``PRED_MENTION_GATE_MIN`` 미만이면 후보 제외(None). 반복 오탐 종목은 누적 오차로 추가 제외.
+    모멘텀·수급만으로 뉴스를 우회하지 않습니다. TF-IDF 뉴스 맥락만 있는 종목은
+    ``allow_news_context_only`` 로 통과한 뒤 호출측에서 맥락 점수를 붙입니다.
 
     Args:
         ctx: ``build_scoring_context`` 의 반환값을 그대로 넘깁니다.
