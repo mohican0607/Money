@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -65,6 +66,34 @@ def collect_stock_codes_from_day_reports(day_reports: list[Any]) -> list[str]:
     return sorted(codes)
 
 
+_STOCK_CODE_ATTR_RE = re.compile(
+    r'data-stock-code=["\'](\d{6})["\']',
+    re.IGNORECASE,
+)
+
+
+def collect_stock_codes_from_html(html: str) -> list[str]:
+    """리포트 HTML의 ``data-stock-code`` 에서 6자리 종목코드를 모읍니다."""
+    found = {m.group(1) for m in _STOCK_CODE_ATTR_RE.finditer(html or "")}
+    return sorted(found)
+
+
+def collect_stock_codes_from_output_reports(output_dir: Path | str) -> list[str]:
+    """output 폴더의 ``report_*.html`` 에서 종목코드를 모읍니다."""
+    codes: set[str] = set()
+    out = Path(output_dir)
+    if not out.is_dir():
+        return []
+    for path in out.glob("report_*.html"):
+        if "index" in path.name.lower():
+            continue
+        try:
+            codes.update(collect_stock_codes_from_html(path.read_text(encoding="utf-8")))
+        except OSError:
+            continue
+    return sorted(codes)
+
+
 def ensure_live_quotes_for_report(
     output_dir: Path | str,
     codes: list[str] | None = None,
@@ -74,11 +103,16 @@ def ensure_live_quotes_for_report(
     """리포트 output 폴더에 manifest·JS를 쓰고 백그라운드 갱신 데몬을 띄웁니다."""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    if codes:
-        write_live_quotes_manifest(out, codes)
-        snap = _fetch_quotes(codes)
-        if snap:
-            write_live_quotes_js(out, snap)
+    merged = {str(c).zfill(6) for c in (codes or []) if str(c).strip()}
+    if not merged:
+        merged.update(_read_manifest_codes(out))
+    if not merged:
+        merged.update(collect_stock_codes_from_output_reports(out))
+    uniq = sorted(c for c in merged if c.isdigit() and len(c) == 6)
+    if uniq:
+        write_live_quotes_manifest(out, uniq)
+        snap = _fetch_quotes(uniq)
+        write_live_quotes_js(out, snap or {})
     _ensure_daemon_process(out, port=port)
 
 

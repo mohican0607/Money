@@ -147,6 +147,19 @@ def _soft_move_label(ret: float, *, threshold: float) -> float:
     return min(1.0, 0.50 + 0.50 * min(1.0, (r - thr) / 0.15))
 
 
+def _soft_move_label_to_return(soft: float, *, threshold: float) -> float:
+    """``_soft_move_label`` 의 역변환. ML 회귀 점수를 익일 수익률(소수) 추정으로 되돌립니다."""
+    s = max(0.0, min(1.0, float(soft)))
+    thr = float(threshold)
+    if s <= 0.0:
+        return 0.0
+    if s <= 0.12:
+        return (s / 0.12) * (thr * 0.5)
+    if s < 0.50:
+        return thr * 0.5 + ((s - 0.12) / 0.38) * (thr * 0.5)
+    return thr + ((s - 0.50) / 0.50) * 0.15
+
+
 def _row_sample_weight(y_bin: int, ret: float, *, threshold: float) -> float:
     """극단 급등·임계 근접 음성에 더 큰 가중(행 복제 대신)."""
     r = float(ret)
@@ -1674,6 +1687,26 @@ def rank_predictions_ml(
         pr.ml_prob = p
         pr.ml_precision_score = float(precision_raw[int(fi)])
         pr.ml_rank_score = float(rank_score[int(fi)])
+        soft_hat = (
+            float(reg_raw[int(fi)])
+            if reg_raw is not None
+            else float(rank_score[int(fi)])
+        )
+        pr.predicted_return_pct = (
+            _soft_move_label_to_return(
+                soft_hat, threshold=config.BIG_MOVE_THRESHOLD
+            )
+            * 100.0
+        )
+        pr.reasons = [
+            "예측 상승률은 ML 회귀(익일 수익률 소프트라벨)를 종목별로 역변환한 추정입니다."
+        ] + [
+            x
+            for x in pr.reasons
+            if not x.startswith("표시 예측")
+            and not x.startswith("예측 수익률은 신호 강도")
+            and not x.startswith("추가로 누적 오차")
+        ]
         pr.ks11_ret_lag1 = ks11_ret
         pr.momentum_score = momentum_for_code(ohlcv_idx, code, target_day)
         ohlcv_row = ohlcv_row_for_code(ohlcv_idx, code, target_day)
@@ -1745,8 +1778,9 @@ def rank_predictions_ml(
                     n_hit=n_hit,
                     mention=mention,
                     feedback_ctx=feedback_ctx,
-                    clamp_lo=float(config.PRED_RETURN_MIN),
-                    clamp_hi=float(config.PRED_RETURN_MAX),
+                    clamp_lo=0.0,
+                    clamp_hi=0.35,
+                    use_global_fallback=False,
                 )
                 * 100.0
             )

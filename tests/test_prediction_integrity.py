@@ -30,6 +30,15 @@ def test_compare_table_excludes_actual_only_rows_on_forward_days() -> None:
     assert _compare_row_is_prediction_candidate(
         {"pred_high": False, "pred_mid": False, "pred_ret": 20.0, "confidence_tier": "none"}
     )
+    assert _compare_row_is_prediction_candidate(
+        {
+            "pred_high": False,
+            "pred_mid": False,
+            "pred_ret": 8.0,
+            "confidence_tier": "none",
+            "rank_position": 1,
+        }
+    )
 
 
 def test_closed_day_table_keeps_actual_big_movers() -> None:
@@ -475,3 +484,38 @@ def test_fill_forward_review_slate_adds_mid_to_reach_cap(
         if str(getattr(r, "confidence_tier", "") or "") in ("high", "mid")
     ]
     assert len(tiered) >= 8
+
+
+def test_soft_move_label_roundtrip_to_return() -> None:
+    from src.prediction.ml_move_rank import (
+        _soft_move_label,
+        _soft_move_label_to_return,
+    )
+
+    thr = 0.20
+    for ret in (0.0, 0.05, 0.10, 0.20, 0.28, 0.35):
+        soft = _soft_move_label(ret, threshold=thr)
+        back = _soft_move_label_to_return(soft, threshold=thr)
+        assert abs(back - min(ret, thr + 0.15)) < 1e-9
+
+
+def test_feedback_without_global_fallback_keeps_stock_estimate() -> None:
+    from src.prediction.predict import _feedback_calibrated_return
+
+    ctx = {
+        "by_code_mean_ratio": {},
+        "by_code_count": {},
+        "global_mean_ratio": 0.50,
+        "global_count": 200,
+    }
+    out = _feedback_calibrated_return(
+        0.12,
+        code="323280",
+        n_hit=2,
+        mention=0.1,
+        feedback_ctx=ctx,
+        clamp_lo=0.0,
+        clamp_hi=0.35,
+        use_global_fallback=False,
+    )
+    assert abs(out - 0.12) < 1e-9

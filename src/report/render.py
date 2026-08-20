@@ -444,7 +444,14 @@ _LIVE_QUOTES_SCRIPT = '<script src="live_quotes.js" id="money-live-quotes-js"></
 
 
 def _inject_live_quotes_script(html: str) -> str:
-    if "live_quotes.js" in html:
+    """``<head>`` 에 live_quotes.js 를 넣습니다.
+
+    본문 인터랙션 스크립트가 ``live_quotes.js`` 문자열을 포함하므로, 파일명 부분
+    일치가 아니라 script id 로 중복 삽입을 막습니다.
+    """
+    if 'id="money-live-quotes-js"' in html or "id='money-live-quotes-js'" in html:
+        return html
+    if "</head>" not in html:
         return html
     return html.replace("</head>", f"  {_LIVE_QUOTES_SCRIPT}\n</head>", 1)
 
@@ -452,11 +459,19 @@ def _inject_live_quotes_script(html: str) -> str:
 def _after_report_written(out_path: Path, days: list[DayReport]) -> None:
     from .live_quotes import (
         collect_stock_codes_from_day_reports,
+        collect_stock_codes_from_html,
         ensure_live_quotes_for_report,
     )
 
-    codes = collect_stock_codes_from_day_reports(days)
-    ensure_live_quotes_for_report(out_path.parent, codes)
+    codes = set(collect_stock_codes_from_day_reports(days))
+    try:
+        if out_path.is_file():
+            codes.update(
+                collect_stock_codes_from_html(out_path.read_text(encoding="utf-8"))
+            )
+    except OSError:
+        pass
+    ensure_live_quotes_for_report(out_path.parent, sorted(codes))
 
 
 def render_report(

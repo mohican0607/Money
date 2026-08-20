@@ -321,6 +321,7 @@ def _feedback_calibrated_return(
     feedback_ctx: dict[str, object] | None,
     clamp_lo: float | None = None,
     clamp_hi: float | None = None,
+    use_global_fallback: bool = True,
 ) -> float:
     """
     누적 오차 이력 기반 보정.
@@ -351,7 +352,7 @@ def _feedback_calibrated_return(
     c_mean = by_code_mean.get(code_key)
     c_n = int(by_code_count.get(code_key, 0) or 0)
     if c_n < int(config.PRED_ERROR_FEEDBACK_MIN_SAMPLES):
-        if global_mean is None:
+        if (not use_global_fallback) or global_mean is None:
             return float(min(hi, max(lo, pred_ret)))
         c_mean = float(global_mean)
         c_n = int(feedback_ctx.get("global_count", 0) or 0)

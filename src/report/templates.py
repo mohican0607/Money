@@ -223,6 +223,28 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     var base = html && html.getAttribute("data-live-quotes-base");
     return (base && String(base).trim()) || "http://127.0.0.1:8765";
   }
+  // KST 연·월·일·시·분 (리포트 생성 시점과 무관하게 열람 시각 기준).
+  function kstClock() {
+    var parts = {};
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Seoul",
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false
+    }).formatToParts(new Date()).forEach(function (p) {
+      if (p.type !== "literal") parts[p.type] = p.value;
+    });
+    return parts;
+  }
+  function kstTodayIso() {
+    var p = kstClock();
+    return p.year + "-" + p.month + "-" + p.day;
+  }
+  // 정규장 종가(15:30 KST) 전 — 당일 N 등락률을 실시간으로 붙일 구간.
+  function kstIsBeforeRegularClose() {
+    var p = kstClock();
+    var hm = parseInt(p.hour, 10) * 60 + parseInt(p.minute, 10);
+    return hm < 15 * 60 + 30;
+  }
   // output/live_quotes.js 재로드(API 실패 시 폴백).
   function reloadLiveQuotesJs(cb) {
     var s = document.getElementById("money-live-quotes-js");
@@ -646,6 +668,40 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     var host = el.closest("[data-stock-code]");
     return host ? host.getAttribute("data-stock-code") || "" : "";
   }
+  // N(MMDD) 라벨 — N-1·N-2·N-3 은 제외.
+  function isNDayRetLine(line) {
+    var lbl = line && line.querySelector(".stock-ret-lbl");
+    if (!lbl) return false;
+    return /^N\(\d{4}\)$/.test((lbl.textContent || "").trim());
+  }
+  // 어제 생성된 예측 전용 HTML 에도, 오늘 장중이면 N 행에 실시간 훅을 붙입니다.
+  function hydrateTodayLiveIntraday(root) {
+    if (!kstIsBeforeRegularClose()) return null;
+    var today = kstTodayIso();
+    var scope = root || document;
+    var sec = null;
+    if (scope.id === "day-" + today) sec = scope;
+    else if (scope.querySelector) sec = scope.querySelector("#day-" + today);
+    if (!sec) return null;
+    sec.querySelectorAll(".stock-ret-col-lines .stock-ret-line, .stock-ret-lines .stock-ret-line").forEach(function (line) {
+      if (!isNDayRetLine(line)) return;
+      var tr = line.closest("tr");
+      var code = stockCodeForLiveEl(line);
+      if (!code && tr) {
+        var host = tr.querySelector("[data-stock-code]");
+        code = host ? host.getAttribute("data-stock-code") || "" : "";
+      }
+      if (!code) return;
+      line.setAttribute("data-live-intraday", "1");
+      line.setAttribute("data-stock-code", code);
+      var pctEl = line.querySelector(".stock-ret-pct");
+      if (pctEl) {
+        var t = (pctEl.textContent || "").trim();
+        if (!t || t === "—" || t === "…") pctEl.textContent = "…";
+      }
+    });
+    return sec;
+  }
   // 일자 블록 내 예측 옆·N일봉 실시간 % 일괄 조회(showLoading 시 … 표시).
   function refreshPredLiveIntradayInScope(dayRoot, options) {
     options = options || {};
@@ -682,8 +738,10 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
   // 예측 전용 일자: N일봉 열 장중 % 자동 폴링(10초).
   function bindForwardColumnIntradayRefresh(root) {
     var sc = root || document;
+    hydrateTodayLiveIntraday(sc);
     sc.querySelectorAll("section[id^='day-']").forEach(function (sec) {
-      if (!sec.querySelector(".stock-ret-col-lines [data-live-intraday]")) return;
+      var todayLive = sec.id === "day-" + kstTodayIso() && kstIsBeforeRegularClose();
+      if (!todayLive && !sec.querySelector(".stock-ret-col-lines [data-live-intraday]")) return;
       var tid = sec.id || "day";
       refreshPredLiveIntradayInScope(sec, { showLoading: true });
       if (columnIntradayTimers[tid]) return;

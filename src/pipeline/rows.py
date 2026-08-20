@@ -77,8 +77,14 @@ def _append_compare_row_from_prediction(
 
 
 def _row_has_displayed_prediction(r: dict) -> bool:
-    """14:30 freeze·표시 % 기준 예측 후보 — tier none 이어도 pred_ret≥임계면 후보."""
+    """14:30 freeze·표시 % 기준 예측 후보.
+
+    고·중 확신, 랭킹 순위가 있는 행, 또는 pred_ret≥임계.
+    예측% 가 20% 미만이어도 순위가 있으면 후보로 남긴다.
+    """
     if r.get("pred_high") or r.get("pred_mid"):
+        return True
+    if r.get("rank_position") is not None:
         return True
     pr = r.get("pred_ret")
     if pr is None:

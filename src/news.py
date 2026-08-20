@@ -991,24 +991,16 @@ def fetch_news_for_calendar_day(
     legacy_provider_monthly = _legacy_provider_monthly_news_json_path(target)
 
     def _should_refetch_empty_cache(cached: object) -> bool:
-        """빈 리스트 ``[]`` 만 저장된 실패 캐시면 재수집 대상인지 판별."""
-        # 이전에 실패 후 [] 만 저장된 캐시는 무시하고 재수집
+        """빈 리스트 ``[]`` 만 저장된 실패·미래일 캐시면 재수집 대상인지 판정.
+
+        ``naver_both`` / ``naver_ticker`` 도 빈 캐시를 유효한 결과로 보지 않습니다.
+        (이전에는 ``naver`` 만 재수집해서 both 모드 빈 파일이 고착되었습니다.)
+        """
         if not isinstance(cached, list) or len(cached) != 0:
             return False
-        if provider == "mock":
+        if provider in ("mock", "none") or config.MOCK_NEWS:
             return False
-        if provider == "naver":
-            return bool(
-                config.NAVER_CLIENT_ID
-                and config.NAVER_CLIENT_SECRET
-                and not config.MOCK_NEWS
-            )
-        if provider == "google":
-            return not config.MOCK_NEWS and (
-                config.USE_GOOGLE_NEWS_RSS_FALLBACK
-                or config.NEWS_NAVER_QUERY_MODE in ("ticker", "both")
-            )
-        return False
+        return True
 
     def _migrate_from(path: Path) -> list | None:
         """구 캐시 경로에서 읽어 현재 ``day_*.json`` 으로 이전. 빈 캐시면 삭제 후 ``None``."""
@@ -1072,6 +1064,11 @@ def fetch_news_for_calendar_day(
         day_file.write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
         return rows
 
+    today = datetime.now(KST).date()
+    if target > today:
+        # 아직 날짜가 오지 않은 날 — 0건을 day_*.json 에 잠그지 않음.
+        return []
+
     own_session = session is None
     if session is None:
         session = requests.Session()
@@ -1109,8 +1106,11 @@ def fetch_news_for_calendar_day(
 
     _print_news_http_usage(target, http_sink, stocks_with_news)
 
-    day_file.parent.mkdir(parents=True, exist_ok=True)
     items = _enrich_rows_with_stock_codes(items)
+    if not items:
+        # API 실패·미래 pubDate 0건을 [] 캐시로 고착시키지 않음.
+        return items
+    day_file.parent.mkdir(parents=True, exist_ok=True)
     day_file.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
     return items
 
