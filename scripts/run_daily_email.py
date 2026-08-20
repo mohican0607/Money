@@ -1,7 +1,10 @@
 """
 거래일 14:30 / 15:30 / 16:00 스케줄: ``python main.py`` 실행 후 리포트를 이메일로 발송.
 
-- 14:30 / 15:30: 리포트 HTML 갱신 후 첨부 발송
+- 14:30 / 15:30: 리포트 HTML 갱신 후 첨부 발송.
+  정상 종료 시 월간 리포트(``report_YYYY.MM.html``)를 당일 스냅샷으로 복사:
+  14:30 → ``report_YYYY.MMDD-1430.html``, 15:30 → ``report_YYYY.MMDD-1530.html``
+  (스냅샷은 로컬 보관용 — 이메일에는 첨부하지 않음. 월간 HTML 이 이미 첨부됨)
 - 16:00: ``--append-rebuild-learning`` 로 학습 진단만 갱신(이메일 본문만, 리포트 첨부 없음)
 
 성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` 제외).
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -40,6 +44,8 @@ SLOT_LABELS = {
     "1530": "15:30",
     "1600": "16:00",
 }
+
+_SLOT_SNAPSHOT_SLOTS = frozenset({"1430", "1530"})
 
 _LOCK_1430 = _LOG_DIR / ".run_1430.lock"
 _LOCK_1530 = _LOG_DIR / ".run_1530.lock"
@@ -132,6 +138,44 @@ def _expected_monthly_report_path(t_day: date) -> Path:
     from src import config
 
     return config.OUTPUT_DIR / f"report_{t_day.year}.{t_day.month:02d}.html"
+
+
+def _slot_report_snapshot_path(run_day: date, slot: str) -> Path | None:
+    """14:30 → report_YYYY.MMDD-1430.html, 15:30 → report_YYYY.MMDD-1530.html. 그 외 슬롯은 None."""
+    if slot not in _SLOT_SNAPSHOT_SLOTS:
+        return None
+    from src import config
+
+    return (
+        config.OUTPUT_DIR
+        / f"report_{run_day.year}.{run_day.month:02d}{run_day.day:02d}-{slot}.html"
+    )
+
+
+def _copy_slot_report_snapshot(
+    monthly_path: Path | None,
+    *,
+    run_day: date,
+    slot: str,
+) -> Path | None:
+    """월간 리포트를 슬롯 스냅샷으로 복사. 파일이 없거나 해당 슬롯이 아니면 None."""
+    dest = _slot_report_snapshot_path(run_day, slot)
+    if dest is None:
+        return None
+    label = SLOT_LABELS.get(slot, slot)
+    if monthly_path is None or not monthly_path.is_file():
+        print(
+            f"[run_daily_email] {label} 스냅샷 생략: 월간 리포트 없음",
+            flush=True,
+        )
+        return None
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(monthly_path, dest)
+    print(
+        f"[run_daily_email] 리포트 스냅샷: {monthly_path.name} → {dest.name}",
+        flush=True,
+    )
+    return dest
 
 
 def _acquire_run_lock(path: Path) -> None:
@@ -285,6 +329,31 @@ def _resolve_report_paths(t_day: date) -> tuple[Path | None, Path | None]:
     return dated, monthly
 
 
+def _is_slot_report_snapshot(path: Path) -> bool:
+    """``report_YYYY.MMDD-1430.html`` / ``report_YYYY.MMDD-1530.html`` 슬롯 스냅샷 여부."""
+    name = path.name
+    return name.startswith("report_") and name.endswith(("-1430.html", "-1530.html"))
+
+
+def _email_attachment_paths(
+    *,
+    slot: str,
+    dated_path: Path | None,
+    monthly_path: Path | None,
+) -> list[Path]:
+    """이메일 첨부: 일별·월간만. 슬롯 스냅샷(-1430/-1530)과 16:00 은 제외."""
+    if slot == "1600":
+        return []
+    attachments: list[Path] = []
+    for path in (dated_path, monthly_path):
+        if path is None or not path.is_file():
+            continue
+        if _is_slot_report_snapshot(path):
+            continue
+        attachments.append(path)
+    return attachments
+
+
 def _format_report_note(path: Path | None, *, label: str) -> str:
     if path and path.is_file():
         mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=KST)
@@ -407,11 +476,9 @@ def _send_run_email(
         monthly_path=monthly_path,
         extra_notes=extra_notes,
     )
-    attachments: list[Path] = []
-    if slot != "1600":
-        for path in (dated_path, monthly_path):
-            if path and path.is_file():
-                attachments.append(path)
+    attachments = _email_attachment_paths(
+        slot=slot, dated_path=dated_path, monthly_path=monthly_path
+    )
 
     try:
         send_report_email(subject=subject, body_text=body, attachment_paths=attachments)
@@ -519,6 +586,12 @@ def main(argv: list[str] | None = None) -> int:
             print(dated_note, flush=True)
             print(monthly_note, flush=True)
             log_lines.extend([dated_note, monthly_note])
+            if run_status == _RUN_STATUS_OK and main_exit == 0:
+                snap = _copy_slot_report_snapshot(
+                    monthly_path, run_day=n_day, slot=args.slot
+                )
+                if snap is not None:
+                    log_lines.append(f"스냅샷: {snap.name}")
 
         if args.skip_email:
             _append_run_log(log_lines)

@@ -9,6 +9,8 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
     → 거래일 14:30·15:30·16:00 자동 실행: scripts/run_daily_1430_email.ps1,
       scripts/run_daily_1530_email.ps1, scripts/run_daily_1600_append.ps1
       (등록 예: scripts/register_daily_email_tasks.ps1)
+      14:30/15:30 정상 종료 시 report_YYYY.MM.html 을
+      report_YYYY.MMDD-1430.html / report_YYYY.MMDD-1530.html 로 복사.
       16:00 은 --append-rebuild-learning 으로 학습 스냅샷만 갱신(리포트 HTML 미작성).
 
   python main.py 20260401
