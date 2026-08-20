@@ -1,6 +1,9 @@
 """
 거래일 14:30 / 15:30 / 16:00 스케줄: ``python main.py`` 실행 후 리포트를 이메일로 발송.
 
+- 14:30 / 15:30: 리포트 HTML 갱신 후 첨부 발송
+- 16:00: ``--append-rebuild-learning`` 로 학습 진단만 갱신(이메일 본문만, 리포트 첨부 없음)
+
 성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` 제외).
 
 사용:
@@ -196,13 +199,11 @@ def _run_main_py(
     main_py = ROOT / "main.py"
     cmd = [str(py), str(main_py)]
     if slot == "1600":
-        # 장마감된 당일(T=오늘) 확정: freeze 유지 + actual·테마. N+1 forward 아님.
+        # 장마감된 당일(T=오늘) 학습 진단 병합만 — 리포트 HTML 은 쓰지 않음.
         assert n_day is not None
         cmd.extend(["--append-rebuild-learning", n_day.strftime("%Y%m%d")])
-    elif slot == "1530":
-        # 장마감 직후: 다음날(T=N+1) forward 갱신 + 이메일
-        cmd.append("--append-rebuild-learning")
-
+    # 15:30: 플래그 없이 main.py → N→T=N+1 리포트 갱신(확정 반영).
+    # --append-rebuild-learning 은 리포트를 쓰지 않으므로 여기선 붙이지 않음.
     slot_lock: Path | None = None
     if slot == "1430":
         slot_lock = _LOCK_1430
@@ -344,9 +345,16 @@ def _build_email_body(
         f"관측일 T (N+1): {t_day.isoformat()}",
         status_line,
         "",
-        _format_report_note(dated_path, label="일별 리포트"),
-        _format_report_note(monthly_path, label="월간 리포트"),
     ]
+    if slot == "1600":
+        lines.append("첨부: 없음 (16:00은 학습 진단만 — 리포트 HTML 미첨부)")
+    else:
+        lines.extend(
+            [
+                _format_report_note(dated_path, label="일별 리포트"),
+                _format_report_note(monthly_path, label="월간 리포트"),
+            ]
+        )
     if extra_notes:
         lines.extend(extra_notes)
     lines.extend(["", "--- main.py 출력 ---", ""])
@@ -400,9 +408,10 @@ def _send_run_email(
         extra_notes=extra_notes,
     )
     attachments: list[Path] = []
-    for path in (dated_path, monthly_path):
-        if path and path.is_file():
-            attachments.append(path)
+    if slot != "1600":
+        for path in (dated_path, monthly_path):
+            if path and path.is_file():
+                attachments.append(path)
 
     try:
         send_report_email(subject=subject, body_text=body, attachment_paths=attachments)
@@ -455,7 +464,8 @@ def main(argv: list[str] | None = None) -> int:
         report_t = email_t
         header = (
             f"[run_daily_email] {SLOT_LABELS[args.slot]} — "
-            f"T={email_t.isoformat()} 확정 (N={email_n.isoformat()})"
+            f"T={email_t.isoformat()} 학습 진단 병합 "
+            f"(N={email_n.isoformat()}, 리포트 HTML 생략)"
         )
     else:
         email_n, email_t = n_day, t_day
@@ -489,21 +499,26 @@ def main(argv: list[str] | None = None) -> int:
         log_lines.append(f"main.py timeout={timeout_sec}s")
         if args.slot == "1600":
             log_lines.append(
-                f"main.py args=--append-rebuild-learning {n_day.strftime('%Y%m%d')} (T=오늘 확정)"
+                f"main.py args=--append-rebuild-learning {n_day.strftime('%Y%m%d')} "
+                "(학습 진단만, 리포트 HTML 생략)"
             )
-        elif args.slot == "1530":
-            log_lines.append("main.py args=--append-rebuild-learning")
         main_exit, log_text, run_status = _run_main_py(
             timeout_sec, slot=args.slot, n_day=n_day if args.slot == "1600" else None
         )
         log_lines.append(f"main.py exit={main_exit} status={run_status}")
 
-        dated_path, monthly_path = _resolve_report_paths(report_t)
-        dated_note = _format_report_note(dated_path, label="일별 리포트")
-        monthly_note = _format_report_note(monthly_path, label="월간 리포트")
-        print(dated_note, flush=True)
-        print(monthly_note, flush=True)
-        log_lines.extend([dated_note, monthly_note])
+        if args.slot == "1600":
+            dated_path, monthly_path = None, None
+            note = "리포트 첨부: 없음 (16:00 학습 진단만)"
+            print(note, flush=True)
+            log_lines.append(note)
+        else:
+            dated_path, monthly_path = _resolve_report_paths(report_t)
+            dated_note = _format_report_note(dated_path, label="일별 리포트")
+            monthly_note = _format_report_note(monthly_path, label="월간 리포트")
+            print(dated_note, flush=True)
+            print(monthly_note, flush=True)
+            log_lines.extend([dated_note, monthly_note])
 
         if args.skip_email:
             _append_run_log(log_lines)
@@ -538,7 +553,11 @@ def main(argv: list[str] | None = None) -> int:
         log_lines.append(f"예외: {exc}")
         print(tb, file=sys.stderr, flush=True)
 
-        dated_path, monthly_path = _resolve_report_paths(report_t)
+        dated_path, monthly_path = (
+            (None, None)
+            if args.slot == "1600"
+            else _resolve_report_paths(report_t)
+        )
         if not args.skip_email:
             sent, msg = _send_run_email(
                 slot=args.slot,

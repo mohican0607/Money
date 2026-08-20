@@ -89,7 +89,6 @@ def _print_usage() -> None:
       output/report_dated_by_MMDD.html 에 해당 T 블록만 추가·갱신
   python main.py --n-day YYYYMMDD
       기준일 N(거래일). T=N 다음 거래일. N=현재 N 이면 N일 14:30(KST)부터.
-      (--append-rebuild-learning 과 함께 14:30 freeze 유지·리포트 갱신에 사용)
   python main.py YYYYMMDD YYYYMMDD
       관측일 From~To 구간(양 끝 포함, **KRX 거래일만**). To는 현재 기준 N+1 거래일 이하.
       구간에 현재 N+1이 포함되면 N일 14:30(KST)부터 실행.
@@ -122,7 +121,8 @@ def _print_usage() -> None:
       기존 모델을 로드합니다. From~To·단일일 모두 장 마감 확정 T 에 대해
       rebuild_learning(미예측 급등·고예측 실패 원인 태그)·market_theme_flow·
       prediction_gap_rollup 을 breakout_train_snapshot.json 에 병합합니다.
-      단일일 ``YYYYMMDD`` 는 freeze 가 있으면 14:30 예측 후보를 유지한 채 actual·테마·학습 진단을 갱신.
+      단일일 ``YYYYMMDD`` 는 freeze 가 있으면 14:30 예측 후보를 유지한 채 학습 진단만 갱신합니다.
+      **HTML 리포트(report_*.html)는 쓰지 않습니다** — 리포트는 플래그 없이 실행하세요.
   (플래그 없음) From~To
       각 T 에 prediction_freeze_by_t.json 이 있으면 예측 후보 재사용(실제·테마·누적만 갱신).
       없는 T 만 신규 예측 후 freeze 저장.
@@ -134,7 +134,7 @@ def _print_usage() -> None:
       (일반 From~To 는 기본적으로 freeze 재사용)
 
   예: python main.py 20260701 20260706
-  예: python main.py --append-rebuild-learning --no-report-expand 20260701 20260706
+  예: python main.py --append-rebuild-learning 20260701 20260706
 """
     )
 def _open_report_outputs(html_paths: Sequence[Path]) -> None:

@@ -108,7 +108,7 @@ python main.py --weekly
 | *(기본)* | `breakout_train_snapshot.json` 재사용, 미반영 캘린더만 병합 |
 | `--no-train-snapshot` | 스냅샷 없이 매번 `train_events` 전체 재계산 |
 | `--rebuild-train-snapshot` | `train_events` **전체 재계산** + ML **재학습** + **From~To 안** 예측·freeze·`rebuild_learning` 갱신 |
-| `--append-rebuild-learning` | ML joblib **재사용**, **마지막 `train_events` 이후~`end_date` 급등 이벤트 증분 병합**, From~To 예측·freeze·`rebuild_learning` |
+| `--append-rebuild-learning` | ML joblib **재사용**, **마지막 `train_events` 이후~`end_date` 급등 이벤트 증분 병합**, From~To 예측·freeze·`rebuild_learning` — **HTML 리포트는 쓰지 않음** |
 | `--no-report-expand` | 구간 실행 시 기존 월간 HTML 날짜 **자동 추가 안 함** (인자 일수만) |
 
 **예측 고정 캐시 (`prediction_freeze_by_t.json`) — `python main.py From To` 구간 실행 시**
@@ -119,10 +119,10 @@ python main.py --weekly
 | 구간 밖 (리포트 병합일 등) | 캐시가 있으면 **재사용** |
 | 단일일 / `--weekly` | 캐시가 있으면 **재사용** (기본 동작) |
 
-**갭 채우기 예 (10거래일, ML 반영, 리포트 병합 없음):**
+**갭 채우기 예 (10거래일, ML 반영, 학습 진단만·리포트 없음):**
 
 ```bash
-python main.py --append-rebuild-learning --no-report-expand 20260516 20260601
+python main.py --append-rebuild-learning 20260516 20260601
 ```
 
 **전체 초기화·ML 재학습:**

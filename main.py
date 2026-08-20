@@ -9,6 +9,7 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
     → 거래일 14:30·15:30·16:00 자동 실행: scripts/run_daily_1430_email.ps1,
       scripts/run_daily_1530_email.ps1, scripts/run_daily_1600_append.ps1
       (등록 예: scripts/register_daily_email_tasks.ps1)
+      16:00 은 --append-rebuild-learning 으로 학습 스냅샷만 갱신(리포트 HTML 미작성).
 
   python main.py 20260401
     → 관측일 T=2026-04-01(거래일), 기준일 N=T 직전 거래일.
@@ -158,6 +159,13 @@ def main() -> None:
         test_range_label = (
             f"{rs} ~ {re} (데이터·거래일: {end_date}까지)" if rs and re else f"{test_start} ~ {end_date}"
         )
+        if snap_mode == "append_learning":
+            print(
+                "--append-rebuild-learning: 학습 스냅샷·rebuild_learning 만 갱신"
+                " (HTML 리포트는 쓰지 않음).",
+                flush=True,
+            )
+            return
         merge_monthly = "--no-report-expand" not in sys.argv[1:]
         out_files = render_monthly_batch(
             po,
@@ -205,7 +213,8 @@ def main() -> None:
             print(
                 "--append-rebuild-learning: ML joblib 재사용, "
                 "마지막 train_events 이후 급등 이벤트 증분 병합 + "
-                f"거래일 {len(test_days)}일 예측·freeze·rebuild_learning 병합.",
+                f"거래일 {len(test_days)}일 예측·freeze·rebuild_learning 병합 "
+                "(HTML 리포트는 쓰지 않음).",
                 flush=True,
             )
 
@@ -231,6 +240,13 @@ def main() -> None:
             omit_target_calendar_days=omit_t_cal,
             respect_prediction_freeze=use_freeze,
         )
+        if snap_mode == "append_learning":
+            print(
+                f"완료: 학습 진단 병합만 수행 (리포트 HTML 생략, "
+                f"거래일 {len(po.day_reports)}일).",
+                flush=True,
+            )
+            return
         test_range_label = (
             f"{d_from.isoformat()} ~ {d_to.isoformat()} "
             f"(거래일만 · OHLCV/뉴스 조회 기준일 {today}까지, 리포트 범위는 {end_date}까지)"
@@ -310,7 +326,8 @@ def main() -> None:
         print(
             f"--append-rebuild-learning: T={t_day.isoformat()} - "
             "예측 고정 캐시가 있으면 14:30 예측 후보를 유지하고, "
-            "실제 상승률·테마·rebuild_learning(미스 진단) 병합 저장합니다.",
+            "rebuild_learning(미스 진단)만 스냅샷에 병합합니다 "
+            "(HTML 리포트는 쓰지 않음).",
             flush=True,
         )
 
@@ -334,10 +351,18 @@ def main() -> None:
         actual_t = po.day_reports[0].trading_day
         print(
             f"관측일 보정: 계산된 T={t_day.isoformat()} 대신 "
-            f"리포트 데이터 T={actual_t.isoformat()} 를 사용합니다.",
+            f"파이프라인 T={actual_t.isoformat()} 를 사용합니다.",
             flush=True,
         )
         t_day = actual_t
+
+    if snap_mode == "append_learning":
+        print(
+            f"완료: 학습 진단 병합만 수행 "
+            f"(N={n_day.isoformat()} → T={t_day.isoformat()}, 리포트 HTML 생략).",
+            flush=True,
+        )
+        return
 
     meta_compact = {
         "train_range": (

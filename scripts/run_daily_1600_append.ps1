@@ -1,11 +1,12 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  KRX 거래일 16:00 — 장마감된 당일(T=오늘) 확정 (main.py --append-rebuild-learning YYYYMMDD).
+  KRX 거래일 16:00 — 장마감된 당일(T=오늘) 학습 진단 병합
+  (main.py --append-rebuild-learning YYYYMMDD, 리포트 HTML 미작성).
 
 .DESCRIPTION
-  - 15:30 선행 lock 종료 후, 당일 관측 블록을 actual·테마로 확정 후 이메일 발송.
-  - 고·중 확신 없는 none-tier 더미는 신규 freeze에 채우지 않음.
+  - 15:30 선행 lock 종료 후, rebuild_learning·스냅샷만 갱신하고 이메일을 발송합니다.
+  - 리포트 HTML 은 첨부하지 않습니다(15:30에서 이미 갱신·발송).
   - 스케줄러: MoneyKRX_Daily1600_Append
 #>
 param(

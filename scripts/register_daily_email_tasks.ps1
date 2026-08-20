@@ -1,8 +1,8 @@
 # 작업 스케줄러에 거래일 14:30 / 15:30 / 16:00 리포트 등록
 #
 # - 매일 14:30: N→N+1 예측 + 이메일
-# - 매일 15:30: 장마감 직후 actual·테마 갱신 + 이메일
-# - 매일 16:00: main.py --append-rebuild-learning YYYYMMDD (T=오늘 확정) + 이메일
+# - 매일 15:30: 장마감 직후 리포트(actual·테마) 갱신 + 이메일
+# - 매일 16:00: main.py --append-rebuild-learning YYYYMMDD (학습 진단만, 리포트 미작성·미첨부) + 이메일
 # - 토·일·공휴일은 스크립트가 즉시 종료(exit 0)
 # - PowerShell 창 없이 pythonw.exe 로 실행 (콘솔 클릭으로 멈추는 문제 방지)
 #
