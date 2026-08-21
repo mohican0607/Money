@@ -116,7 +116,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
         for (var i = 0; i < marketRadios.length; i++) {
           if (marketRadios[i].checked) marketSel = marketRadios[i].value;
         }
-        var riseSel = "high";
+        var riseSel = "all";
         for (var j = 0; j < riseRadios.length; j++) {
           if (riseRadios[j].checked) riseSel = riseRadios[j].value;
         }
@@ -1125,14 +1125,9 @@ __ACTUAL_RET_CELL_MACRO__
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
-  {% if forward_day %}
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 예측후보 전체</label>
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
-  {% else %}
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
-  {% endif %}
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
@@ -1803,14 +1798,9 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
-  {% if forward_day %}
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 예측후보 전체</label>
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
-  {% else %}
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
-  {% endif %}
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
@@ -2470,14 +2460,9 @@ _DATED_N_TEMPLATE = r"""
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
-  {% if forward_day %}
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 예측후보 전체</label>
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
-  {% else %}
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
-  {% endif %}
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}

@@ -81,12 +81,17 @@ def _smtp_auth_hint(exc: BaseException) -> str:
     return ""
 
 
-def _ensure_env_defaults() -> None:
+def _ensure_env_defaults(*, slot: str | None = None) -> None:
     os.environ.setdefault("MOCK_NEWS", "0")
     os.environ.setdefault("PYTHONUTF8", "1")
     os.environ.setdefault("NO_AUTO_OPEN_OUTPUT", "1")
     os.environ.setdefault("ML_REUSE_PRIOR_FOR_FORWARD", "1")
-    os.environ.setdefault("PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD", "0")
+    # 14:30: 장중이라 과거 「예측 전용」 백필을 끄고 N+1 예측만.
+    # 15:30·16:00: 장후이므로 마감된 미갱신 일자(예: 당일 T)를 자동 확정 갱신.
+    if slot == "1430":
+        os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] = "0"
+    elif slot in ("1530", "1600"):
+        os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] = "1"
     if not os.environ.get("MONEY_TEMP_DIR") and Path("F:/").exists():
         os.environ["MONEY_TEMP_DIR"] = r"F:\temp\Money\tmp"
     if not os.environ.get("MONEY_CACHE_DIR") and Path("F:/").exists():
@@ -508,11 +513,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    _ensure_env_defaults()
+    _ensure_env_defaults(slot=args.slot)
 
     from src import config
     from src import trading_calendar
     from src.pipeline.early_validate import current_n_and_n_plus_one
+
+    # config 가 이미 import 된 프로세스에서도 슬롯별 보강 플래그를 반영.
+    config.PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD = (
+        os.getenv("PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD", "1").strip().lower()
+        in ("1", "true", "True", "yes")
+    )
 
     log_lines: list[str] = [f"slot={args.slot} skip_email={args.skip_email}", "status=started"]
     _append_run_log(log_lines)

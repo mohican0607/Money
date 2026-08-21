@@ -327,6 +327,8 @@ def preserved_day_section_is_stale_forward_observation(
     월간 병합으로 유지된 일자 블록이 장 마감 후에도 예측 전용 UI로 남아 있으면 True.
 
     (예: 6/30 실행으로 미래일 T=7/1 이 예측 전용으로 저장된 뒤, 7/2 에 7/2 만 재실행)
+
+    「예측 근거」 열은 확정 UI에도 있으므로 stale 판별에 쓰지 않습니다.
     """
     if not trading_calendar.is_trading_day(t_day):
         return False
@@ -337,8 +339,6 @@ def preserved_day_section_is_stale_forward_observation(
     if "day-forward-obs" in html:
         return True
     if re.search(r"예측\s*전용\s*</span>", html):
-        return True
-    if re.search(r"<th[^>]*>예측\s*근거</th>", html):
         return True
     return False
 

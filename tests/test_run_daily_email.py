@@ -1,6 +1,7 @@
 """scripts/run_daily_email.py — 제목·경로 헬퍼."""
 from __future__ import annotations
 
+import os
 import sys
 from datetime import date
 from pathlib import Path
@@ -21,7 +22,16 @@ from scripts.run_daily_email import (
 )
 
 
-def test_expected_monthly_report_path() -> None:
+def test_ensure_env_defaults_slot_supplement_flag(monkeypatch) -> None:
+    monkeypatch.delenv("PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD", raising=False)
+    from scripts.run_daily_email import _ensure_env_defaults
+
+    _ensure_env_defaults(slot="1430")
+    assert os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] == "0"
+    _ensure_env_defaults(slot="1530")
+    assert os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] == "1"
+    _ensure_env_defaults(slot="1600")
+    assert os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] == "1"
     t = date(2026, 8, 7)
     assert _expected_monthly_report_path(t).name == "report_2026.08.html"
 

@@ -26,9 +26,9 @@ Set-Location -LiteralPath $RepoRoot
 
 $env:MOCK_NEWS = "0"
 $env:PYTHONUTF8 = "1"
-# 장후 N+1 예측: 학습·과거일 백필로 실행 시간을 늘리지 않음
+# 장후 N+1 예측 + 마감된 「예측 전용」 일자 확정 갱신
 $env:ML_REUSE_PRIOR_FOR_FORWARD = "1"
-$env:PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD = "0"
+$env:PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD = "1"
 if (-not $env:MONEY_TEMP_DIR) { $env:MONEY_TEMP_DIR = "F:\temp\Money\tmp" }
 if (-not $env:MONEY_CACHE_DIR) { $env:MONEY_CACHE_DIR = "F:\temp\Money\cache" }
 $env:TEMP = $env:MONEY_TEMP_DIR
