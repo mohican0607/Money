@@ -66,6 +66,20 @@ def _append_run_log(lines: list[str]) -> Path:
     return path
 
 
+def _format_elapsed_line(elapsed_sec: float) -> str:
+    """슬롯 전체 소요시간 — ``소요시간: 24분 33초``."""
+    total_s = max(0, int(round(elapsed_sec)))
+    minutes, seconds = divmod(total_s, 60)
+    return f"소요시간: {minutes}분 {seconds:02d}초"
+
+
+def _append_elapsed(log_lines: list[str], started: float) -> None:
+    """이메일 완료(또는 종료) 다음 행에 소요시간을 붙인다."""
+    line = _format_elapsed_line(time.perf_counter() - started)
+    log_lines.append(line)
+    print(line, flush=True)
+
+
 def _smtp_auth_hint(exc: BaseException) -> str:
     msg = str(exc).lower()
     if "authentication" in msg or "535" in msg:
@@ -112,6 +126,26 @@ def _python_exe() -> Path:
     if venv.is_file():
         return venv
     return Path(sys.executable)
+
+
+def _main_py_cmd(*, slot: str, n_day: date | None = None) -> list[str]:
+    """슬롯별 ``main.py`` 실행 argv."""
+    cmd = [str(_python_exe()), str(ROOT / "main.py")]
+    if slot == "1600":
+        assert n_day is not None
+        cmd.extend(["--append-rebuild-learning", n_day.strftime("%Y%m%d")])
+    return cmd
+
+
+def _format_cmd_line(cmd: list[str]) -> str:
+    """경로에 공백이 있으면 따옴표로 감싼 한 줄 명령."""
+    parts: list[str] = []
+    for p in cmd:
+        if any(ch.isspace() for ch in p):
+            parts.append(f'"{p}"')
+        else:
+            parts.append(p)
+    return " ".join(parts)
 
 
 def _check_trading_day_exit() -> int:
@@ -244,13 +278,7 @@ def _run_main_py(
     Returns:
         (exit_code, combined_log, status) — status: ok | timeout | error
     """
-    py = _python_exe()
-    main_py = ROOT / "main.py"
-    cmd = [str(py), str(main_py)]
-    if slot == "1600":
-        # 장마감된 당일(T=오늘) 학습 진단 병합만 — 리포트 HTML 은 쓰지 않음.
-        assert n_day is not None
-        cmd.extend(["--append-rebuild-learning", n_day.strftime("%Y%m%d")])
+    cmd = _main_py_cmd(slot=slot, n_day=n_day)
     # 15:30: 플래그 없이 main.py → N→T=N+1 리포트 갱신(확정 반영).
     # --append-rebuild-learning 은 리포트를 쓰지 않으므로 여기선 붙이지 않음.
     slot_lock: Path | None = None
@@ -400,6 +428,7 @@ def _build_email_body(
     dated_path: Path | None,
     monthly_path: Path | None,
     extra_notes: list[str] | None = None,
+    command_line: str | None = None,
 ) -> str:
     label = SLOT_LABELS.get(slot, slot)
     if run_status == _RUN_STATUS_TIMEOUT:
@@ -413,7 +442,10 @@ def _build_email_body(
     else:
         status_line = f"실행 결과: 실패 (main.py exit={main_exit})"
 
+    cmd = command_line or _format_cmd_line(_main_py_cmd(slot=slot, n_day=n_day))
     lines = [
+        f"실행 명령: {cmd}",
+        "",
         f"Money KRX 예측 리포트 ({label} 스케줄)",
         f"기준일 N: {n_day.isoformat()}",
         f"관측일 T (N+1): {t_day.isoformat()}",
@@ -512,6 +544,7 @@ def main(argv: list[str] | None = None) -> int:
         help="main.py 만 실행하고 이메일은 보내지 않음",
     )
     args = parser.parse_args(argv)
+    started = time.perf_counter()
 
     _ensure_env_defaults(slot=args.slot)
 
@@ -531,6 +564,7 @@ def main(argv: list[str] | None = None) -> int:
     check_code = _check_trading_day_exit()
     if check_code != 0:
         log_lines.append(f"거래일 검사 종료 code={check_code}")
+        _append_elapsed(log_lines, started)
         _append_run_log(log_lines)
         return 0 if check_code in (2, 3, 4) else check_code
 
@@ -570,6 +604,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(msg, flush=True)
                 log_lines.append(msg)
+                _append_elapsed(log_lines, started)
                 _append_run_log(log_lines)
                 return 0
 
@@ -605,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
                     log_lines.append(f"스냅샷: {snap.name}")
 
         if args.skip_email:
+            _append_elapsed(log_lines, started)
             _append_run_log(log_lines)
             if run_status == _RUN_STATUS_TIMEOUT:
                 return 124
@@ -622,6 +658,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(msg, file=sys.stderr if not sent else sys.stdout, flush=True)
         log_lines.append(msg)
+        _append_elapsed(log_lines, started)
         _append_run_log(log_lines)
 
         if run_status == _RUN_STATUS_TIMEOUT:
@@ -657,6 +694,7 @@ def main(argv: list[str] | None = None) -> int:
             print(msg, file=sys.stderr if not sent else sys.stdout, flush=True)
             log_lines.append(msg)
 
+        _append_elapsed(log_lines, started)
         _append_run_log(log_lines)
         return 1
 

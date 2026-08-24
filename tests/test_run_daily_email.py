@@ -13,6 +13,7 @@ from scripts.run_daily_email import (
     _email_attachment_paths,
     _expected_dated_report_path,
     _expected_monthly_report_path,
+    _format_elapsed_line,
     _is_slot_report_snapshot,
     _run_main_py,
     _send_run_email,
@@ -20,6 +21,13 @@ from scripts.run_daily_email import (
     _RUN_STATUS_OK,
     _RUN_STATUS_TIMEOUT,
 )
+
+
+def test_format_elapsed_line() -> None:
+    assert _format_elapsed_line(0) == "소요시간: 0분 00초"
+    assert _format_elapsed_line(33) == "소요시간: 0분 33초"
+    assert _format_elapsed_line(24 * 60 + 33) == "소요시간: 24분 33초"
+    assert _format_elapsed_line(90 * 60 + 5.4) == "소요시간: 90분 05초"
 
 
 def test_ensure_env_defaults_slot_supplement_flag(monkeypatch) -> None:
@@ -156,6 +164,23 @@ def test_run_main_py_quick_exit(monkeypatch, tmp_path: Path) -> None:
     assert "ok" in log
 
 
+def test_build_email_body_1430_starts_with_command() -> None:
+    body = _build_email_body(
+        slot="1430",
+        n_day=date(2026, 8, 21),
+        t_day=date(2026, 8, 24),
+        main_exit=0,
+        run_status=_RUN_STATUS_OK,
+        log_text="ok",
+        dated_path=Path("output/report_dated_by_0824.html"),
+        monthly_path=Path("output/report_2026.08.html"),
+    )
+    first = body.splitlines()[0]
+    assert first.startswith("실행 명령:")
+    assert "main.py" in first
+    assert "--append-rebuild-learning" not in first
+
+
 def test_build_email_body_1600_skips_report_notes() -> None:
     body = _build_email_body(
         slot="1600",
@@ -170,6 +195,8 @@ def test_build_email_body_1600_skips_report_notes() -> None:
     assert "첨부: 없음" in body
     assert "일별 리포트" not in body
     assert "월간 리포트" not in body
+    assert body.startswith("실행 명령:")
+    assert "--append-rebuild-learning 20260820" in body.splitlines()[0]
 
 
 def test_send_run_email_1430_skips_slot_snapshots(monkeypatch, tmp_path: Path) -> None:
