@@ -128,12 +128,24 @@ def _python_exe() -> Path:
     return Path(sys.executable)
 
 
-def _main_py_cmd(*, slot: str, n_day: date | None = None) -> list[str]:
-    """슬롯별 ``main.py`` 실행 argv."""
+def _main_py_cmd(
+    *,
+    slot: str,
+    n_day: date | None = None,
+    t_day: date | None = None,
+) -> list[str]:
+    """슬롯별 ``main.py`` 실행 argv.
+
+    - 14:30 / 15:30: ``main.py N N+1`` (관측일 구간 From=N, To=T)
+    - 16:00: ``main.py --append-rebuild-learning N``
+    """
     cmd = [str(_python_exe()), str(ROOT / "main.py")]
     if slot == "1600":
         assert n_day is not None
         cmd.extend(["--append-rebuild-learning", n_day.strftime("%Y%m%d")])
+    elif slot in ("1430", "1530"):
+        assert n_day is not None and t_day is not None
+        cmd.extend([n_day.strftime("%Y%m%d"), t_day.strftime("%Y%m%d")])
     return cmd
 
 
@@ -271,6 +283,7 @@ def _run_main_py(
     *,
     slot: str,
     n_day: date | None = None,
+    t_day: date | None = None,
 ) -> tuple[int | None, str, str]:
     """
     main.py 실행. stdout/stderr 는 임시 파일로 받아 파이프 교착을 피합니다.
@@ -278,9 +291,7 @@ def _run_main_py(
     Returns:
         (exit_code, combined_log, status) — status: ok | timeout | error
     """
-    cmd = _main_py_cmd(slot=slot, n_day=n_day)
-    # 15:30: 플래그 없이 main.py → N→T=N+1 리포트 갱신(확정 반영).
-    # --append-rebuild-learning 은 리포트를 쓰지 않으므로 여기선 붙이지 않음.
+    cmd = _main_py_cmd(slot=slot, n_day=n_day, t_day=t_day)
     slot_lock: Path | None = None
     if slot == "1430":
         slot_lock = _LOCK_1430
@@ -429,6 +440,7 @@ def _build_email_body(
     monthly_path: Path | None,
     extra_notes: list[str] | None = None,
     command_line: str | None = None,
+    main_n_day: date | None = None,
 ) -> str:
     label = SLOT_LABELS.get(slot, slot)
     if run_status == _RUN_STATUS_TIMEOUT:
@@ -442,7 +454,13 @@ def _build_email_body(
     else:
         status_line = f"실행 결과: 실패 (main.py exit={main_exit})"
 
-    cmd = command_line or _format_cmd_line(_main_py_cmd(slot=slot, n_day=n_day))
+    if command_line:
+        cmd = command_line
+    elif slot == "1600":
+        append_day = main_n_day if main_n_day is not None else n_day
+        cmd = _format_cmd_line(_main_py_cmd(slot=slot, n_day=append_day))
+    else:
+        cmd = _format_cmd_line(_main_py_cmd(slot=slot, n_day=n_day, t_day=t_day))
     lines = [
         f"실행 명령: {cmd}",
         "",
@@ -483,6 +501,8 @@ def _send_run_email(
     dated_path: Path | None,
     monthly_path: Path | None,
     extra_notes: list[str] | None = None,
+    command_line: str | None = None,
+    main_n_day: date | None = None,
 ) -> tuple[bool, str]:
     from src import config
     from src.notify.email_report import email_configured, parse_recipients, send_report_email
@@ -512,6 +532,8 @@ def _send_run_email(
         dated_path=dated_path,
         monthly_path=monthly_path,
         extra_notes=extra_notes,
+        command_line=command_line,
+        main_n_day=main_n_day,
     )
     attachments = _email_attachment_paths(
         slot=slot, dated_path=dated_path, monthly_path=monthly_path
@@ -589,6 +611,14 @@ def main(argv: list[str] | None = None) -> int:
     print(header, flush=True)
     log_lines.append(header)
 
+    if args.slot == "1600":
+        main_cmd_line = _format_cmd_line(_main_py_cmd(slot=args.slot, n_day=n_day))
+    else:
+        main_cmd_line = _format_cmd_line(
+            _main_py_cmd(slot=args.slot, n_day=n_day, t_day=t_day)
+        )
+    log_lines.append(f"cmd={main_cmd_line}")
+
     main_exit: int | None = None
     log_text = ""
     run_status = _RUN_STATUS_OK
@@ -615,8 +645,15 @@ def main(argv: list[str] | None = None) -> int:
                 f"main.py args=--append-rebuild-learning {n_day.strftime('%Y%m%d')} "
                 "(학습 진단만, 리포트 HTML 생략)"
             )
+        else:
+            log_lines.append(
+                f"main.py args={n_day.strftime('%Y%m%d')} {t_day.strftime('%Y%m%d')}"
+            )
         main_exit, log_text, run_status = _run_main_py(
-            timeout_sec, slot=args.slot, n_day=n_day if args.slot == "1600" else None
+            timeout_sec,
+            slot=args.slot,
+            n_day=n_day,
+            t_day=t_day if args.slot != "1600" else None,
         )
         log_lines.append(f"main.py exit={main_exit} status={run_status}")
 
@@ -655,6 +692,8 @@ def main(argv: list[str] | None = None) -> int:
             log_text=log_text,
             dated_path=dated_path,
             monthly_path=monthly_path,
+            command_line=main_cmd_line,
+            main_n_day=n_day if args.slot == "1600" else None,
         )
         print(msg, file=sys.stderr if not sent else sys.stdout, flush=True)
         log_lines.append(msg)
@@ -690,6 +729,8 @@ def main(argv: list[str] | None = None) -> int:
                 dated_path=dated_path,
                 monthly_path=monthly_path,
                 extra_notes=[f"스크립트 예외: {exc}"],
+                command_line=main_cmd_line,
+                main_n_day=n_day if args.slot == "1600" else None,
             )
             print(msg, file=sys.stderr if not sent else sys.stdout, flush=True)
             log_lines.append(msg)

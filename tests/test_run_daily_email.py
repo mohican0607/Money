@@ -158,7 +158,12 @@ def test_run_main_py_quick_exit(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("scripts.run_daily_email._python_exe", lambda: Path(sys.executable))
     (tmp_path / "main.py").write_text("print('ok')\n", encoding="utf-8")
 
-    code, log, status = _run_main_py(timeout_sec=30, slot="1430")
+    code, log, status = _run_main_py(
+        timeout_sec=30,
+        slot="1430",
+        n_day=date(2026, 8, 21),
+        t_day=date(2026, 8, 24),
+    )
     assert status == _RUN_STATUS_OK
     assert code == 0
     assert "ok" in log
@@ -178,6 +183,8 @@ def test_build_email_body_1430_starts_with_command() -> None:
     first = body.splitlines()[0]
     assert first.startswith("실행 명령:")
     assert "main.py" in first
+    assert "20260821" in first
+    assert "20260824" in first
     assert "--append-rebuild-learning" not in first
 
 
@@ -191,12 +198,14 @@ def test_build_email_body_1600_skips_report_notes() -> None:
         log_text="ok",
         dated_path=Path("output/report_dated_by_0820.html"),
         monthly_path=Path("output/report_2026.08.html"),
+        main_n_day=date(2026, 8, 20),
     )
     assert "첨부: 없음" in body
     assert "일별 리포트" not in body
     assert "월간 리포트" not in body
-    assert body.startswith("실행 명령:")
-    assert "--append-rebuild-learning 20260820" in body.splitlines()[0]
+    first = body.splitlines()[0]
+    assert first.startswith("실행 명령:")
+    assert "--append-rebuild-learning 20260820" in first
 
 
 def test_send_run_email_1430_skips_slot_snapshots(monkeypatch, tmp_path: Path) -> None:
@@ -294,7 +303,13 @@ def test_run_main_py_slot_args(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("scripts.run_daily_email._release_run_lock", lambda _p: None)
     (tmp_path / "main.py").write_text("pass\n", encoding="utf-8")
 
-    _run_main_py(timeout_sec=30, slot="1530")
+    _run_main_py(
+        timeout_sec=30,
+        slot="1530",
+        n_day=date(2026, 8, 21),
+        t_day=date(2026, 8, 24),
+    )
+    assert captured[-1][-2:] == ["20260821", "20260824"]
     assert "--append-rebuild-learning" not in captured[-1]
 
     _run_main_py(timeout_sec=30, slot="1600", n_day=date(2026, 8, 20))
