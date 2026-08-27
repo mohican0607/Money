@@ -69,6 +69,36 @@ def test_fallback_not_bare_theme_surge() -> None:
     )
     assert "테마 급등" not in pick.text
     assert "섬유" in pick.text
+    assert "미확인" not in pick.text
+    assert "원인 미확인" not in pick.text
+
+
+def test_fallback_never_unknown_without_theme() -> None:
+    pick = rc._fallback_reason(
+        name="동화기업",
+        theme="",
+        catalyst="",
+        keywords=[],
+        peers=[],
+        return_pct=30.0,
+        is_limit_up=True,
+    )
+    assert pick.text.strip()
+    assert "미확인" not in pick.text
+    assert "원인 미확인" not in pick.text
+
+
+def test_format_bullet_never_unknown() -> None:
+    html = rc._format_bullet_line("혜인", "원인 미확인", is_limit_up=True)
+    assert "미확인" not in html
+    assert "혜인" in html
+    html2 = rc._format_bullet_line(
+        "펩트론",
+        "생물공학 관련주 동반 강세(종목 직접 뉴스·공시 미확인)",
+        is_limit_up=True,
+    )
+    assert "미확인" not in html2
+    assert "생물공학" in html2
 
 
 def test_useless_date_fragment_rejected() -> None:

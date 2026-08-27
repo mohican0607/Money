@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -229,9 +230,47 @@ def _copy_slot_report_snapshot(
     return dest
 
 
-def _acquire_run_lock(path: Path) -> None:
+def _pid_is_running(pid: int) -> bool:
+    """프로세스가 살아 있는지(Windows 포함)."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            SYNCHRONIZE = 0x00100000
+            handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _acquire_run_lock(path: Path) -> bool:
+    """
+    슬롯 lock 획득. 다른 살아 있는 프로세스가 잡고 있으면 False.
+    죽은 pid 의 stale lock 은 덮어씁니다.
+    """
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        m = re.search(r"pid\s*=\s*(\d+)", text)
+        if m:
+            other = int(m.group(1))
+            if other != os.getpid() and _pid_is_running(other):
+                return False
     path.write_text(f"pid={os.getpid()}\n", encoding="utf-8")
+    return True
 
 
 def _release_run_lock(path: Path) -> None:
@@ -245,6 +284,14 @@ def _wait_for_run_lock(path: Path, *, label: str, max_wait_sec: int = _WAIT_PRIO
     """선행 슬롯 lock 이 풀릴 때까지 대기. 타임아웃 시 False."""
     if not path.is_file():
         return True
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"pid\s*=\s*(\d+)", text)
+        if m and not _pid_is_running(int(m.group(1))):
+            path.unlink(missing_ok=True)
+            return True
+    except OSError:
+        pass
     deadline = time.monotonic() + max_wait_sec
     while path.is_file():
         if time.monotonic() >= deadline:
@@ -254,6 +301,14 @@ def _wait_for_run_lock(path: Path, *, label: str, max_wait_sec: int = _WAIT_PRIO
             )
             return False
         time.sleep(30)
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            m = re.search(r"pid\s*=\s*(\d+)", text)
+            if m and not _pid_is_running(int(m.group(1))):
+                path.unlink(missing_ok=True)
+                return True
+        except OSError:
+            return True
     return True
 
 
@@ -298,7 +353,13 @@ def _run_main_py(
     elif slot == "1530":
         slot_lock = _LOCK_1530
     if slot_lock is not None:
-        _acquire_run_lock(slot_lock)
+        if not _acquire_run_lock(slot_lock):
+            msg = (
+                f"[run_daily_email] {SLOT_LABELS.get(slot, slot)} 이미 실행 중"
+                f"(lock={slot_lock.name}) — 중복 실행을 건너뜁니다.\n"
+            )
+            print(msg, flush=True)
+            return 1, msg, _RUN_STATUS_ERROR
     try:
         with tempfile.TemporaryDirectory(prefix="money_main_") as td:
             stdout_path = Path(td) / "stdout.txt"
@@ -330,14 +391,34 @@ def _run_main_py(
                         "프로세스를 강제 종료했습니다.\n"
                     )
                     print(combined, end="" if combined.endswith("\n") else "\n", flush=True)
+                    _persist_main_log(slot=slot, n_day=n_day, text=combined)
                     return None, combined, _RUN_STATUS_TIMEOUT
 
             combined = _read_log_files(stdout_path, stderr_path)
             print(combined, end="" if combined.endswith("\n") else "\n", flush=True)
-            return proc.returncode, combined, _RUN_STATUS_OK
+            _persist_main_log(slot=slot, n_day=n_day, text=combined)
+            code = proc.returncode
+            status = _RUN_STATUS_OK if code == 0 else _RUN_STATUS_ERROR
+            return code, combined, status
     finally:
         if slot_lock is not None:
             _release_run_lock(slot_lock)
+
+
+def _persist_main_log(*, slot: str, n_day: date | None, text: str) -> Path | None:
+    """main.py stdout/stderr 를 슬롯별 파일로 남겨 실패 원인을 추적."""
+    if not text.strip():
+        return None
+    _LOG_DIR.mkdir(parents=True, exist_ok=True)
+    day = n_day or datetime.now(KST).date()
+    path = _LOG_DIR / f"main_{slot}_{day.strftime('%Y%m%d')}.log"
+    try:
+        path.write_text(text, encoding="utf-8", errors="replace")
+        print(f"[run_daily_email] main 로그 저장: {path.name}", flush=True)
+        return path
+    except OSError as exc:
+        print(f"[run_daily_email] main 로그 저장 실패: {exc}", flush=True)
+        return None
 
 
 def _read_log_files(stdout_path: Path, stderr_path: Path) -> str:
@@ -553,6 +634,13 @@ def _send_run_email(
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.platform == "win32":
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (AttributeError, OSError, ValueError):
+                pass
+
     parser = argparse.ArgumentParser(description="거래일 N→N+1 main.py 실행 후 이메일 발송")
     parser.add_argument(
         "--slot",
@@ -675,6 +763,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if snap is not None:
                     log_lines.append(f"스냅샷: {snap.name}")
+            else:
+                log_lines.append(
+                    f"스냅샷 생략: main.py exit={main_exit} status={run_status} "
+                    "(월간 리포트가 갱신되지 않았을 수 있음)"
+                )
 
         if args.skip_email:
             _append_elapsed(log_lines, started)

@@ -277,6 +277,18 @@ def _is_thin_reason_text(text: str) -> bool:
     t = re.sub(r"\s+", " ", str(text or "").strip())
     if not t:
         return True
+    # 동반·테마 폴백 문구는 짧아도 표시용으로 인정
+    if any(
+        bit in t
+        for bit in (
+            "동반 급등",
+            "관련주 동반",
+            "이슈 급등",
+            "테마·수급",
+            "상한가권",
+        )
+    ):
+        return False
     if " — " in t:
         _head, tail = t.rsplit(" — ", 1)
         tail = tail.strip()
@@ -1105,6 +1117,54 @@ def _peer_names(
     return out[:3]
 
 
+def _compose_always_reason(
+    *,
+    name: str = "",
+    theme: str = "",
+    catalyst: str = "",
+    keywords: list[str] | None = None,
+    peers: list[str] | None = None,
+    return_pct: float = 0.0,
+    is_limit_up: bool = False,
+) -> str:
+    """
+    「원인 미확인」 없이 항상 표시용 근거 문구를 만듭니다.
+
+    뉴스·공시가 없어도 테마·동반·키워드·등락으로 채웁니다.
+    """
+    peers = [p for p in (peers or []) if str(p).strip()]
+    usable_kw = [
+        str(k).strip()
+        for k in (keywords or [])
+        if str(k).strip()
+        and str(k).lower() not in (name or "").strip().lower()
+        and (name or "").strip().lower() not in str(k).lower()
+        and str(k).lower() not in _GENERIC_CATALYSTS
+        and str(k) not in _THIN_REASON_TOKENS
+        and not _is_useless_reason_phrase(str(k))
+    ]
+    cat = str(catalyst or "").strip()
+    if cat and not _is_thin_reason_text(cat) and not _is_useless_reason_phrase(cat):
+        if theme and theme not in cat:
+            return f"{theme} — {cat}"
+        return cat
+    if theme and peers:
+        return f"{theme} 동반 급등({', '.join(peers[:3])})"
+    if theme and usable_kw:
+        return f"{theme} ({', '.join(usable_kw[:3])}) 관련 급등"
+    if peers:
+        return f"동반 급등({', '.join(peers[:3])})"
+    if theme:
+        return f"{theme} 관련주 동반 급등"
+    if usable_kw:
+        return f"{', '.join(usable_kw[:3])} 이슈 급등"
+    if is_limit_up or return_pct >= 29:
+        return "테마·수급 동반 상한가권 급등"
+    if return_pct > 0:
+        return f"테마·수급 동반 +{return_pct:.1f}% 급등"
+    return "테마·수급 동반 급등"
+
+
 def _fallback_reason(
     *,
     name: str,
@@ -1115,48 +1175,27 @@ def _fallback_reason(
     return_pct: float,
     is_limit_up: bool,
 ) -> _ReasonPick:
-    """뉴스·공시 매칭 실패 시 테마·키워드·동반 급등·등락률 순 폴백."""
-    if catalyst:
-        if theme and theme not in catalyst:
-            text = f"{theme} — {catalyst}"
-        else:
-            text = catalyst
-        return _ReasonPick(text=text, confidence=35, source="sector_catalyst")
-    usable_kw = [
-        k
-        for k in keywords
-        if str(k).strip()
-        and str(k).lower() not in (name or "").strip().lower()
-        and (name or "").strip().lower() not in str(k).lower()
-        and str(k).lower() not in _GENERIC_CATALYSTS
-    ]
-    if theme and peers:
-        peer_bit = f"{theme} 동반 급등({', '.join(peers)} 등)"
-        if usable_kw:
-            return _ReasonPick(
-                text=f"{peer_bit}, 이슈 키워드 {', '.join(usable_kw[:2])}",
-                confidence=30,
-                source="peers",
-            )
-        return _ReasonPick(text=peer_bit, confidence=28, source="peers")
-    if usable_kw:
-        kw = ", ".join(usable_kw[:3])
-        label = theme or "테마"
-        return _ReasonPick(
-            text=f"{label} ({kw}) 이슈",
-            confidence=24,
-            source="keywords",
-        )
-    if theme:
-        # 구체 이슈 없이 테마명만 있으면 원인 미확인에 가깝게 표시
-        return _ReasonPick(
-            text=f"{theme} 관련주 동반 강세(종목 직접 뉴스·공시 미확인)",
-            confidence=16,
-            source="theme_only",
-        )
-    if is_limit_up:
-        return _ReasonPick(text="원인 미확인", confidence=5, source="unknown")
-    return _ReasonPick(text="", confidence=0, source="unknown")
+    """뉴스·공시 매칭 실패 시에도 「원인 미확인」 없이 테마·동반·키워드로 채움."""
+    text = _compose_always_reason(
+        name=name,
+        theme=theme,
+        catalyst=catalyst,
+        keywords=keywords,
+        peers=peers,
+        return_pct=return_pct,
+        is_limit_up=is_limit_up,
+    )
+    if catalyst and catalyst in text:
+        conf, src = 35, "sector_catalyst"
+    elif theme and peers and any(p in text for p in peers):
+        conf, src = 28, "peers"
+    elif keywords and any(str(k) in text for k in keywords):
+        conf, src = 24, "keywords"
+    elif theme:
+        conf, src = 18, "theme_only"
+    else:
+        conf, src = 12, "market_flow"
+    return _ReasonPick(text=text, confidence=conf, source=src)
 
 
 _DIRECT_REASON_SOURCES = frozenset(
@@ -1253,15 +1292,25 @@ def _synthesize_reason_pick(
             sources.append("peers")
 
     if not parts:
-        if fallback.text and not _is_thin_reason_text(fallback.text):
-            return fallback
-        if theme:
+        if fallback.text and "원인 미확인" not in fallback.text and fallback.text.strip():
+            if not _is_thin_reason_text(fallback.text):
+                return fallback
+            # thin 이어도 테마명만 있으면 동반 급등으로 확장
             return _ReasonPick(
-                text=f"{theme} 관련주 동반 강세(종목 직접 뉴스·공시 미확인)",
-                confidence=16,
-                source="theme_only",
+                text=_compose_always_reason(
+                    name=name,
+                    theme=theme or fallback.text,
+                    peers=peers,
+                    is_limit_up=True,
+                ),
+                confidence=max(fallback.confidence, 14),
+                source=fallback.source or "theme_only",
             )
-        return fallback
+        return _ReasonPick(
+            text=_compose_always_reason(name=name, theme=theme, peers=peers, is_limit_up=True),
+            confidence=16,
+            source="theme_only",
+        )
 
     text = ". ".join(parts[:3])
     conf = max(p.confidence for p in usable[:3]) if usable else fallback.confidence
@@ -1433,19 +1482,43 @@ def _reason_for_stock(
     )
 
 
-def _format_bullet_line(name: str, reason: str, *, is_limit_up: bool) -> str:
-    """종목명 + 이유 한 줄 ``<li>`` HTML."""
-    r = _shorten(reason.strip(), max_len=_REASON_MAX)
+def _ensure_display_reason(
+    reason: str,
+    *,
+    name: str = "",
+    is_limit_up: bool = False,
+) -> str:
+    """표시 직전에 「원인 미확인」·빈 문구를 금지하고 짧은 테마명은 동반 급등으로 확장."""
+    r = re.sub(r"\s+", " ", str(reason or "").strip())
     if " — " in r:
         head, tail = r.rsplit(" — ", 1)
         if _is_useless_reason_phrase(tail, name=name) or _is_thin_reason_text(tail):
             r = head.strip()
-    if _is_useless_reason_phrase(r, name=name) or _is_thin_reason_text(r):
-        r = "원인 미확인" if is_limit_up else ""
-    if is_limit_up and r and "상한" not in r and r != "원인 미확인":
+    # 「미확인」 꼬리만 제거하고 테마·동반 맥락은 유지
+    r = re.sub(r"\(?\s*종목\s*직접\s*뉴스[·⋅･]?공시\s*미확인\s*\)?", "", r)
+    r = re.sub(r"원인\s*미확인", "", r)
+    r = re.sub(r"미확인", "", r)
+    r = re.sub(r"\s+", " ", r).strip(" ·,.-")
+    r = r.replace("관련주 동반 강세", "관련주 동반 급등")
+    if not r or _is_useless_reason_phrase(r, name=name):
+        return _compose_always_reason(name=name, is_limit_up=is_limit_up)
+    if _is_thin_reason_text(r):
+        # 「건설」「핸드셋」처럼 테마명만 남은 경우
+        if "동반" not in r and "급등" not in r and "이슈" not in r and "테마" not in r:
+            return f"{r} 관련주 동반 급등"
+        return r
+    return r
+
+
+def _format_bullet_line(name: str, reason: str, *, is_limit_up: bool) -> str:
+    """종목명 + 이유 한 줄 ``<li>`` HTML."""
+    r = _ensure_display_reason(
+        _shorten(reason.strip(), max_len=_REASON_MAX),
+        name=name,
+        is_limit_up=is_limit_up,
+    )
+    if is_limit_up and r and "상한" not in r:
         r = f"{r} · 상한가"
-    if not r:
-        return ""
     return (
         f'<li style="margin-bottom:6px;line-height:1.5">'
         f"<strong>{_esc(name)}</strong>: {_esc(r)}</li>"
@@ -1657,17 +1730,36 @@ def _stock_reason_text(
         return_pct=return_pct,
         is_limit_up=is_limit_up,
     )
-    r = _shorten(pick.text.strip(), max_len=_REASON_MAX)
-    if " — " in r:
-        head, tail = r.rsplit(" — ", 1)
-        if _is_useless_reason_phrase(tail, name=name) or _is_thin_reason_text(tail):
-            r = head.strip()
-    if _is_useless_reason_phrase(r, name=name) or _is_thin_reason_text(r):
-        r = "원인 미확인" if is_limit_up else ""
-    if is_limit_up and r and "상한" not in r and r != "원인 미확인":
+    r = _ensure_display_reason(
+        _shorten(pick.text.strip(), max_len=_REASON_MAX),
+        name=name,
+        is_limit_up=is_limit_up,
+    )
+    # 테마 라벨이 있으면 thin 폴백을 테마 기준으로 다시 채움
+    if (
+        theme_label
+        and (
+            r.startswith("테마·수급")
+            or "원인 미확인" in r
+            or _is_thin_reason_text(pick.text)
+        )
+    ):
+        theme, catalyst, _ = _sector_context(
+            flow_row, code=code, theme_label=theme_label
+        )
+        peers = _peer_names(flow_row, code=code, theme=theme)
+        r = _compose_always_reason(
+            name=name,
+            theme=theme or theme_label,
+            catalyst=catalyst,
+            keywords=_stock_specific_keywords(code, name, compare_row, early_rows),
+            peers=peers,
+            return_pct=return_pct,
+            is_limit_up=is_limit_up,
+        )
+        r = _shorten(r, max_len=_REASON_MAX)
+    if is_limit_up and r and "상한" not in r:
         r = f"{r} · 상한가"
-    if not r:
-        return "—"
     return _esc(r)
 
 
@@ -1834,8 +1926,7 @@ def format_day_mover_rationale_html(
     parts.append("</ul>")
     parts.append(
         '<p class="combo-tip-empty" style="margin:8px 0 0;font-size:0.72em;color:var(--muted)">'
-        "종목 뉴스·공시와 테마 뉴스·섹터 촉매를 묶어 종합 요약합니다. "
-        "직접 근거가 없으면 동반 급등·미확인으로 표시합니다.</p>"
+        "종목 뉴스·공시와 테마 뉴스·섹터 촉매·동반 급등을 묶어 종합 요약합니다.</p>"
     )
     return "".join(parts)
 

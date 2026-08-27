@@ -137,6 +137,30 @@ def test_build_email_subject_success() -> None:
     assert "14:30" in subj
 
 
+def test_acquire_run_lock_blocks_live_holder(tmp_path: Path, monkeypatch) -> None:
+    from scripts import run_daily_email as rde
+
+    lock = tmp_path / ".run_1530.lock"
+    lock.write_text("pid=999999\n", encoding="utf-8")
+    monkeypatch.setattr(rde, "_pid_is_running", lambda pid: pid == 999999)
+    assert rde._acquire_run_lock(lock) is False
+    monkeypatch.setattr(rde, "_pid_is_running", lambda pid: False)
+    assert rde._acquire_run_lock(lock) is True
+    assert "pid=" in lock.read_text(encoding="utf-8")
+
+
+def test_build_email_subject_failure_on_nonzero_exit() -> None:
+    subj = _build_email_subject(
+        prefix="[Money]",
+        n_day=date(2026, 8, 27),
+        t_day=date(2026, 8, 28),
+        slot_label="15:30",
+        run_status=_RUN_STATUS_OK,
+        main_exit=1,
+    )
+    assert "[실패]" in subj
+
+
 def test_build_email_subject_timeout() -> None:
     subj = _build_email_subject(
         prefix="[Money]",
@@ -299,7 +323,7 @@ def test_run_main_py_slot_args(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("scripts.run_daily_email.ROOT", tmp_path)
     monkeypatch.setattr("scripts.run_daily_email._python_exe", lambda: Path(sys.executable))
     monkeypatch.setattr("scripts.run_daily_email.subprocess.Popen", fake_popen)
-    monkeypatch.setattr("scripts.run_daily_email._acquire_run_lock", lambda _p: None)
+    monkeypatch.setattr("scripts.run_daily_email._acquire_run_lock", lambda _p: True)
     monkeypatch.setattr("scripts.run_daily_email._release_run_lock", lambda _p: None)
     (tmp_path / "main.py").write_text("pass\n", encoding="utf-8")
 
