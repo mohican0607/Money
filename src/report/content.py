@@ -19,7 +19,8 @@ from ..learning import market_theme as srl
 
 # --- rationale (from rationale.py) ---
 
-_REASON_MAX = 88
+# 종목별 「왜 올랐나」·근거 요약 — 뉴스·공시 종합 문장이 잘리지 않도록
+_REASON_MAX = 220
 
 _GENERIC_MATCH_KW = frozenset(
     {
@@ -49,6 +50,35 @@ _GENERIC_MATCH_KW = frozenset(
 
 _GENERIC_CATALYSTS = frozenset(
     {"따르면", "테마", "급등", "상한가", "코스피", "코스닥", "증시", "주가", "관련주"}
+)
+
+# 단독으로는 근거가 되지 않는 키워드(「테마 — 실적」 등)
+_THIN_REASON_TOKENS = frozenset(
+    {
+        "실적",
+        "계약",
+        "수주",
+        "공급",
+        "승인",
+        "허가",
+        "투자",
+        "기대",
+        "전망",
+        "강세",
+        "급등",
+        "테마",
+        "관련",
+        "이슈",
+        "호재",
+        "재료",
+        "수혜",
+        "부각",
+        "관심",
+        "상승",
+        "반등",
+        "기준",
+        "규모",
+    }
 )
 
 _CATALYST_EVENTS = (
@@ -235,7 +265,43 @@ def _usable_catalyst(raw: str) -> str:
     s = str(raw or "").strip()
     if len(s) < 2 or s.lower() in _GENERIC_CATALYSTS:
         return ""
+    if _is_useless_reason_phrase(s):
+        return ""
+    if s in _THIN_REASON_TOKENS or len(re.sub(r"\s+", "", s)) < 4:
+        return ""
     return s
+
+
+def _is_thin_reason_text(text: str) -> bool:
+    """「테마 — 실적」처럼 정보량이 부족한 근거 문구."""
+    t = re.sub(r"\s+", " ", str(text or "").strip())
+    if not t:
+        return True
+    if " — " in t:
+        _head, tail = t.rsplit(" — ", 1)
+        tail = tail.strip()
+        if tail in _THIN_REASON_TOKENS or _is_useless_reason_phrase(tail):
+            return True
+        if len(re.sub(r"\s+", "", tail)) < 6:
+            return True
+    core = re.sub(r"\s+", "", t)
+    if t in _THIN_REASON_TOKENS or core in _THIN_REASON_TOKENS:
+        return True
+    if len(core) < 8:
+        return True
+    return False
+
+
+def _reason_texts_overlap(a: str, b: str) -> bool:
+    """두 근거 문구가 실질적으로 같은 내용인지(중복 합성 방지)."""
+    ca = re.sub(r"\s+", "", str(a or ""))
+    cb = re.sub(r"\s+", "", str(b or ""))
+    if not ca or not cb:
+        return False
+    if ca in cb or cb in ca:
+        return True
+    # 앞 18자  overlapping window
+    return ca[:18] == cb[:18] and len(ca) >= 12 and len(cb) >= 12
 
 
 def _has_catalyst(blob: str) -> bool:
@@ -419,8 +485,9 @@ def _pick_from_matched_rows(
         if a and a not in kws:
             kws.append(a)
     hits = news.match_stock_news_rows(rows, name, kws, limit=12)
+    # 간접 매칭은 점수를 높여 오탐(무관 기사)을 줄임
     return _pick_from_news_hits(
-        hits, name=name, keywords=kws, source=source, relaxed=True, min_score=28
+        hits, name=name, keywords=kws, source=source, relaxed=True, min_score=40
     )
 
 
@@ -656,6 +723,22 @@ def _is_useless_reason_phrase(phrase: str, *, name: str = "") -> bool:
         return True
     if "장중" in p and re.search(r"\d+(?:\.\d+)?%", p) and name and name not in p:
         return True
+    # 날짜 조각·조사만 남은 잔해 (예: 「일부터」, 「월부터」)
+    core = re.sub(r"\s+", "", p)
+    if len(core) < 6 and re.fullmatch(
+        r"(?:\d{1,2})?(?:년|월|일|주)?(?:부터|까지|이후|이전|현재)?",
+        core,
+    ):
+        return True
+    if re.fullmatch(r".{0,4}일부터", core):
+        return True
+    if core in {"관련", "이슈", "테마", "강세", "급등세", "관련주", "기준", "규모"}:
+        return True
+    # 「핸드셋 관련 cbsi」처럼 테마+잡영문 토큰
+    if re.fullmatch(r".{2,40}관련[A-Za-z]{2,8}", core):
+        return True
+    if re.fullmatch(r"[A-Za-z]{2,6}", core) and not core.isupper():
+        return True
     return False
 
 
@@ -766,28 +849,176 @@ def _stock_reason_context_rows(
     return rows
 
 
+_OFFTOPIC_THEME_TITLE_BITS = (
+    "개방형 직위",
+    "공무원",
+    "원서 접수",
+    "채용 공고",
+    "교육부",
+    "행안부",
+    "띠별 운세",
+    "오늘의 운세",
+    "날씨",
+    "프로야구",
+    "프리미어리그",
+    "연예가",
+)
+
+
+def _is_offtopic_theme_title(title: str, *, aliases: tuple[str, ...]) -> bool:
+    """테마와 무관한 채용·운세·스포츠 등 제목인지."""
+    t = str(title or "")
+    if not t:
+        return True
+    if any(bit in t for bit in _OFFTOPIC_THEME_TITLE_BITS):
+        # 별칭이 제목에 직접 있으면 허용(예: 교육 테마 + 교육부)
+        if not any(len(str(a)) >= 2 and str(a) in t for a in aliases):
+            return True
+    return False
+
+
 def _pick_from_theme_news(
     early_rows: list[tuple[date, dict[str, str]]],
     actual_ctx_rows: list[tuple[date, dict[str, str]]],
     *,
     aliases: tuple[str, ...],
+    theme: str = "",
 ) -> _ReasonPick | None:
     """테마 별칭이 매칭된 섹터 뉴스에서 이슈 1건(종목 직접 뉴스 없을 때)."""
+    if not aliases:
+        return None
+    best: _ReasonPick | None = None
     for rows, src in ((actual_ctx_rows, "theme_actual"), (early_rows, "theme_early")):
         for _, row in rows:
-            blob = f"{row.get('title', '')} {row.get('description', '')}"
-            if not srl._alias_in_blob(blob, aliases):
-                continue
             title = str(row.get("title") or "").strip()
-            if not title or _is_noise_title(title):
+            desc = str(row.get("description") or "").strip()
+            blob = f"{title} {desc}"
+            # 제목에 별칭이 있어야 테마 뉴스로 인정(본문만 매칭은 오탐 많음)
+            if not srl._alias_in_blob(title, aliases):
+                continue
+            if not title or _is_noise_title(title) or _is_offtopic_theme_title(
+                title, aliases=aliases
+            ):
                 continue
             phrase = _extract_issue_from_title(title, "") or _clean_phrase(title)
-            if len(phrase) < 4:
+            if len(phrase) < 10 or _is_useless_reason_phrase(phrase) or _is_thin_reason_text(
+                phrase
+            ):
                 continue
-            if _is_generic_day_theme_phrase(phrase, aliases=aliases):
+            generic = _is_generic_day_theme_phrase(phrase, aliases=aliases)
+            has_cat = _has_catalyst(blob)
+            conf = 54 if has_cat else 42
+            if generic:
+                if not has_cat:
+                    continue
+                conf = 28
+            elif not has_cat and len(re.sub(r"\s+", "", phrase)) < 14:
                 continue
-            return _ReasonPick(text=phrase, confidence=46, source=src)
-    return None
+            text = phrase
+            if theme and theme not in phrase:
+                text = f"{theme} — {phrase}"
+            pick = _ReasonPick(text=text, confidence=conf, source=src)
+            if best is None or pick.confidence > best.confidence:
+                best = pick
+    return best
+
+
+def _resolve_sector_aliases(theme: str) -> tuple[str, tuple[str, ...]]:
+    """축약 테마 → 풀 라벨·뉴스 별칭(별칭 토큰으로도 환원)."""
+    if not theme:
+        return "", ()
+    full = srl._full_sector_label(theme)
+    aliases = srl._sector_aliases_for_label(full) if full else ()
+    if aliases:
+        return full, aliases
+    theme_l = theme.lower()
+    for sector_label, als in srl._THEME_SECTORS:
+        compact = srl._compact_sector_label(sector_label)
+        if theme == compact or theme == sector_label:
+            return sector_label, als
+        if any(theme_l == str(a).lower() for a in als):
+            return sector_label, als
+    return full or theme, ()
+
+
+def _sector_labels_match(a: str, b: str) -> bool:
+    """축약·풀 라벨·부분 포함으로 같은 테마인지."""
+    ca = srl._compact_sector_label(a)
+    cb = srl._compact_sector_label(b)
+    if not ca or not cb:
+        return False
+    if ca == cb:
+        return True
+    fa = srl._full_sector_label(a)
+    fb = srl._full_sector_label(b)
+    if fa and fb and fa == fb:
+        return True
+    if ca in cb or cb in ca:
+        return True
+    return False
+
+
+def _sector_seed_catalyst(
+    flow_row: dict[str, Any] | None,
+    *,
+    theme: str,
+    full: str,
+    aliases: tuple[str, ...],
+) -> str:
+    """theme_seed_details / 상위 키워드에서 섹터에 맞는 구체 촉매."""
+    if not flow_row or not theme:
+        return ""
+    for sd in flow_row.get("theme_seed_details") or []:
+        if not isinstance(sd, dict):
+            continue
+        seed = str(sd.get("seed") or "").strip()
+        cat = _usable_catalyst(str(sd.get("catalyst") or ""))
+        sectors = [str(s) for s in (sd.get("sectors") or [])]
+        seed_hit = bool(seed) and (
+            seed.lower() in theme.lower()
+            or theme.lower() in seed.lower()
+            or any(
+                seed.lower() in str(a).lower() or str(a).lower() in seed.lower()
+                for a in aliases
+            )
+        )
+        sector_hit = any(_sector_labels_match(s, theme) for s in sectors if s)
+        if not (seed_hit or sector_hit):
+            continue
+        if cat and cat.lower() not in (theme.lower(), seed.lower()):
+            return cat
+        if (
+            seed
+            and seed.lower() != theme.lower()
+            and not _is_useless_reason_phrase(seed)
+            and seed.lower() not in _GENERIC_CATALYSTS
+        ):
+            return seed
+    top_kw = [
+        str(k).strip()
+        for k in (flow_row.get("top_keywords_sample") or [])
+        if str(k).strip()
+    ]
+    related = [
+        k
+        for k in top_kw
+        if k.lower() not in _GENERIC_CATALYSTS
+        and not _is_useless_reason_phrase(k)
+        and len(k) >= 2
+        and (
+            any(len(str(a)) >= 2 and str(a).lower() in k.lower() for a in aliases)
+            or (theme and theme.lower() in k.lower())
+            or _has_catalyst(k)
+            # 티커·약어(HBM, FDA) — 소문자 잡토큰(cbsi 등) 제외
+            or re.fullmatch(r"[A-Z][A-Z0-9&.\-]{1,24}", k)
+        )
+    ]
+    if related:
+        lead = related[0]
+        if theme and theme not in lead:
+            return f"{theme} 관련 {lead}"
+        return lead
+    return ""
 
 
 def _sector_context(
@@ -802,25 +1033,34 @@ def _sector_context(
         stock_map = flow_row.get("theme_stock_sectors") or {}
         if isinstance(stock_map, dict):
             theme = srl._compact_sector_label(str(stock_map.get(code) or ""))
-    full = srl._full_sector_label(theme) if theme else ""
-    aliases = srl._sector_aliases_for_label(full) if full else ()
+    full, aliases = _resolve_sector_aliases(theme)
     catalyst = ""
     if flow_row and theme:
         for summ in flow_row.get("theme_sector_summaries") or []:
             if not isinstance(summ, dict):
                 continue
             sec = str(summ.get("sector") or "")
-            if srl._compact_sector_label(sec) != theme:
+            if not _sector_labels_match(sec, theme) and not _sector_labels_match(
+                sec, full
+            ):
                 continue
+            # 해당 섹터 요약에 붙은 촉매는 이미 섹터 귀속 — 토큰 불일치로 버리지 않음
             raw_cat = _usable_catalyst(str(summ.get("catalyst") or ""))
-            if raw_cat and _catalyst_relevant_to_sector(
-                raw_cat,
-                compact=theme,
-                full=full,
-                aliases=aliases,
+            if raw_cat and raw_cat.lower() not in (
+                theme.lower(),
+                (full or "").lower(),
+                srl._compact_sector_label(full).lower(),
+            ):
+                catalyst = raw_cat
+            elif raw_cat and _catalyst_relevant_to_sector(
+                raw_cat, compact=theme, full=full, aliases=aliases
             ):
                 catalyst = raw_cat
             break
+        if not catalyst:
+            catalyst = _sector_seed_catalyst(
+                flow_row, theme=theme, full=full, aliases=aliases
+            )
     return theme, catalyst, aliases
 
 
@@ -877,21 +1117,28 @@ def _fallback_reason(
 ) -> _ReasonPick:
     """뉴스·공시 매칭 실패 시 테마·키워드·동반 급등·등락률 순 폴백."""
     if catalyst:
-        text = catalyst if not theme else f"{catalyst}"
+        if theme and theme not in catalyst:
+            text = f"{theme} — {catalyst}"
+        else:
+            text = catalyst
         return _ReasonPick(text=text, confidence=35, source="sector_catalyst")
-    if theme and peers:
-        return _ReasonPick(
-            text=f"{theme} 동반 급등({', '.join(peers)} 등)",
-            confidence=28,
-            source="peers",
-        )
     usable_kw = [
         k
         for k in keywords
         if str(k).strip()
         and str(k).lower() not in (name or "").strip().lower()
         and (name or "").strip().lower() not in str(k).lower()
+        and str(k).lower() not in _GENERIC_CATALYSTS
     ]
+    if theme and peers:
+        peer_bit = f"{theme} 동반 급등({', '.join(peers)} 등)"
+        if usable_kw:
+            return _ReasonPick(
+                text=f"{peer_bit}, 이슈 키워드 {', '.join(usable_kw[:2])}",
+                confidence=30,
+                source="peers",
+            )
+        return _ReasonPick(text=peer_bit, confidence=28, source="peers")
     if usable_kw:
         kw = ", ".join(usable_kw[:3])
         label = theme or "테마"
@@ -901,10 +1148,125 @@ def _fallback_reason(
             source="keywords",
         )
     if theme:
-        return _ReasonPick(text=f"{theme} 테마 급등", confidence=18, source="theme_only")
+        # 구체 이슈 없이 테마명만 있으면 원인 미확인에 가깝게 표시
+        return _ReasonPick(
+            text=f"{theme} 관련주 동반 강세(종목 직접 뉴스·공시 미확인)",
+            confidence=16,
+            source="theme_only",
+        )
     if is_limit_up:
         return _ReasonPick(text="원인 미확인", confidence=5, source="unknown")
     return _ReasonPick(text="", confidence=0, source="unknown")
+
+
+_DIRECT_REASON_SOURCES = frozenset(
+    {
+        "actual_news",
+        "actual_news_relaxed",
+        "pred_news",
+        "pred_news_relaxed",
+        "disclosure",
+        "rise_reason",
+        "ctx_direct",
+        "early_direct",
+        "ctx_title",
+    }
+)
+_THEME_CONTEXT_SOURCES = frozenset(
+    {
+        "theme_early",
+        "theme_actual",
+        "sector_catalyst",
+        "ctx_match",
+        "early_match",
+        "keywords",
+    }
+)
+_CONCRETE_REASON_SOURCES = _DIRECT_REASON_SOURCES | _THEME_CONTEXT_SOURCES
+
+
+def _dedupe_reason_picks(picks: list[_ReasonPick]) -> list[_ReasonPick]:
+    """신뢰도 순으로 중복·빈약한 근거를 걸러 유지."""
+    ranked = sorted(picks, key=lambda p: p.confidence, reverse=True)
+    out: list[_ReasonPick] = []
+    for p in ranked:
+        if _is_thin_reason_text(p.text) or _is_useless_reason_phrase(p.text):
+            continue
+        if any(_reason_texts_overlap(p.text, q.text) for q in out):
+            continue
+        out.append(p)
+    return out
+
+
+def _synthesize_reason_pick(
+    pool: list[_ReasonPick],
+    *,
+    name: str,
+    theme: str,
+    peers: list[str],
+    fallback: _ReasonPick,
+) -> _ReasonPick:
+    """
+    뉴스·공시·테마 맥락을 1~3조각으로 묶어 종합 근거 문구를 만듭니다.
+
+    예: 「종목 뉴스. 반도체 테마: HBM 수요 관련 제목. 동반: A·B」
+    """
+    usable = _dedupe_reason_picks(pool)
+    directs = [p for p in usable if p.source in _DIRECT_REASON_SOURCES]
+    themes = [p for p in usable if p.source in _THEME_CONTEXT_SOURCES]
+    parts: list[str] = []
+    sources: list[str] = []
+
+    if directs:
+        best_d = directs[0]
+        parts.append(best_d.text.strip())
+        sources.append(best_d.source)
+        for p in directs[1:]:
+            if p.source == "disclosure" and not any(
+                _reason_texts_overlap(p.text, x) for x in parts
+            ):
+                parts.append(f"공시 {p.text.strip()}")
+                sources.append(p.source)
+                break
+
+    if themes and len(parts) < 3:
+        for p in themes:
+            if any(_reason_texts_overlap(p.text, x) for x in parts):
+                continue
+            bit = p.text.strip()
+            # 테마 제목에 종목명이 없고 테마 라벨도 없으면 맥락 붙임
+            if (
+                theme
+                and theme not in bit
+                and name not in bit
+                and p.source in ("theme_early", "theme_actual", "sector_catalyst")
+            ):
+                bit = f"{theme} 테마: {bit}" if "—" not in bit else bit
+            parts.append(bit)
+            sources.append(p.source)
+            break
+
+    if len(parts) < 2 and theme and peers:
+        peer_bit = f"동반 급등 {', '.join(peers[:2])}"
+        if not any(peer_bit in x or peers[0] in x for x in parts):
+            parts.append(peer_bit)
+            sources.append("peers")
+
+    if not parts:
+        if fallback.text and not _is_thin_reason_text(fallback.text):
+            return fallback
+        if theme:
+            return _ReasonPick(
+                text=f"{theme} 관련주 동반 강세(종목 직접 뉴스·공시 미확인)",
+                confidence=16,
+                source="theme_only",
+            )
+        return fallback
+
+    text = ". ".join(parts[:3])
+    conf = max(p.confidence for p in usable[:3]) if usable else fallback.confidence
+    src = "+".join(sources[:3]) if sources else "synth"
+    return _ReasonPick(text=text, confidence=min(conf + 8, 95), source=src)
 
 
 def _reason_for_stock(
@@ -920,13 +1282,15 @@ def _reason_for_stock(
     is_limit_up: bool,
 ) -> _ReasonPick:
     """
-    한 종목의 급등 이유를 다단계 탐색해 최종 1건 반환.
+    한 종목의 급등 이유를 다단계 탐색한 뒤 뉴스·공시·테마를 종합해 반환.
 
     actual/pred 뉴스 → 공시 → rise_reason HTML → 직접/매칭 뉴스 → 테마 뉴스 → 폴백.
     """
     keywords = _stock_specific_keywords(code, name, compare_row, early_rows)
     theme, catalyst, aliases = _sector_context(flow_row, code=code, theme_label=theme_label)
-    full = srl._full_sector_label(theme) if theme else ""
+    full, resolved_aliases = _resolve_sector_aliases(theme)
+    if resolved_aliases:
+        aliases = resolved_aliases
     peers = _peer_names(flow_row, code=code, theme=theme)
     fallback = _fallback_reason(
         name=name,
@@ -951,6 +1315,29 @@ def _reason_for_stock(
             )
             if p:
                 picks.append(p)
+        # 두 번째 뉴스 제목도 후보에 넣어 종합 요약에 활용
+        for key, src in (
+            ("actual_news_hits", "actual_news"),
+            ("pred_news_hits", "pred_news"),
+        ):
+            scored: list[_ReasonPick] = []
+            for h in compare_row.get(key) or []:
+                if not isinstance(h, dict):
+                    continue
+                sc = _score_news_hit(h, name=name, keywords=keywords, relaxed=False)
+                if sc < 40:
+                    continue
+                title = str(h.get("title") or "").strip()
+                phrase = _extract_issue_from_title(title, name) or _clean_phrase(title)
+                if len(phrase) < 8 or _is_thin_reason_text(phrase):
+                    continue
+                if _is_useless_reason_phrase(phrase, name=name):
+                    continue
+                scored.append(_ReasonPick(text=phrase, confidence=sc, source=src))
+            scored.sort(key=lambda x: x.confidence, reverse=True)
+            for p in scored[:2]:
+                if not any(_reason_texts_overlap(p.text, x.text) for x in picks):
+                    picks.append(p)
         p = _pick_from_disclosure(compare_row.get("disclosure_hits"))
         if p:
             picks.append(p)
@@ -974,71 +1361,89 @@ def _reason_for_stock(
         if p:
             picks.append(p)
 
-    p = _pick_from_theme_news(early_rows, actual_ctx_rows, aliases=aliases)
+    p = _pick_from_theme_news(
+        early_rows, actual_ctx_rows, aliases=aliases, theme=theme
+    )
     if p:
         picks.append(p)
 
-    if catalyst:
-        picks.append(
-            _ReasonPick(text=catalyst, confidence=35, source="sector_catalyst")
+    if catalyst and not _is_thin_reason_text(catalyst):
+        cat_text = (
+            f"{theme} — {catalyst}" if theme and theme not in catalyst else catalyst
         )
-    if theme and peers:
-        picks.append(
-            _ReasonPick(
-                text=f"{theme} 동반 급등({', '.join(peers)} 등)",
-                confidence=28,
-                source="peers",
+        if not _is_thin_reason_text(cat_text):
+            picks.append(
+                _ReasonPick(text=cat_text, confidence=35, source="sector_catalyst")
             )
+    if theme and peers:
+        peer_text = f"{theme} 동반 급등({', '.join(peers)} 등)"
+        if keywords:
+            usable = [
+                k
+                for k in keywords
+                if str(k).strip()
+                and str(k).lower() not in name.lower()
+                and str(k).lower() not in _GENERIC_CATALYSTS
+                and str(k) not in _THIN_REASON_TOKENS
+            ][:2]
+            if usable:
+                peer_text = f"{peer_text}, {', '.join(usable)}"
+        picks.append(
+            _ReasonPick(text=peer_text, confidence=28, source="peers")
         )
 
-    if picks:
-        filtered: list[_ReasonPick] = []
-        for p in picks:
-            if _is_generic_day_theme_phrase(p.text, aliases=aliases):
-                if p.source in ("theme_early", "theme_actual", "sector_catalyst", "ctx_match", "early_match"):
-                    continue
-                if not _name_in_title(p.text, name) and name not in p.text:
-                    continue
-            if not _reason_pick_usable(
-                p, name=name, theme=theme, full=full, aliases=aliases
+    if not picks:
+        return fallback
+
+    filtered: list[_ReasonPick] = []
+    weak: list[_ReasonPick] = []
+    for p in picks:
+        if _is_thin_reason_text(p.text):
+            continue
+        generic = _is_generic_day_theme_phrase(p.text, aliases=aliases)
+        if generic:
+            if p.source in (
+                "theme_early",
+                "theme_actual",
+                "sector_catalyst",
+                "ctx_match",
+                "early_match",
             ):
-                continue
-            filtered.append(p)
-        if filtered:
-            best = max(filtered, key=lambda p: p.confidence)
-            if (
-                fallback.source == "unknown"
-                or fallback.confidence <= 5
-            ) and best.confidence >= 18:
-                return best
-            if fallback.confidence > best.confidence:
-                return fallback
-            if (
-                fallback.source in ("sector_catalyst", "peers")
-                and fallback.confidence >= 28
-                and best.source
-                in (
-                    "actual_news_relaxed",
-                    "pred_news_relaxed",
-                    "ctx_match",
-                    "early_match",
-                    "theme_early",
-                    "theme_actual",
+                weak.append(
+                    _ReasonPick(
+                        text=p.text,
+                        confidence=min(p.confidence, 28),
+                        source=p.source,
+                    )
                 )
-                and name not in best.text
-            ):
-                return fallback
-            return best
-    return fallback
+                continue
+            if not _name_in_title(p.text, name) and name not in p.text:
+                continue
+        if not _reason_pick_usable(
+            p, name=name, theme=theme, full=full, aliases=aliases
+        ):
+            continue
+        filtered.append(p)
+
+    pool = filtered or weak
+    if not pool:
+        return fallback
+    return _synthesize_reason_pick(
+        pool, name=name, theme=theme, peers=peers, fallback=fallback
+    )
 
 
 def _format_bullet_line(name: str, reason: str, *, is_limit_up: bool) -> str:
     """종목명 + 이유 한 줄 ``<li>`` HTML."""
-    r = _shorten(reason.strip())
-    if _is_useless_reason_phrase(r, name=name):
+    r = _shorten(reason.strip(), max_len=_REASON_MAX)
+    if " — " in r:
+        head, tail = r.rsplit(" — ", 1)
+        if _is_useless_reason_phrase(tail, name=name) or _is_thin_reason_text(tail):
+            r = head.strip()
+    if _is_useless_reason_phrase(r, name=name) or _is_thin_reason_text(r):
         r = "원인 미확인" if is_limit_up else ""
     if is_limit_up and r and "상한" not in r and r != "원인 미확인":
-        r = f"{r}에 상한가"
+        r = f"{r} · 상한가"
     if not r:
         return ""
     return (
@@ -1240,7 +1645,7 @@ def _stock_reason_text(
     return_pct: float,
     is_limit_up: bool,
 ) -> str:
-    """종목별 급등 이유 평문(테마 리포트 표·불릿 공통)."""
+    """종목별 급등 이유 평문(테마 리포트 표·불릿 공통) — 뉴스·공시·테마 종합."""
     pick = _reason_for_stock(
         compare_row if isinstance(compare_row, dict) else None,
         code=code,
@@ -1252,11 +1657,15 @@ def _stock_reason_text(
         return_pct=return_pct,
         is_limit_up=is_limit_up,
     )
-    r = _shorten(pick.text.strip())
-    if _is_useless_reason_phrase(r, name=name):
+    r = _shorten(pick.text.strip(), max_len=_REASON_MAX)
+    if " — " in r:
+        head, tail = r.rsplit(" — ", 1)
+        if _is_useless_reason_phrase(tail, name=name) or _is_thin_reason_text(tail):
+            r = head.strip()
+    if _is_useless_reason_phrase(r, name=name) or _is_thin_reason_text(r):
         r = "원인 미확인" if is_limit_up else ""
     if is_limit_up and r and "상한" not in r and r != "원인 미확인":
-        r = f"{r}에 상한가"
+        r = f"{r} · 상한가"
     if not r:
         return "—"
     return _esc(r)
@@ -1425,8 +1834,8 @@ def format_day_mover_rationale_html(
     parts.append("</ul>")
     parts.append(
         '<p class="combo-tip-empty" style="margin:8px 0 0;font-size:0.72em;color:var(--muted)">'
-        "뉴스·공시·테마·동반 급등 순으로 자동 탐색. "
-        "직접 근거가 없으면 섹터 촉매·동반 급등·원인 미확인 순으로 표시.</p>"
+        "종목 뉴스·공시와 테마 뉴스·섹터 촉매를 묶어 종합 요약합니다. "
+        "직접 근거가 없으면 동반 급등·미확인으로 표시합니다.</p>"
     )
     return "".join(parts)
 
@@ -2321,7 +2730,7 @@ _GENERIC_CATALYSTS = frozenset(
     {"따르면", "테마", "급등", "상한가", "코스피", "코스닥", "증시", "주가", "관련주"}
 )
 _TITLE_MAX = 72
-_THEME_REASON_MAX = 200
+_THEME_REASON_MAX = 240
 _KW_MAX = 4
 _PEER_MAX = 5
 
@@ -2387,14 +2796,6 @@ def _sector_summary_for_label(
         if srl._compact_sector_label(sec) == theme_compact or sec == theme_compact:
             return summ
     return None
-
-
-def _usable_catalyst(raw: str) -> str:
-    """범용·짧은 촉매 문자열은 빈 문자열로 제거."""
-    s = str(raw or "").strip()
-    if len(s) < 2 or s.lower() in _GENERIC_CATALYSTS:
-        return ""
-    return s
 
 
 def _compact_day_overview(flow_row: dict[str, Any]) -> str:

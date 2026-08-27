@@ -99,6 +99,13 @@ _GENERIC_THEME_KW = frozenset(
         "증권",
         "주식시장",
         "국내증시",
+        "일부터",
+        "일까지",
+        "부터",
+        "까지",
+        "관련",
+        "이슈",
+        "강세",
     }
 )
 
@@ -1802,11 +1809,15 @@ def _stock_matches_sector(stock: dict[str, Any], aliases: tuple[str, ...]) -> bo
 
 def _catalyst_phrase(top_kw: list[str], sector_key: str) -> str:
     """early 뉴스 상위 키워드에서 테마 문장용 원인 구절을 뽑습니다."""
-    candidates = [
-        str(k).strip()
-        for k in top_kw
-        if str(k).strip() and str(k).lower() not in _GENERIC_THEME_KW and str(k) != sector_key
-    ]
+    def _ok(k: str) -> bool:
+        if not k or k.lower() in _GENERIC_THEME_KW or k == sector_key:
+            return False
+        # 날짜 조각 (일부터·4일까지 등)
+        if re.fullmatch(r"(?:\d{1,2})?(?:년|월|일|주)?(?:부터|까지|이후|이전)?", k):
+            return False
+        return len(k) >= 2
+
+    candidates = [str(k).strip() for k in top_kw if _ok(str(k).strip())]
     if not candidates:
         return sector_key
     eng = [k for k in candidates if re.fullmatch(r"[A-Za-z][A-Za-z0-9&.\-]{1,24}", k)]
