@@ -30,6 +30,38 @@ def test_format_elapsed_line() -> None:
     assert _format_elapsed_line(90 * 60 + 5.4) == "소요시간: 90분 05초"
 
 
+def test_run_daily_auto_enabled_env(monkeypatch) -> None:
+    from src import config
+
+    monkeypatch.setenv("RUN_DAILY_AUTO_1430", "Y")
+    assert config.run_daily_auto_enabled("1430") is True
+    monkeypatch.setenv("RUN_DAILY_AUTO_1430", "N")
+    assert config.run_daily_auto_enabled("1430") is False
+    monkeypatch.setenv("RUN_DAILY_AUTO_1530", "0")
+    assert config.run_daily_auto_enabled("1530") is False
+    monkeypatch.delenv("RUN_DAILY_AUTO_1600", raising=False)
+    assert config.run_daily_auto_enabled("1600") is True
+
+
+def test_main_skips_disabled_slot(monkeypatch) -> None:
+    from scripts import run_daily_email as rde
+
+    monkeypatch.setenv("RUN_DAILY_AUTO_1430", "N")
+    monkeypatch.setattr(rde, "_append_run_log", lambda lines: None)
+    code = rde.main(["--slot", "1430"])
+    assert code == 0
+
+
+def test_main_force_runs_disabled_slot(monkeypatch) -> None:
+    from scripts import run_daily_email as rde
+
+    monkeypatch.setenv("RUN_DAILY_AUTO_1430", "N")
+    monkeypatch.setattr(rde, "_check_trading_day_exit", lambda: 2)
+    monkeypatch.setattr(rde, "_append_run_log", lambda lines: None)
+    code = rde.main(["--slot", "1430", "--force"])
+    assert code == 0
+
+
 def test_ensure_env_defaults_slot_supplement_flag(monkeypatch) -> None:
     monkeypatch.delenv("PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD", raising=False)
     from scripts.run_daily_email import _ensure_env_defaults

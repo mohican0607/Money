@@ -653,6 +653,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="main.py 만 실행하고 이메일은 보내지 않음",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=".env RUN_DAILY_AUTO_*=0 이더도 강제 실행(수동 테스트용)",
+    )
     args = parser.parse_args(argv)
     started = time.perf_counter()
 
@@ -661,6 +666,24 @@ def main(argv: list[str] | None = None) -> int:
     from src import config
     from src import trading_calendar
     from src.pipeline.early_validate import current_n_and_n_plus_one
+
+    if not args.force and not config.run_daily_auto_enabled(args.slot):
+        label = SLOT_LABELS.get(args.slot, args.slot)
+        msg = (
+            f"[run_daily_email] {label} 자동 실행 비활성 "
+            f"(RUN_DAILY_AUTO_{args.slot}=0) — 건너뜀. "
+            f"수동 실행은 --force"
+        )
+        print(msg, flush=True)
+        _append_run_log(
+            [
+                f"slot={args.slot} skip_email={args.skip_email}",
+                "status=skipped_auto_disabled",
+                msg,
+                _format_elapsed_line(time.perf_counter() - started),
+            ]
+        )
+        return 0
 
     # config 가 이미 import 된 프로세스에서도 슬롯별 보강 플래그를 반영.
     config.PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD = (

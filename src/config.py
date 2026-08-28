@@ -30,6 +30,25 @@ def _env_str(key: str, default: str = "") -> str:
     return v
 
 
+def _bool_env(key: str, default: bool = True) -> bool:
+    """환경 변수 Y/N·1/0·true/false → bool."""
+    raw = _env_str(key, "1" if default else "0").strip().lower()
+    if raw in ("0", "false", "no", "off", "n"):
+        return False
+    if raw in ("1", "true", "yes", "on", "y"):
+        return True
+    return default
+
+
+def run_daily_auto_enabled(slot: str) -> bool:
+    """거래일 스케줄 슬롯(1430/1530/1600) 자동 실행 여부 — ``RUN_DAILY_AUTO_<slot>``."""
+    key = f"RUN_DAILY_AUTO_{slot}"
+    raw = _env_str(key)
+    if not raw:
+        return True
+    return _bool_env(key, True)
+
+
 def _positive_int_env(key: str, default: int) -> int:
     """환경 변수 정수(최소 1). 비어 있거나 잘못되면 default."""
     raw = os.getenv(key, "").strip()
@@ -728,5 +747,9 @@ EMAIL_USE_TLS = os.getenv("EMAIL_USE_TLS", "1").strip().lower() in (
 )
 EMAIL_SMTP_TIMEOUT_SEC = _positive_int_env("EMAIL_SMTP_TIMEOUT_SEC", 60)
 EMAIL_SUBJECT_PREFIX = _env_str("EMAIL_SUBJECT_PREFIX", "[Money]")
+# 거래일 자동 스케줄(14:30/15:30/16:00) 슬롯별 실행 — 0·N·false 이면 건너뜀(기본 1).
+RUN_DAILY_AUTO_1430 = run_daily_auto_enabled("1430")
+RUN_DAILY_AUTO_1530 = run_daily_auto_enabled("1530")
+RUN_DAILY_AUTO_1600 = run_daily_auto_enabled("1600")
 # scripts/run_daily_email.py — main.py 최대 대기(초). 초과 시 프로세스 종료 + 실패 메일.
 RUN_DAILY_MAIN_TIMEOUT_SEC = _positive_int_env("RUN_DAILY_MAIN_TIMEOUT_SEC", 5400)
