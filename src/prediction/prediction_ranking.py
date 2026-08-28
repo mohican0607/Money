@@ -330,11 +330,47 @@ def row_has_news_evidence(row: PredictionRow) -> bool:
     return _news_evidence_strength(row) > 1e-12
 
 
-def _news_backed_rows(rows: list[PredictionRow]) -> list[PredictionRow]:
-    """``PRED_REQUIRE_NEWS_EVIDENCE`` 가 켜져 있으면 뉴스 근거 없는 행을 제외합니다."""
+def _must_keep_bypass_codes(
+    returns_ml: pd.DataFrame | None,
+    target_day: date,
+) -> frozenset[str]:
+    """뉴스 필터 예외 — 갭돌파·업종 must_keep 후보."""
+    if returns_ml is None or returns_ml.empty:
+        return frozenset()
+    from .candidate_pool import industry_must_keep_codes
+
+    listing = sorted(
+        {
+            str(c).zfill(6)
+            for c in returns_ml["Code"].astype(str).str.zfill(6).unique()
+            if str(c).strip()
+        }
+    )
+    if not listing:
+        return frozenset()
+    return frozenset(
+        str(c).zfill(6)
+        for c in industry_must_keep_codes(returns_ml, target_day, listing)
+    )
+
+
+def _news_backed_rows(
+    rows: list[PredictionRow],
+    *,
+    bypass_codes: frozenset[str] | set[str] | None = None,
+) -> list[PredictionRow]:
+    """``PRED_REQUIRE_NEWS_EVIDENCE`` 가 켜져 있으면 뉴스 근거 없는 행을 제외합니다.
+
+    ``bypass_codes``(must_keep·갭돌파 등)는 뉴스 없어도 랭킹 풀에 유지합니다.
+    """
     if not config.PRED_REQUIRE_NEWS_EVIDENCE:
         return list(rows)
-    return [r for r in rows if row_has_news_evidence(r)]
+    bypass = {str(c).zfill(6) for c in (bypass_codes or ())}
+    return [
+        r
+        for r in rows
+        if str(r.code).zfill(6) in bypass or row_has_news_evidence(r)
+    ]
 
 
 def _news_evidence_strength(row: PredictionRow) -> float:
@@ -1095,6 +1131,25 @@ def _focused_industry_heat_map(
     return out
 
 
+def _carryover_rerank_enabled(
+    returns_ml: pd.DataFrame | None,
+    target_day: date,
+) -> bool:
+    """테마 이어짐일에는 carryover rerank를 자동 활성화."""
+    if config.PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED:
+        return True
+    if not config.PRED_CARRYOVER_AUTO_ON_HEAT or returns_ml is None or returns_ml.empty:
+        return False
+    try:
+        prev = trading_calendar.last_trading_day_before(target_day)
+    except ValueError:
+        return False
+    heat_map = _hot_industry_heat_map(returns_ml, prev, min_ret=0.12)
+    return max(heat_map.values(), default=0.0) + 1e-12 >= float(
+        config.PRED_CARRYOVER_MIN_HEAT
+    )
+
+
 def _rerank_carryover_industry_leaders(
     pool: list[PredictionRow],
     *,
@@ -1102,7 +1157,7 @@ def _rerank_carryover_industry_leaders(
     returns_ml: pd.DataFrame | None,
 ) -> list[PredictionRow]:
     """전일·전전일 급등 업종 리더를 상위로 끌어올려 테마 이어짐일 Hit@K 를 높입니다."""
-    if not config.PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED:
+    if not _carryover_rerank_enabled(returns_ml, target_day):
         return pool
     if not pool or returns_ml is None or returns_ml.empty:
         return pool
@@ -1173,10 +1228,14 @@ def _rerank_carryover_industry_leaders(
     return sorted(pool, key=_boosted, reverse=True)
 
 
-def _rerank_sector_diversity(pool: list[PredictionRow]) -> list[PredictionRow]:
+def _rerank_sector_diversity(
+    pool: list[PredictionRow],
+    *,
+    max_per_industry: int | None = None,
+) -> list[PredictionRow]:
     """상위 구간 동일 업종 쏠림을 줄여 테마 전환일 리콜을 높입니다."""
     top_k = int(config.PRED_SECTOR_DIVERSITY_TOP_K)
-    max_per = int(config.PRED_SECTOR_DIVERSITY_MAX_PER_INDUSTRY)
+    max_per = int(max_per_industry or config.PRED_SECTOR_DIVERSITY_MAX_PER_INDUSTRY)
     if len(pool) <= 1 or top_k <= 0 or max_per <= 0:
         return pool
     ranked = sorted(pool, key=rank_score_for_row, reverse=True)
@@ -1802,11 +1861,28 @@ def finalize_ranked_predictions(
         if not rows:
             return rows
 
-    rows = _news_backed_rows(rows)
+    rows = _news_backed_rows(
+        rows,
+        bypass_codes=_must_keep_bypass_codes(returns_ml, target_day),
+    )
     if not rows:
         return rows
 
-    pool = _rerank_sector_diversity(rows)
+    max_per_ind = int(config.PRED_SECTOR_DIVERSITY_MAX_PER_INDUSTRY)
+    if returns_ml is not None and not returns_ml.empty:
+        try:
+            prev = trading_calendar.last_trading_day_before(target_day)
+            heat_map = _hot_industry_heat_map(returns_ml, prev, min_ret=0.12)
+            if max(heat_map.values(), default=0.0) + 1e-12 >= float(
+                config.PRED_SECTOR_HOT_DIVERSITY_HEAT
+            ):
+                max_per_ind = max(
+                    max_per_ind, int(config.PRED_SECTOR_HOT_DIVERSITY_MAX_PER_INDUSTRY)
+                )
+        except ValueError:
+            pass
+
+    pool = _rerank_sector_diversity(rows, max_per_industry=max_per_ind)
     pool = _inject_hot_sector_leaders(pool)
     pool = _inject_burst_sector_leaders(pool)
     if returns_ml is not None:

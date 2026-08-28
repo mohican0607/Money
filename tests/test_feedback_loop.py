@@ -10,6 +10,12 @@ from src.prediction import feedback_loop
 from src.prediction.predict import PredictionRow
 
 
+def test_hit_at_10_int_format_parsed() -> None:
+    assert feedback_loop._hit_at_10_rate({"hit_at_10": 2}) == 0.2
+    assert feedback_loop._hit_at_10_rate({"hit_at_10": {"hits": 3, "k": 10}}) == 0.3
+    assert feedback_loop._hit_at_10_rate({}) is None
+
+
 def test_adaptive_tightness_low_on_poor_recent_hit_rate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -74,3 +80,22 @@ def test_build_enriched_feedback_context_has_adaptive_fields(
     assert "adaptive_tightness" in ctx
     assert "by_code_recent_mean_ratio" in ctx
     assert "recent_miss_streak_days" in ctx
+
+
+def test_miss_streak_counts_int_hit_at_10(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "PRED_FEEDBACK_ADAPTIVE_ENABLED", True)
+    payload = {
+        "hit_at_k_by_day": {
+            "2026-07-29": {"hit_at_10": 0},
+            "2026-07-30": {"hit_at_10": 0},
+            "2026-07-31": {"hit_at_10": 1},
+        },
+        "t_code_ratio": {},
+    }
+    monkeypatch.setattr(
+        feedback_loop.prediction_accuracy_cache,
+        "_load_payload",
+        lambda: payload,
+    )
+    ctx = feedback_loop.build_enriched_feedback_context(as_of=date(2026, 7, 31))
+    assert int(ctx.get("recent_miss_streak_days") or 0) >= 1

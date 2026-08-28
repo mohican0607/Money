@@ -41,7 +41,7 @@ def _bool_env(key: str, default: bool = True) -> bool:
 
 
 def run_daily_auto_enabled(slot: str) -> bool:
-    """거래일 스케줄 슬롯(1430/1530/1600) 자동 실행 여부 — ``RUN_DAILY_AUTO_<slot>``."""
+    """거래일 스케줄 슬롯(1430/1530/1600/1630) 자동 실행 여부 — ``RUN_DAILY_AUTO_<slot>``."""
     key = f"RUN_DAILY_AUTO_{slot}"
     raw = _env_str(key)
     if not raw:
@@ -384,6 +384,14 @@ PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET = _float_env(
 PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED = os.getenv(
     "PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED", "0"
 ).strip().lower() in ("1", "true", "yes", "on")
+# 테마 열기가 강할 때 carryover rerank 자동 활성(플래그 0이어도)
+PRED_CARRYOVER_AUTO_ON_HEAT = os.getenv(
+    "PRED_CARRYOVER_AUTO_ON_HEAT", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+PRED_SECTOR_HOT_DIVERSITY_HEAT = _float_env("PRED_SECTOR_HOT_DIVERSITY_HEAT", 0.32)
+PRED_SECTOR_HOT_DIVERSITY_MAX_PER_INDUSTRY = _positive_int_env(
+    "PRED_SECTOR_HOT_DIVERSITY_MAX_PER_INDUSTRY", 5
+)
 PRED_CARRYOVER_MIN_HEAT = _float_env("PRED_CARRYOVER_MIN_HEAT", 0.34)
 PRED_CARRYOVER_FOCUS_MODE = os.getenv("PRED_CARRYOVER_FOCUS_MODE", "1").strip().lower() in (
     "1",
@@ -751,5 +759,6 @@ EMAIL_SUBJECT_PREFIX = _env_str("EMAIL_SUBJECT_PREFIX", "[Money]")
 RUN_DAILY_AUTO_1430 = run_daily_auto_enabled("1430")
 RUN_DAILY_AUTO_1530 = run_daily_auto_enabled("1530")
 RUN_DAILY_AUTO_1600 = run_daily_auto_enabled("1600")
+RUN_DAILY_AUTO_1630 = run_daily_auto_enabled("1630")
 # scripts/run_daily_email.py — main.py 최대 대기(초). 초과 시 프로세스 종료 + 실패 메일.
 RUN_DAILY_MAIN_TIMEOUT_SEC = _positive_int_env("RUN_DAILY_MAIN_TIMEOUT_SEC", 5400)

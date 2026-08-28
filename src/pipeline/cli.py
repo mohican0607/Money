@@ -26,12 +26,14 @@ def _parse_cli() -> tuple[str, date | None, date | None, str, bool, bool]:
         ``train_snapshot_mode`` 는 ``none`` | ``use`` | ``rebuild`` | ``append_learning``.
         ``range`` 일 때만 ``arg_date`` 와 ``range_end`` 가 둘 다 채워짐.
         ``use_n_day`` 이면 단일 ``YYYYMMDD`` 는 관측일 T 가 아니라 기준일 N.
+        ``--force-ml-retrain`` 단독이면 ``mode=force_ml_retrain_daily`` (T=N+1 거래일).
     """
     raw = [a for a in sys.argv[1:] if a]
     use_freeze = "--use-freeze" in raw
     use_n_day = "--n-day" in raw
     has_rebuild = "--rebuild-train-snapshot" in raw
     has_append = "--append-rebuild-learning" in raw
+    has_force_ml = "--force-ml-retrain" in raw
     has_no_snap = "--no-train-snapshot" in raw
     if has_rebuild:
         snap_mode = "rebuild"
@@ -50,12 +52,21 @@ def _parse_cli() -> tuple[str, date | None, date | None, str, bool, bool]:
             "--use-train-snapshot",
             "--rebuild-train-snapshot",
             "--append-rebuild-learning",
+            "--force-ml-retrain",
             "--no-train-snapshot",
             "--no-report-expand",
             "--use-freeze",
             "--n-day",
         )
     ]
+    if has_force_ml:
+        if argv:
+            d = _parse_yyyymmdd(argv[0])
+            if d is not None:
+                return "force_ml_retrain", d, None, snap_mode, use_freeze, use_n_day
+            print(f"인식할 수 없는 관측일 T: {argv[0]}", file=sys.stderr)
+            return "usage", None, None, snap_mode, use_freeze, use_n_day
+        return "force_ml_retrain_daily", None, None, snap_mode, use_freeze, use_n_day
     if not argv:
         return "daily", None, None, snap_mode, use_freeze, use_n_day
     if argv[0] in ("--weekly", "--weekly-report", "-w"):
@@ -116,6 +127,10 @@ def _print_usage() -> None:
       ML 랭커 joblib 은 재학습해 덮어씁니다(스냅샷에 쌓인 miss 진단으로 어려운 급등·오판 샘플 가중).
       다음 구간 재실행 시 갱신된 miss_diagnosis 가 재학습에 반영됩니다.
       From~To 구간 안의 관측일은 예측 고정 캐시를 무시하고 재계산·저장합니다.
+  --force-ml-retrain [YYYYMMDD]
+      관측일 T(기본: 오늘 N의 다음 거래일)용 ML joblib 만 강제 재학습합니다.
+      파이프라인·리포트 HTML 은 실행하지 않습니다. 16:00 ``--append-rebuild-learning`` 이후
+      스냅샷(train_events·rebuild_learning)을 반영할 때 사용합니다.
   --append-rebuild-learning
       급등-뉴스 train_events 는 스냅샷 재사용(미반영 캘린더만 병합). ML joblib 도 재학습하지 않고
       기존 모델을 로드합니다. From~To·단일일 모두 장 마감 확정 T 에 대해

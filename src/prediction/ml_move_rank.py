@@ -537,7 +537,10 @@ def _cheap_prescore_code(
         if 0.04 <= rl + 1e-12 < 0.12:
             score += 1.0
         if rl + 1e-12 >= 0.18:
-            score -= 2.5  # 과열은 must_keep 경로로만 생존
+            if gap + 1e-12 < 0.03:
+                score -= 2.5  # 과열은 must_keep 경로로만 생존
+            else:
+                score -= 0.6  # 당일 갭 돌파면 과열 페널티 완화
         elif rl + 1e-12 >= 0.14:
             score -= 1.0
         if config.PRED_THEME_ROTATION_ENABLED:
@@ -1649,6 +1652,7 @@ def rank_predictions_ml(
                     seen_enrich.add(p)
             enrich_order = np.asarray(merged, dtype=int)
 
+    must_enrich_set = frozenset(must_enrich_codes)
     buf: list[predict.PredictionRow] = []
     for fi in enrich_order:
         i = cand_ix[int(fi)]
@@ -1735,7 +1739,11 @@ def rank_predictions_ml(
         if news_ctx:
             _, nctx = feats_for_code(news_ctx, news_text_blob, code)
             pr.news_context_score = nctx
-        if config.PRED_REQUIRE_NEWS_EVIDENCE and not pred_hybrid.row_has_news_evidence(pr):
+        if (
+            config.PRED_REQUIRE_NEWS_EVIDENCE
+            and not pred_hybrid.row_has_news_evidence(pr)
+            and c6 not in must_enrich_set
+        ):
             continue
         pr.reasons = [
             f"다요인 랭킹: {pred_hybrid.format_factor_summary(pr, ks11_ret_lag1=ks11_ret)} · "

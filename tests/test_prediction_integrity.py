@@ -280,8 +280,23 @@ def test_theme_rotation_prefers_moderate_lag_in_hot_sector() -> None:
     assert prk.theme_rotation_score(exhausted) == 0.0
 
 
-def test_carryover_rerank_disabled_by_default() -> None:
-    assert not config.PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED
+def test_carryover_auto_on_heat(monkeypatch) -> None:
+    monkeypatch.setattr(config, "PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED", False)
+    monkeypatch.setattr(config, "PRED_CARRYOVER_AUTO_ON_HEAT", True)
+    import pandas as pd
+
+    t = date(2026, 8, 28)
+    prev = date(2026, 8, 27)
+    df = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp(prev)],
+            "Code": ["005930"],
+            "return_pct": [0.25],
+        }
+    )
+    assert prk._carryover_rerank_enabled(df, t) is True
+    monkeypatch.setattr(config, "PRED_CARRYOVER_AUTO_ON_HEAT", False)
+    assert prk._carryover_rerank_enabled(df, t) is False
 
 
 def test_append_learning_single_day_infers_cal_scope_from_day_reports() -> None:

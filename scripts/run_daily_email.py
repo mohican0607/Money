@@ -1,11 +1,12 @@
 """
-거래일 14:30 / 15:30 / 16:00 스케줄: ``python main.py`` 실행 후 리포트를 이메일로 발송.
+거래일 14:30 / 15:30 / 16:00 / 16:30 스케줄: ``python main.py`` 실행 후 리포트를 이메일로 발송.
 
 - 14:30 / 15:30: 리포트 HTML 갱신 후 첨부 발송.
   정상 종료 시 월간 리포트(``report_YYYY.MM.html``)를 당일 스냅샷으로 복사:
   14:30 → ``report_YYYY.MMDD-1430.html``, 15:30 → ``report_YYYY.MMDD-1530.html``
   (스냅샷은 로컬 보관용 — 이메일에는 첨부하지 않음. 월간 HTML 이 이미 첨부됨)
 - 16:00: ``--append-rebuild-learning`` 로 학습 진단만 갱신(이메일 본문만, 리포트 첨부 없음)
+- 16:30: ``--force-ml-retrain`` 으로 다음 거래일 T용 ML joblib 강제 재학습(16:00 append 이후)
 
 성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` 제외).
 
@@ -13,6 +14,7 @@
   python scripts/run_daily_email.py --slot 1430
   python scripts/run_daily_email.py --slot 1530
   python scripts/run_daily_email.py --slot 1600
+  python scripts/run_daily_email.py --slot 1630
 """
 from __future__ import annotations
 
@@ -44,12 +46,15 @@ SLOT_LABELS = {
     "1430": "14:30",
     "1530": "15:30",
     "1600": "16:00",
+    "1630": "16:30",
 }
 
 _SLOT_SNAPSHOT_SLOTS = frozenset({"1430", "1530"})
 
 _LOCK_1430 = _LOG_DIR / ".run_1430.lock"
 _LOCK_1530 = _LOG_DIR / ".run_1530.lock"
+_LOCK_1600 = _LOG_DIR / ".run_1600.lock"
+_LOCK_1630 = _LOG_DIR / ".run_1630.lock"
 _WAIT_PRIOR_MAX_SEC = 90 * 60  # 선행 슬롯(main.py timeout과 동일) 대기 상한
 
 
@@ -102,10 +107,10 @@ def _ensure_env_defaults(*, slot: str | None = None) -> None:
     os.environ.setdefault("NO_AUTO_OPEN_OUTPUT", "1")
     os.environ.setdefault("ML_REUSE_PRIOR_FOR_FORWARD", "1")
     # 14:30: 장중이라 과거 「예측 전용」 백필을 끄고 N+1 예측만.
-    # 15:30·16:00: 장후이므로 마감된 미갱신 일자(예: 당일 T)를 자동 확정 갱신.
+    # 15:30·16:00·16:30: 장후이므로 마감된 미갱신 일자(예: 당일 T)를 자동 확정 갱신.
     if slot == "1430":
         os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] = "0"
-    elif slot in ("1530", "1600"):
+    elif slot in ("1530", "1600", "1630"):
         os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] = "1"
     if not os.environ.get("MONEY_TEMP_DIR") and Path("F:/").exists():
         os.environ["MONEY_TEMP_DIR"] = r"F:\temp\Money\tmp"
@@ -139,11 +144,15 @@ def _main_py_cmd(
 
     - 14:30 / 15:30: ``main.py N N+1`` (관측일 구간 From=N, To=T)
     - 16:00: ``main.py --append-rebuild-learning N``
+    - 16:30: ``main.py --force-ml-retrain T`` (T=N 다음 거래일)
     """
     cmd = [str(_python_exe()), str(ROOT / "main.py")]
     if slot == "1600":
         assert n_day is not None
         cmd.extend(["--append-rebuild-learning", n_day.strftime("%Y%m%d")])
+    elif slot == "1630":
+        assert t_day is not None
+        cmd.extend(["--force-ml-retrain", t_day.strftime("%Y%m%d")])
     elif slot in ("1430", "1530"):
         assert n_day is not None and t_day is not None
         cmd.extend([n_day.strftime("%Y%m%d"), t_day.strftime("%Y%m%d")])
@@ -319,6 +328,11 @@ def _wait_for_prior_slots_1600() -> bool:
     return _wait_for_run_lock(_LOCK_1530, label="15:30")
 
 
+def _wait_for_prior_slots_1630() -> bool:
+    """16:30 — 16:00 append 종료 대기."""
+    return _wait_for_run_lock(_LOCK_1600, label="16:00")
+
+
 def _kill_process_tree(pid: int) -> None:
     if sys.platform == "win32":
         subprocess.run(
@@ -352,6 +366,10 @@ def _run_main_py(
         slot_lock = _LOCK_1430
     elif slot == "1530":
         slot_lock = _LOCK_1530
+    elif slot == "1600":
+        slot_lock = _LOCK_1600
+    elif slot == "1630":
+        slot_lock = _LOCK_1630
     if slot_lock is not None:
         if not _acquire_run_lock(slot_lock):
             msg = (
@@ -466,8 +484,8 @@ def _email_attachment_paths(
     dated_path: Path | None,
     monthly_path: Path | None,
 ) -> list[Path]:
-    """이메일 첨부: 일별·월간만. 슬롯 스냅샷(-1430/-1530)과 16:00 은 제외."""
-    if slot == "1600":
+    """이메일 첨부: 일별·월간만. 슬롯 스냅샷(-1430/-1530)과 16:00·16:30 은 제외."""
+    if slot in ("1600", "1630"):
         return []
     attachments: list[Path] = []
     for path in (dated_path, monthly_path):
@@ -540,6 +558,8 @@ def _build_email_body(
     elif slot == "1600":
         append_day = main_n_day if main_n_day is not None else n_day
         cmd = _format_cmd_line(_main_py_cmd(slot=slot, n_day=append_day))
+    elif slot == "1630":
+        cmd = _format_cmd_line(_main_py_cmd(slot=slot, n_day=n_day, t_day=t_day))
     else:
         cmd = _format_cmd_line(_main_py_cmd(slot=slot, n_day=n_day, t_day=t_day))
     lines = [
@@ -553,6 +573,8 @@ def _build_email_body(
     ]
     if slot == "1600":
         lines.append("첨부: 없음 (16:00은 학습 진단만 — 리포트 HTML 미첨부)")
+    elif slot == "1630":
+        lines.append("첨부: 없음 (16:30은 ML joblib 재학습만 — 리포트 HTML 미첨부)")
     else:
         lines.extend(
             [
@@ -646,7 +668,7 @@ def main(argv: list[str] | None = None) -> int:
         "--slot",
         required=True,
         choices=sorted(SLOT_LABELS),
-        help="실행 슬롯 (1430=장중, 1530=장마감 직후, 1600=당일 T 확정)",
+        help="실행 슬롯 (1430=장중, 1530=장마감 직후, 1600=당일 T 확정, 1630=ML 재학습)",
     )
     parser.add_argument(
         "--skip-email",
@@ -712,6 +734,18 @@ def main(argv: list[str] | None = None) -> int:
             f"T={email_t.isoformat()} 학습 진단 병합 "
             f"(N={email_n.isoformat()}, 리포트 HTML 생략)"
         )
+    elif args.slot == "1630":
+        from src.pipeline.ml_retrain import forward_ml_retrain_t
+
+        ml_t = forward_ml_retrain_t(n_day=n_day)
+        email_n, email_t = n_day, ml_t
+        report_t = ml_t
+        header = (
+            f"[run_daily_email] {SLOT_LABELS[args.slot]} — "
+            f"ML 강제 재학습 T={ml_t.isoformat()} "
+            f"(N={n_day.isoformat()}, 16:00 append 이후, 리포트 HTML 생략)"
+        )
+        t_day = ml_t
     else:
         email_n, email_t = n_day, t_day
         report_t = t_day
@@ -724,6 +758,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.slot == "1600":
         main_cmd_line = _format_cmd_line(_main_py_cmd(slot=args.slot, n_day=n_day))
+    elif args.slot == "1630":
+        main_cmd_line = _format_cmd_line(
+            _main_py_cmd(slot=args.slot, n_day=n_day, t_day=t_day)
+        )
     else:
         main_cmd_line = _format_cmd_line(
             _main_py_cmd(slot=args.slot, n_day=n_day, t_day=t_day)
@@ -748,6 +786,17 @@ def main(argv: list[str] | None = None) -> int:
                 _append_elapsed(log_lines, started)
                 _append_run_log(log_lines)
                 return 0
+        elif args.slot == "1630":
+            if not _wait_for_prior_slots_1630():
+                msg = (
+                    f"[run_daily_email] 16:00 lock 대기 {_WAIT_PRIOR_MAX_SEC}초 초과 — "
+                    "16:30 ML 재학습을 건너뜁니다."
+                )
+                print(msg, flush=True)
+                log_lines.append(msg)
+                _append_elapsed(log_lines, started)
+                _append_run_log(log_lines)
+                return 0
 
         timeout_sec = config.RUN_DAILY_MAIN_TIMEOUT_SEC
         log_lines.append(f"main.py timeout={timeout_sec}s")
@@ -755,6 +804,11 @@ def main(argv: list[str] | None = None) -> int:
             log_lines.append(
                 f"main.py args=--append-rebuild-learning {n_day.strftime('%Y%m%d')} "
                 "(학습 진단만, 리포트 HTML 생략)"
+            )
+        elif args.slot == "1630":
+            log_lines.append(
+                f"main.py args=--force-ml-retrain {t_day.strftime('%Y%m%d')} "
+                "(ML joblib 재학습만, 리포트 HTML 생략)"
             )
         else:
             log_lines.append(
@@ -764,13 +818,18 @@ def main(argv: list[str] | None = None) -> int:
             timeout_sec,
             slot=args.slot,
             n_day=n_day,
-            t_day=t_day if args.slot != "1600" else None,
+            t_day=t_day if args.slot not in ("1600",) else None,
         )
         log_lines.append(f"main.py exit={main_exit} status={run_status}")
 
         if args.slot == "1600":
             dated_path, monthly_path = None, None
             note = "리포트 첨부: 없음 (16:00 학습 진단만)"
+            print(note, flush=True)
+            log_lines.append(note)
+        elif args.slot == "1630":
+            dated_path, monthly_path = None, None
+            note = "리포트 첨부: 없음 (16:30 ML 재학습만)"
             print(note, flush=True)
             log_lines.append(note)
         else:

@@ -36,6 +36,18 @@ def _recency_weight(day: date, *, as_of: date, half_life_days: float) -> float:
     return 0.5 ** (float(delta) / hl)
 
 
+def _hit_at_10_rate(rec: dict) -> float | None:
+    """``hit_at_10`` — int(적중 수) 또는 {hits,k} dict 모두 처리."""
+    h10 = rec.get("hit_at_10")
+    if isinstance(h10, dict):
+        n = int(h10.get("k", 10) or 10)
+        h = int(h10.get("hits", 0) or 0)
+        return float(h) / float(max(1, n))
+    if isinstance(h10, (int, float)):
+        return float(int(h10)) / 10.0
+    return None
+
+
 def _recent_hit_rate(payload: dict, *, as_of: date, lookback_days: int = 12) -> float | None:
     by_day = payload.get("hit_at_k_by_day")
     if not isinstance(by_day, dict):
@@ -196,12 +208,7 @@ def build_enriched_feedback_context(*, as_of: date | None = None) -> dict[str, o
                 continue
             if t_d > as_of:
                 continue
-            h10 = rec.get("hit_at_10")
-            rate = None
-            if isinstance(h10, dict):
-                n = int(h10.get("k", 10) or 10)
-                h = int(h10.get("hits", 0) or 0)
-                rate = float(h) / float(max(1, n))
+            rate = _hit_at_10_rate(rec)
             if rate is None:
                 break
             if rate >= float(config.PRED_FEEDBACK_STREAK_HIT_MIN):

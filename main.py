@@ -6,12 +6,14 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
   python main.py
     → 오늘이 거래일 N일 때, N+1 거래일(T) 급등 후보.
       output/report_dated_by_MMDD.html 및 report_YYYY.MM.html(해당 월) 갱신(표는 예측 후보만)
-    → 거래일 14:30·15:30·16:00 자동 실행: scripts/run_daily_1430_email.ps1,
-      scripts/run_daily_1530_email.ps1, scripts/run_daily_1600_append.ps1
+    → 거래일 14:30·15:30·16:00·16:30 자동 실행: scripts/run_daily_1430_email.ps1,
+      scripts/run_daily_1530_email.ps1, scripts/run_daily_1600_append.ps1,
+      scripts/run_daily_1630_ml_retrain.ps1
       (등록 예: scripts/register_daily_email_tasks.ps1)
       14:30/15:30 정상 종료 시 report_YYYY.MM.html 을
       report_YYYY.MMDD-1430.html / report_YYYY.MMDD-1530.html 로 복사.
       16:00 은 --append-rebuild-learning 으로 학습 스냅샷만 갱신(리포트 HTML 미작성).
+      16:30 은 --force-ml-retrain 으로 ML joblib 만 재학습(16:00 append 이후).
 
   python main.py 20260401
     → 관측일 T=2026-04-01(거래일), 기준일 N=T 직전 거래일.
@@ -110,6 +112,41 @@ def main() -> None:
     if mode == "usage":
         print_usage()
         sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 2)
+
+    if mode in ("force_ml_retrain", "force_ml_retrain_daily"):
+        from src import trading_calendar
+        from src.pipeline.ml_retrain import (
+            force_ml_retrain_for_observation_day,
+            forward_ml_retrain_t,
+        )
+
+        now_kst = datetime.now(trading_calendar.KST)
+        today = now_kst.date()
+        if mode == "force_ml_retrain_daily":
+            if not trading_calendar.is_trading_day(today):
+                print(f"{today} 은(는) 거래일이 아닙니다.")
+                return
+            n_day = today
+            try:
+                t_day = forward_ml_retrain_t(n_day=n_day)
+            except ValueError as e:
+                print(e)
+                return
+        else:
+            assert arg_date is not None
+            t_day = arg_date
+            try:
+                n_day = trading_calendar.last_trading_day_before(t_day)
+            except ValueError as e:
+                print(e)
+                return
+        print(
+            f"--force-ml-retrain: N={n_day.isoformat()} → T={t_day.isoformat()} "
+            "(ML joblib만 재학습, 리포트 HTML 생략).",
+            flush=True,
+        )
+        force_ml_retrain_for_observation_day(t_day)
+        return
 
     if mode == "serve_live_quotes":
         from src.report.live_quotes import run_live_quotes_server

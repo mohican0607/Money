@@ -72,6 +72,8 @@ def test_ensure_env_defaults_slot_supplement_flag(monkeypatch) -> None:
     assert os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] == "1"
     _ensure_env_defaults(slot="1600")
     assert os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] == "1"
+    _ensure_env_defaults(slot="1630")
+    assert os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] == "1"
     t = date(2026, 8, 7)
     assert _expected_monthly_report_path(t).name == "report_2026.08.html"
 
@@ -88,6 +90,7 @@ def test_slot_report_snapshot_path() -> None:
     assert p1 is not None and p1.name == "report_2026.0821-1430.html"
     assert p2 is not None and p2.name == "report_2026.0821-1530.html"
     assert _slot_report_snapshot_path(run_day, "1600") is None
+    assert _slot_report_snapshot_path(run_day, "1630") is None
 
 
 def test_copy_slot_report_snapshot(monkeypatch, tmp_path: Path) -> None:
