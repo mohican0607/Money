@@ -43,7 +43,14 @@ def test_run_daily_auto_enabled_env(monkeypatch) -> None:
     assert config.run_daily_auto_enabled("1600") is True
 
 
-def test_main_skips_disabled_slot(monkeypatch) -> None:
+def test_ml_retrain_after_append_enabled(monkeypatch) -> None:
+    from scripts.run_daily_email import _ml_retrain_after_append_enabled
+
+    monkeypatch.setenv("RUN_DAILY_AUTO_1630", "1")
+    assert _ml_retrain_after_append_enabled() is True
+    monkeypatch.setenv("RUN_DAILY_AUTO_1630", "0")
+    assert _ml_retrain_after_append_enabled() is False
+
     from scripts import run_daily_email as rde
 
     monkeypatch.setenv("RUN_DAILY_AUTO_1430", "N")

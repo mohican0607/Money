@@ -5,8 +5,9 @@
   정상 종료 시 월간 리포트(``report_YYYY.MM.html``)를 당일 스냅샷으로 복사:
   14:30 → ``report_YYYY.MMDD-1430.html``, 15:30 → ``report_YYYY.MMDD-1530.html``
   (스냅샷은 로컬 보관용 — 이메일에는 첨부하지 않음. 월간 HTML 이 이미 첨부됨)
-- 16:00: ``--append-rebuild-learning`` 로 학습 진단만 갱신(이메일 본문만, 리포트 첨부 없음)
-- 16:30: ``--force-ml-retrain`` 으로 다음 거래일 T용 ML joblib 강제 재학습(16:00 append 이후)
+- 16:00: ``--append-rebuild-learning`` 로 학습 진단 갱신 후, 성공 시 즉시
+  ``--force-ml-retrain`` (``RUN_DAILY_AUTO_1630=1`` 일 때) — 이메일 본문만, 리포트 첨부 없음
+- 16:30: 수동 재실행용(``--slot 1630``). 스케줄러에는 등록하지 않음.
 
 성공·실패·타임아웃 모두 이메일로 알립니다(``--skip-email`` 제외).
 
@@ -329,8 +330,14 @@ def _wait_for_prior_slots_1600() -> bool:
 
 
 def _wait_for_prior_slots_1630() -> bool:
-    """16:30 — 16:00 append 종료 대기."""
+    """16:30(수동) — 16:00 append·연쇄 ML 재학습 종료 대기."""
     return _wait_for_run_lock(_LOCK_1600, label="16:00")
+
+
+def _ml_retrain_after_append_enabled() -> bool:
+    from src import config
+
+    return config.run_daily_auto_enabled("1630")
 
 
 def _kill_process_tree(pid: int) -> None:
@@ -729,9 +736,16 @@ def main(argv: list[str] | None = None) -> int:
         email_t = n_day
         email_n = trading_calendar.last_trading_day_before(email_t)
         report_t = email_t
+        ml_after = _ml_retrain_after_append_enabled()
+        chain_note = (
+            " → append 직후 ML 재학습"
+            if ml_after
+            else " (ML 재학습 생략: RUN_DAILY_AUTO_1630=0)"
+        )
         header = (
             f"[run_daily_email] {SLOT_LABELS[args.slot]} — "
-            f"T={email_t.isoformat()} 학습 진단 병합 "
+            f"T={email_t.isoformat()} 학습 진단 병합"
+            f"{chain_note} "
             f"(N={email_n.isoformat()}, 리포트 HTML 생략)"
         )
     elif args.slot == "1630":
@@ -824,7 +838,46 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.slot == "1600":
             dated_path, monthly_path = None, None
-            note = "리포트 첨부: 없음 (16:00 학습 진단만)"
+            if (
+                run_status == _RUN_STATUS_OK
+                and main_exit == 0
+                and _ml_retrain_after_append_enabled()
+            ):
+                from src.pipeline.ml_retrain import forward_ml_retrain_t
+
+                ml_t = forward_ml_retrain_t(n_day=n_day)
+                chain_msg = (
+                    f"[run_daily_email] 16:00 append 완료 → ML 재학습 즉시 실행 "
+                    f"T={ml_t.isoformat()}"
+                )
+                print(chain_msg, flush=True)
+                log_lines.append(chain_msg)
+                log_lines.append(
+                    f"chain_cmd={_format_cmd_line(_main_py_cmd(slot='1630', n_day=n_day, t_day=ml_t))}"
+                )
+                ml_exit, ml_log, ml_status = _run_main_py(
+                    timeout_sec,
+                    slot="1630",
+                    n_day=n_day,
+                    t_day=ml_t,
+                )
+                log_lines.append(f"ML 재학습 exit={ml_exit} status={ml_status}")
+                log_text = (
+                    log_text.rstrip()
+                    + "\n\n--- ML 재학습 (--force-ml-retrain) ---\n"
+                    + ml_log
+                ).strip()
+                if ml_status == _RUN_STATUS_TIMEOUT:
+                    run_status = _RUN_STATUS_TIMEOUT
+                    main_exit = ml_exit
+                elif ml_status != _RUN_STATUS_OK or ml_exit != 0:
+                    run_status = _RUN_STATUS_ERROR
+                    main_exit = ml_exit if ml_exit is not None else 1
+            note = (
+                "리포트 첨부: 없음 (16:00 학습 진단 + ML 재학습)"
+                if _ml_retrain_after_append_enabled()
+                else "리포트 첨부: 없음 (16:00 학습 진단만)"
+            )
             print(note, flush=True)
             log_lines.append(note)
         elif args.slot == "1630":

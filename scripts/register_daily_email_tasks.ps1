@@ -1,9 +1,9 @@
-# 작업 스케줄러에 거래일 14:30 / 15:30 / 16:00 / 16:30 리포트 등록
+# 작업 스케줄러에 거래일 14:30 / 15:30 / 16:00 리포트 등록
 #
 # - 매일 14:30: N→N+1 예측 + 이메일
 # - 매일 15:30: 장마감 직후 리포트(actual·테마) 갱신 + 이메일
-# - 매일 16:00: main.py --append-rebuild-learning YYYYMMDD (학습 진단만, 리포트 미작성·미첨부) + 이메일
-# - 매일 16:30: main.py --force-ml-retrain T (ML joblib 재학습, 리포트 미첨부) + 이메일
+# - 매일 16:00: append-rebuild-learning 후 성공 시 즉시 force-ml-retrain
+#   (RUN_DAILY_AUTO_1630=1 일 때, 리포트 미작성·미첨부) + 이메일 1통
 # - 토·일·공휴일은 스크립트가 즉시 종료(exit 0)
 # - PowerShell 창 없이 pythonw.exe 로 실행 (콘솔 클릭으로 멈추는 문제 방지)
 #
@@ -37,13 +37,11 @@ function Test-SchTask([string] $Name) {
 $Tr1430 = New-DailyEmailTaskTr "1430"
 $Tr1530 = New-DailyEmailTaskTr "1530"
 $Tr1600 = New-DailyEmailTaskTr "1600"
-$Tr1630 = New-DailyEmailTaskTr "1630"
 
 $Tasks = @(
     @{ Name = "MoneyKRX_Daily1430_Email"; Time = "14:30"; Tr = $Tr1430 }
     @{ Name = "MoneyKRX_Daily1530_Email"; Time = "15:30"; Tr = $Tr1530 }
     @{ Name = "MoneyKRX_Daily1600_Append"; Time = "16:00"; Tr = $Tr1600 }
-    @{ Name = "MoneyKRX_Daily1630_MLRetrain"; Time = "16:30"; Tr = $Tr1630 }
 )
 
 foreach ($t in $Tasks) {
@@ -71,11 +69,15 @@ foreach ($t in $Tasks) {
     }
 }
 
-# 1600 이 실제로 있을 때만 구 15:00 삭제 (교체 전에 지워 슬롯이 사라지던 문제 방지)
+# 1600 이 실제로 있을 때만 구 15:00·16:30 삭제
 if (Test-SchTask "MoneyKRX_Daily1600_Append") {
     if (Test-SchTask "MoneyKRX_Daily1500_Append") {
         schtasks /Delete /TN "MoneyKRX_Daily1500_Append" /F 2>$null | Out-Null
         Write-Host "삭제: MoneyKRX_Daily1500_Append (15:00 → 16:00 이전)"
+    }
+    if (Test-SchTask "MoneyKRX_Daily1630_MLRetrain") {
+        schtasks /Delete /TN "MoneyKRX_Daily1630_MLRetrain" /F 2>$null | Out-Null
+        Write-Host "삭제: MoneyKRX_Daily1630_MLRetrain (16:00 append 직후 연쇄 실행으로 대체)"
     }
 }
 
@@ -83,4 +85,4 @@ Write-Host ""
 Write-Host "확인: schtasks /Query /TN MoneyKRX_Daily1600_Append /V /FO LIST"
 Write-Host "로그: scripts/logs/run_daily_YYYYMMDD.log"
 Write-Host "수동(콘솔): .venv\Scripts\python.exe scripts\run_daily_email.py --slot 1600"
-Write-Host "수동(콘솔): .venv\Scripts\python.exe scripts\run_daily_email.py --slot 1630"
+Write-Host "수동 ML만: .venv\Scripts\python.exe scripts\run_daily_email.py --slot 1630 --force"

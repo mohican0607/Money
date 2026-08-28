@@ -6,14 +6,13 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
   python main.py
     → 오늘이 거래일 N일 때, N+1 거래일(T) 급등 후보.
       output/report_dated_by_MMDD.html 및 report_YYYY.MM.html(해당 월) 갱신(표는 예측 후보만)
-    → 거래일 14:30·15:30·16:00·16:30 자동 실행: scripts/run_daily_1430_email.ps1,
-      scripts/run_daily_1530_email.ps1, scripts/run_daily_1600_append.ps1,
-      scripts/run_daily_1630_ml_retrain.ps1
+    → 거래일 14:30·15:30·16:00 자동 실행: scripts/run_daily_1430_email.ps1,
+      scripts/run_daily_1530_email.ps1, scripts/run_daily_1600_append.ps1
       (등록 예: scripts/register_daily_email_tasks.ps1)
       14:30/15:30 정상 종료 시 report_YYYY.MM.html 을
       report_YYYY.MMDD-1430.html / report_YYYY.MMDD-1530.html 로 복사.
-      16:00 은 --append-rebuild-learning 으로 학습 스냅샷만 갱신(리포트 HTML 미작성).
-      16:30 은 --force-ml-retrain 으로 ML joblib 만 재학습(16:00 append 이후).
+      16:00 은 --append-rebuild-learning 후 성공 시 즉시 --force-ml-retrain
+      (RUN_DAILY_AUTO_1630=1, 리포트 HTML 미작성).
 
   python main.py 20260401
     → 관측일 T=2026-04-01(거래일), 기준일 N=T 직전 거래일.

@@ -1,13 +1,12 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  KRX 거래일 16:30 — 16:00 append 이후 ML joblib 강제 재학습
-  (main.py --force-ml-retrain T, 리포트 HTML 미작성).
+  ML joblib 강제 재학습만 수동 재실행 (main.py --force-ml-retrain T).
 
 .DESCRIPTION
-  - 16:00 선행 lock 종료 후, 다음 거래일 T용 ML 모델만 재학습하고 이메일을 발송합니다.
-  - 리포트 HTML 은 첨부하지 않습니다.
-  - 스케줄러: MoneyKRX_Daily1630_MLRetrain
+  - 16:00 append·연쇄 ML 이 끝난 뒤 lock 해제 후에만 실행됩니다.
+  - 정상 흐름은 16:00 슬롯이 append 성공 직후 자동으로 ML 재학습합니다.
+  - 스케줄러 등록 대상이 아닙니다(실패 시 재시도용).
 #>
 param(
     [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot),
