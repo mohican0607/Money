@@ -668,11 +668,11 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     var host = el.closest("[data-stock-code]");
     return host ? host.getAttribute("data-stock-code") || "" : "";
   }
-  // N(MMDD) 라벨 — N-1·N-2·N-3 은 제외.
+  // 당일 N 행 라벨 — ``0828 (N  )`` 형식.
   function isNDayRetLine(line) {
     var lbl = line && line.querySelector(".stock-ret-lbl");
     if (!lbl) return false;
-    return /^N\(\d{4}\)$/.test((lbl.textContent || "").trim());
+    return /^\d{4} \(N\s{0,2}\)$/.test((lbl.textContent || "").trim());
   }
   // 어제 생성된 예측 전용 HTML 에도, 오늘 장중이면 N 행에 실시간 훅을 붙입니다.
   function hydrateTodayLiveIntraday(root) {
@@ -798,15 +798,9 @@ _ACTUAL_RET_FMT_MACROS = r"""{% macro fmt_ret_ratio_pct(ratio) -%}
 {%- endmacro %}
 {% macro fmt_ret_pct_pts(pct) -%}
 {% if pct < 0 %}<span class="bad">{{ "%.2f"|format(pct) }}</span>{% else %}{{ "%.2f"|format(pct) }}{% endif %}
-{%- endmacro %}
-{% macro actual_ret_prev_suffix(r) -%}
-{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %} ({{ fmt_ret_ratio_pct(r.actual_ret_prev_day) }}){% endif %}
-{%- endmacro %}
-{% macro actual_ret_yesterday_or_dash(r) -%}
-{% if r.actual_ret_prev_day is defined and r.actual_ret_prev_day is not none %}N-1 ({{ fmt_ret_ratio_pct(r.actual_ret_prev_day) }}){% else %}—{% endif %}
 {%- endmacro %}"""
 
-_ACTUAL_RET_CELL_BODY = r"""{% if day_forward | default(false) %}{{ format_forward_actual_ret_cell(r) | safe }}{% elif r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret is not none %}— ({{ fmt_ret_ratio_pct(r.actual_ret) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}{% elif r.actual_ret is not none %}{{ fmt_ret_ratio_pct(r.actual_ret) }}{{ actual_ret_prev_suffix(r) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){{ actual_ret_prev_suffix(r) }}{% else %}{{ actual_ret_yesterday_or_dash(r) }}{% endif %}"""
+_ACTUAL_RET_CELL_BODY = r"""{% if day_forward | default(false) %}{{ format_forward_actual_ret_cell(r) | safe }}{% elif r.actual_cell_pre_close_snapshot | default(false) %}{% if r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){% elif r.actual_ret is not none %}— ({{ fmt_ret_ratio_pct(r.actual_ret) }}%){% else %}—{% endif %}{% elif r.actual_ret is not none %}{{ fmt_ret_ratio_pct(r.actual_ret) }}{% elif r.actual_ret_intraday_pct is defined and r.actual_ret_intraday_pct is not none %}— ({{ fmt_ret_pct_pts(r.actual_ret_intraday_pct) }}%){% else %}—{% endif %}"""
 
 
 def _actual_ret_cell_macro(name: str) -> str:

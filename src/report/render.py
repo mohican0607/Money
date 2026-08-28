@@ -155,6 +155,19 @@ def _format_stock_ret_pct(pv: float, *, spaced: bool = False) -> str:
     return f"{s} %" if spaced else f"{s}%"
 
 
+def _stock_ret_day_label(label: str, date_iso: str) -> str:
+    """N일봉 행 라벨 — ``0825 (N-3)`` · 당일은 ``0828 (N  )``."""
+    lbl_base = "N" if label == "N" else str(label or "").strip()
+    inner = "N  " if lbl_base == "N" else lbl_base
+    mmdd = ""
+    dt = str(date_iso or "")
+    if len(dt) >= 10:
+        mmdd = f"{dt[5:7]}{dt[8:10]}"
+    if mmdd:
+        return f"{mmdd} ({inner})"
+    return f"({inner})"
+
+
 def _stock_ret_lines_html(
     row: dict[str, Any] | None,
     *,
@@ -175,12 +188,7 @@ def _stock_ret_lines_html(
         dt = str(it.get("date") or "")
         pct = it.get("pct")
         intraday = bool(it.get("intraday"))
-        lbl_base = "N" if label == "N" else label
-        mmdd = f"{dt[5:7]}{dt[8:10]}" if len(dt) >= 10 else ""
-        if mmdd:
-            lbl = f"{lbl_base}({mmdd})"
-        else:
-            lbl = lbl_base
+        lbl = _stock_ret_day_label(label, dt)
         cls = ""
         live_attr = (
             f' data-live-intraday="1" data-stock-code="{code}"' if intraday else ""
@@ -412,9 +420,9 @@ def backfill_preserved_day_sections_market_theme(
 
 
 def naver_chart_url(code: str) -> str:
-    """네이버 금융 캔들 차트 링크(6자리 종목코드)."""
+    """네이버 금융 종목 메인 페이지 링크(6자리 종목코드)."""
     c = str(code).zfill(6)
-    return f"https://finance.naver.com/item/fchart.naver?code={c}"
+    return f"https://finance.naver.com/item/main.naver?code={c}"
 
 
 def naver_disclosure_url(code: str) -> str:

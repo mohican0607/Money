@@ -93,8 +93,8 @@ def test_forward_today_n_line_is_live_intraday_without_baked_pct(monkeypatch) ->
     assert n_item["intraday"] is True
     assert n_item["pct"] is None
     html = format_stock_ret_tooltip_lines(rows[0])
-    assert "N-3(0630)" in html
-    assert "N(0703)" in html
+    assert "0630 (N-3)" in html
+    assert "0703 (N  )" in html
     assert "0703·장중" not in html
     assert "data-live-intraday" in html
     assert "…" in html
@@ -110,7 +110,7 @@ def test_forward_stock_ret_column_lines() -> None:
     }
     html = format_stock_ret_column_lines(row)
     assert "stock-ret-col-lines" in html
-    assert "N-1(0702)" in html
+    assert "0702 (N-1)" in html
     assert "-6.82 %" in html
     assert 'data-stock-code="017000"' in html
     assert format_stock_ret_column_lines({}) == "—"
