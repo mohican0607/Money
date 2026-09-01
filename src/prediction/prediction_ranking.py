@@ -2,7 +2,7 @@
 랭킹 우선 예측 모드 — 문제 정의·확신 게이트·Hit@K 평가.
 
 기존 ``20~30%`` 순위 매핑 대신 ML 확률(또는 휴리스틱 순위)을 1차 신호로 쓰고,
-``pred_high`` / ``pred_mid`` 는 **순위 상위 + 엄격 확률 하한** 으로 각 최대 10건씩만 부여합니다.
+``pred_high`` / ``pred_mid`` 는 **순위 상위 + 엄격 확률 하한** 으로 고확신·중확신 상한까지 부여합니다.
 """
 from __future__ import annotations
 
@@ -884,7 +884,7 @@ def assign_hybrid_confidence_tiers(
     )
     top_sel = high_precision_select_score(high_cand[0]) if high_cand else 0.0
     for pos, row in enumerate(high_cand, start=1):
-        if high_n >= max_high or pos > 10:
+        if high_n >= max_high or pos > int(config.PRED_FORWARD_HIGH_MAX_RANK):
             break
         sel = high_precision_select_score(row)
         ml = _ml_rank_signal(row)
@@ -1648,15 +1648,9 @@ def assign_forward_confidence_tiers(
             int(round(int(config.PRED_PRECISION_MAX_HIGH) * rs)),
         ),
     )
-    if feedback_ctx and config.PRED_FEEDBACK_ADAPTIVE_ENABLED:
-        streak = int(feedback_ctx.get("recent_miss_streak_days", 0) or 0)
-        # tightness는 regime_scale·확률 하한에 이미 반영. 연속 장기 오판만 슬롯 축소.
-        if streak >= 6:
-            max_high = 0
-        elif streak >= 4:
-            max_high = min(max_high, 1)
-        elif streak >= 2:
-            max_high = min(max_high, max(1, max_high))
+    # tightness·레짐은 regime_scale(슬롯 수·확률 하한)에 이미 반영.
+    # 연속 오판으로 high를 0으로 닫지 않는다 — 설정된 상한(고 10 / 중 5)을 유지.
+    _ = feedback_ctx
     max_mid = (
         max(0, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
         if config.PRED_FORWARD_MID_ENABLED
@@ -1775,7 +1769,7 @@ def fill_forward_review_slate(
     20분 검토용: 고·중 합이 ``PRED_FORWARD_SHOW_MAX`` 에 못 미치면 mid 슬롯을 순위로 채웁니다.
 
     엄격 게이트 통과가 적어도 표·freeze 에 ``PRED_FORWARD_SHOW_MAX`` 근처 후보가 남도록 합니다.
-    연속 오판·낮은 tightness 구간에서는 패딩을 건너뜁니다(약한 종목 mid 승격 방지).
+    패딩은 ``PRED_FORWARD_SLATE_PAD_*`` 조건(오판 일수·tightness 하한)을 통과할 때만 적용합니다.
     """
     if not pool or not config.PRED_CONFIDENCE_OUTPUT_ENABLED:
         return

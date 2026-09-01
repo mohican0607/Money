@@ -100,6 +100,70 @@ def _row(
     )
 
 
+def test_miss_streak_does_not_zero_high_slots(monkeypatch: pytest.MonkeyPatch) -> None:
+    """연속 오판이 길어도 고확신 상한(10)을 0으로 닫지 않는다."""
+    monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", False)
+    monkeypatch.setattr(config, "PRED_PRECISION_MAX_HIGH", 10)
+    monkeypatch.setattr(config, "PRED_FORWARD_HIGH_MAX_RANK", 15)
+    monkeypatch.setattr(config, "PRED_PRECISION_CODE_FAIL_CLOSED", False)
+    monkeypatch.setattr(config, "PRED_FEEDBACK_ADAPTIVE_ENABLED", True)
+    rows = []
+    for i in range(11):
+        r = _row(probability=0.22 - i * 0.004, keyword_hits=2, mention_score=0.6)
+        r.code = f"{i + 1:06d}"
+        r.ml_precision_score = 0.5
+        rows.append(r)
+
+    prediction_ranking.assign_forward_confidence_tiers(
+        rows,
+        regime_scale=1.0,
+        feedback_ctx={"recent_miss_streak_days": 8, "adaptive_tightness": 0.50},
+    )
+    high_n = sum(1 for r in rows if r.confidence_tier == "high")
+    assert high_n == 10
+
+
+def test_slate_pad_still_runs_on_long_miss_streak(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 12)
+    monkeypatch.setattr(config, "PRED_MID_OUTPUT_MAX", 5)
+    monkeypatch.setattr(config, "PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK", 8)
+    monkeypatch.setattr(config, "PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS", 0.50)
+    monkeypatch.setattr(config, "PRED_FEEDBACK_ADAPTIVE_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_REQUIRE_NEWS_EVIDENCE", False)
+    from src.prediction.predict import PredictionRow
+
+    rows = [
+        PredictionRow(
+            f"{i:06d}",
+            f"N{i}",
+            1.0,
+            22.0,
+            ["kw"],
+            [],
+            confidence_tier="high" if i < 2 else "none",
+            keyword_hits=2,
+            rank_position=i + 1,
+            rank_score=1.0 - i * 0.05,
+            mention_score=0.4,
+        )
+        for i in range(12)
+    ]
+    prediction_ranking.fill_forward_review_slate(
+        rows,
+        regime_scale=1.0,
+        feedback_ctx={"recent_miss_streak_days": 8, "adaptive_tightness": 0.50},
+    )
+    tiered = [
+        r
+        for r in rows
+        if str(getattr(r, "confidence_tier", "") or "") in ("high", "mid")
+    ]
+    assert len(tiered) >= 7
+
+
 def test_forward_confidence_abstains_instead_of_forcing_slots(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
     monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", False)
