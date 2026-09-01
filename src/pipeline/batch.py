@@ -143,7 +143,7 @@ def _render_monthly_batch(
 
     ``merge_existing_monthly_days`` 가 True이면 해당 월 HTML이 이미 있을 때
     이번 실행에 포함된 거래일만 새로 렌더하고, 나머지 일자 블록은 기존 HTML을 그대로 둡니다.
-    ``report_theme_25pct_YYYY.MM.html`` 도 동일하게 병합합니다.
+    ``report_theme_20pct_YYYY.MM.html`` 도 동일하게 병합합니다.
 
     Returns:
         생성·갱신된 HTML 경로 목록(폴더 자동 열기용).
@@ -316,13 +316,18 @@ def _render_monthly_batch(
         theme_fname = theme_strong_mover_report.theme_report_filename_for_month(y, m)
         theme_path = config.OUTPUT_DIR / theme_fname
         theme_preserved: dict[date, str] = {}
-        if merge_existing_monthly_days and theme_path.is_file():
-            existing_theme = theme_strong_mover_report.extract_theme_report_day_sections(
-                theme_path
-            )
+        if merge_existing_monthly_days:
             update_theme_days = {
                 dr.trading_day for dr in batch if not dr.forward_observation
             }
+            existing_theme: dict[date, str] = {}
+            for src_path in theme_strong_mover_report.theme_report_source_paths_for_month(
+                y, m
+            ):
+                for d, html in theme_strong_mover_report.extract_theme_report_day_sections(
+                    src_path
+                ).items():
+                    existing_theme.setdefault(d, html)
             theme_preserved = {
                 d: html
                 for d, html in existing_theme.items()
@@ -412,11 +417,17 @@ def _render_monthly_batch(
         theme_all_days = sorted(
             {d["trading_day"] for d in theme_new_sections} | set(theme_preserved.keys())
         )
+        theme_thr_pct = theme_strong_mover_report.theme_report_threshold_pct()
         theme_subtitle = test_range_label
         if theme_all_days:
             theme_subtitle = (
-                f"{y}년 {m}월 · 25%↑ 테마 거래일 {theme_all_days[0].isoformat()} ~ "
+                f"{y}년 {m}월 · {theme_thr_pct}%↑ 테마 거래일 {theme_all_days[0].isoformat()} ~ "
                 f"{theme_all_days[-1].isoformat()} ({len(theme_all_days)}일)"
+            )
+        elif not theme_preserved:
+            theme_subtitle = (
+                f"{y}년 {m}월 · 장 마감 확정 거래일 없음 "
+                f"(예측 전용만 실행됨 — 확정 후 일자별 테마가 추가됩니다)"
             )
         theme_out = theme_strong_mover_report.render_strong_mover_theme_report(
             theme_path,
@@ -425,14 +436,18 @@ def _render_monthly_batch(
             news_by_calendar=po.news_by_calendar or {},
             listing_names=po.listing_names or {},
             news_cutoff_label=cutoff_kst,
-            title=f"25%↑ 급등 테마·상승 배경 · {theme_fname.replace('.html', '')}",
+            title=(
+                f"{theme_thr_pct}%↑ 급등 테마·상승 배경 · "
+                f"{theme_fname.replace('.html', '')}"
+            ),
             subtitle=theme_subtitle,
             meta_note=meta_base.get("news_source", ""),
             preserved_day_html=theme_preserved or None,
+            allow_empty_shell=True,
         )
         if theme_out:
-            # written_paths.append(theme_out)  # 자동 열기 제외(report_theme_25pct_*)
-            print(f"완료(테마 25%↑): {theme_out}")
+            # written_paths.append(theme_out)  # 자동 열기 제외(report_theme_*pct_*)
+            print(f"완료(테마 {theme_thr_pct}%↑): {theme_out}")
 
     index_html = config.OUTPUT_DIR / "report_index_monthly.html"
     month_links = report.collect_monthly_report_index_links(config.OUTPUT_DIR)

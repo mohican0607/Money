@@ -65,7 +65,8 @@ def _guard_no_report_expand_would_shrink(test_days: list[date]) -> None:
     for (y, m), batch_days in sorted(batch_by_month.items()):
         for fname, label in (
             (f"report_{y}.{m:02d}.html", "메인"),
-            (f"report_theme_25pct_{y}.{m:02d}.html", "테마"),
+            (f"report_theme_20pct_{y}.{m:02d}.html", "테마"),
+            (f"report_theme_25pct_{y}.{m:02d}.html", "테마(구)"),
         ):
             path = config.OUTPUT_DIR / fname
             if not path.is_file():

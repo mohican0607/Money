@@ -586,12 +586,19 @@ def collect_monthly_report_index_links(output_dir: Path | None = None) -> list[t
             continue
         if not (
             re.fullmatch(r"report_\d{4}\.\d{2}\.html", path.name)
+            or re.fullmatch(r"report_theme_20pct_\d{4}\.\d{2}\.html", path.name)
             or re.fullmatch(r"report_theme_25pct_\d{4}\.\d{2}\.html", path.name)
+            or re.fullmatch(r"report_theme_20pct_\d{8}_\d{8}\.html", path.name)
             or re.fullmatch(r"report_theme_25pct_\d{8}_\d{8}\.html", path.name)
         ):
             continue
         days = parse_monthly_report_trading_days(path)
-        prefix = "[테마 25%↑] " if "theme_25pct" in path.name else ""
+        if "theme_20pct" in path.name:
+            prefix = "[테마 20%↑] "
+        elif "theme_25pct" in path.name:
+            prefix = "[테마 25%↑] "
+        else:
+            prefix = ""
         if days:
             label = (
                 f"{prefix}{path.name} · {days[0].isoformat()} ~ "

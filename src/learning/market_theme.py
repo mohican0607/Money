@@ -2256,7 +2256,7 @@ def format_market_theme_flow_html(
         if hidden_sectors:
             parts.append(
                 f'<li style="color:var(--muted);font-size:0.8rem">'
-                f"… 테마 {hidden_sectors}개 더 (report_theme_25pct_*.html 참고)</li>"
+                f"… 테마 {hidden_sectors}개 더 (report_theme_20pct_*.html 참고)</li>"
             )
         parts.append("</ul>")
 
@@ -2422,7 +2422,7 @@ def format_market_theme_flow_html(
 
     parts.append(
         "<p class=\"combo-tip-empty\" style=\"margin:8px 0 0;font-size:0.72em;color:var(--muted)\">"
-        "자동·참고용. 상세 목록은 report_theme_25pct_*.html</p>"
+        "자동·참고용. 상세 목록은 report_theme_20pct_*.html</p>"
     )
     return "".join(parts)
 

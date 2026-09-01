@@ -16,6 +16,45 @@ from ..features import _stock_relevant_news_rows
 from .. import news, stocks
 from ..learning import market_theme as srl
 
+# 월간 테마 리포트 파일명: ``report_theme_20pct_YYYY.MM.html``
+THEME_REPORT_FILENAME_PCT_TAG = "20pct"
+_LEGACY_THEME_REPORT_FILENAME_PCT_TAG = "25pct"
+
+
+def theme_report_threshold_pct() -> int:
+    """테마 리포트 제목·파일명에 쓰는 급등 임계(퍼센트 포인트)."""
+    return int(round(float(config.BIG_MOVE_THRESHOLD) * 100.0))
+
+
+def theme_report_filename_for_month(year: int, month: int) -> str:
+    """월간 테마 리포트 파일명 (예: ``report_theme_20pct_2026.09.html``)."""
+    return (
+        f"report_theme_{THEME_REPORT_FILENAME_PCT_TAG}_{year}.{month:02d}.html"
+    )
+
+
+def legacy_theme_report_filename_for_month(year: int, month: int) -> str:
+    """구 파일명 (``report_theme_25pct_*.html``) — 병합·목차 호환용."""
+    return (
+        f"report_theme_{_LEGACY_THEME_REPORT_FILENAME_PCT_TAG}_{year}.{month:02d}.html"
+    )
+
+
+def theme_report_source_paths_for_month(
+    year: int, month: int, *, output_dir: Path | None = None
+) -> list[Path]:
+    """해당 월 테마 리포트를 읽을 경로(신규 → 구 파일명 순, 존재하는 것만)."""
+    root = output_dir or config.OUTPUT_DIR
+    paths: list[Path] = []
+    for fname in (
+        theme_report_filename_for_month(year, month),
+        legacy_theme_report_filename_for_month(year, month),
+    ):
+        p = root / fname
+        if p.is_file() and p not in paths:
+            paths.append(p)
+    return paths
+
 
 # --- rationale (from rationale.py) ---
 
@@ -3144,7 +3183,11 @@ def build_day_strong_mover_sections(
             early_rows,
         )
 
-    leaders = list(flow_row.get("theme_leaders_ge_25pct") or [])
+    leaders = list(
+        flow_row.get("theme_leaders_ge_20pct")
+        or flow_row.get("theme_leaders_ge_25pct")
+        or []
+    )
     if not leaders:
         return None
 
@@ -3529,7 +3572,7 @@ _THEME_REPORT_SHELL_TEMPLATE = r"""
 
 
 def extract_theme_report_day_sections(source: Path | str) -> dict[date, str]:
-    """기존 ``report_theme_25pct_*.html`` 에서 ``id=\"day-YYYY-MM-DD\"`` 일자 블록을 추출합니다."""
+    """기존 ``report_theme_*pct_*.html`` 에서 ``id=\"day-YYYY-MM-DD\"`` 일자 블록을 추출합니다."""
     from .. import report
 
     return report.extract_monthly_report_day_sections(source)
@@ -3589,8 +3632,9 @@ def render_strong_mover_theme_report(
     subtitle: str,
     meta_note: str = "",
     preserved_day_html: dict[date, str] | None = None,
+    allow_empty_shell: bool = False,
 ) -> Path | None:
-    """25%↑ 테마 리포트 HTML 파일을 ``out_path`` 에 저장. 섹션 없으면 ``None``."""
+    """급등 테마 리포트 HTML 파일을 ``out_path`` 에 저장. 섹션 없으면 ``None``."""
     days = build_strong_mover_report_days(
         day_reports,
         theme_flow_rows,
@@ -3599,7 +3643,7 @@ def render_strong_mover_theme_report(
         news_cutoff_label=news_cutoff_label,
     )
     preserved = preserved_day_html or {}
-    if not days and not preserved:
+    if not days and not preserved and not allow_empty_shell:
         return None
     html_out = format_strong_mover_theme_report_html(
         days,
@@ -3614,15 +3658,11 @@ def render_strong_mover_theme_report(
     return out_path
 
 
-def theme_report_filename_for_month(year: int, month: int) -> str:
-    """월간 테마 리포트 파일명 (예: ``report_theme_25pct_2026.06.html``)."""
-    return f"report_theme_25pct_{year}.{month:02d}.html"
-
-
 def theme_report_filename_for_range(d_from: date, d_to: date) -> str:
     """구간 테마 리포트 파일명(동월이면 월간, 아니면 From_To)."""
+    tag = THEME_REPORT_FILENAME_PCT_TAG
     if d_from.year == d_to.year and d_from.month == d_to.month:
         return theme_report_filename_for_month(d_from.year, d_from.month)
     return (
-        f"report_theme_25pct_{d_from.strftime('%Y%m%d')}_{d_to.strftime('%Y%m%d')}.html"
+        f"report_theme_{tag}_{d_from.strftime('%Y%m%d')}_{d_to.strftime('%Y%m%d')}.html"
     )

@@ -1,4 +1,4 @@
-"""캐시 OHLCV·뉴스만으로 ``report_theme_25pct_YYYY.MM.html`` 을 재생성(예측 생략)."""
+"""캐시 OHLCV·뉴스만으로 ``report_theme_20pct_YYYY.MM.html`` 을 재생성(예측 생략)."""
 from __future__ import annotations
 
 import argparse
@@ -74,6 +74,7 @@ def main() -> int:
     cutoff = (
         f"{config.NEWS_CUTOFF_KST_HOUR:02d}:{config.NEWS_CUTOFF_KST_MINUTE:02d}"
     )
+    thr = theme_report.theme_report_threshold_pct()
     out = config.OUTPUT_DIR / theme_report.theme_report_filename_for_month(y, m)
     path = theme_report.render_strong_mover_theme_report(
         out,
@@ -82,16 +83,17 @@ def main() -> int:
         news_by_calendar=news_by_calendar,
         listing_names=names,
         news_cutoff_label=cutoff,
-        title=f"25%↑ 급등 테마·상승 배경 · {out.name.replace('.html', '')}",
+        title=f"{thr}%↑ 급등 테마·상승 배경 · {out.name.replace('.html', '')}",
         subtitle=(
-            f"{y}년 {m}월 · 25%↑ 테마 거래일 {days[0].isoformat()} ~ "
+            f"{y}년 {m}월 · {thr}%↑ 테마 거래일 {days[0].isoformat()} ~ "
             f"{days[-1].isoformat()} ({len(days)}일)"
         ),
         meta_note="캐시 재생성(상승요인 근거 갱신)",
         preserved_day_html=None,
+        allow_empty_shell=True,
     )
     if not path:
-        print("섹션 없음 — 저장 실패", flush=True)
+        print("섹션 없음 - 저장 실패", flush=True)
         return 1
     text = path.read_text(encoding="utf-8")
     n_unknown = text.count("원인 미확인")
