@@ -28,6 +28,14 @@ def test_format_elapsed_line() -> None:
     assert _format_elapsed_line(33) == "소요시간: 0분 33초"
     assert _format_elapsed_line(24 * 60 + 33) == "소요시간: 24분 33초"
     assert _format_elapsed_line(90 * 60 + 5.4) == "소요시간: 90분 05초"
+    assert (
+        _format_elapsed_line(8 * 60 + 59, label="append-rebuild-learning 소요시간")
+        == "append-rebuild-learning 소요시간: 8분 59초"
+    )
+    assert (
+        _format_elapsed_line(15 * 60 + 40, label="--force-ml-retrain 소요시간")
+        == "--force-ml-retrain 소요시간: 15분 40초"
+    )
 
 
 def test_run_daily_auto_enabled_env(monkeypatch) -> None:
@@ -380,3 +388,43 @@ def test_run_main_py_slot_args(monkeypatch, tmp_path: Path) -> None:
 
     _run_main_py(timeout_sec=30, slot="1600", n_day=date(2026, 8, 20))
     assert captured[-1][-2:] == ["--append-rebuild-learning", "20260820"]
+
+
+def test_1600_logs_append_and_ml_elapsed_separately(monkeypatch) -> None:
+    from scripts import run_daily_email as rde
+
+    log_blocks: list[list[str]] = []
+    slots_run: list[str] = []
+
+    monkeypatch.setenv("RUN_DAILY_AUTO_1600", "1")
+    monkeypatch.setenv("RUN_DAILY_AUTO_1630", "1")
+    monkeypatch.setattr(rde, "_append_run_log", lambda lines: log_blocks.append(list(lines)))
+    monkeypatch.setattr(rde, "_check_trading_day_exit", lambda: 0)
+    monkeypatch.setattr(rde, "_wait_for_prior_slots_1600", lambda: True)
+    monkeypatch.setattr(rde, "_ml_retrain_after_append_enabled", lambda: True)
+    monkeypatch.setattr(
+        "src.pipeline.early_validate.current_n_and_n_plus_one",
+        lambda: (date(2026, 9, 2), date(2026, 9, 3)),
+    )
+    monkeypatch.setattr(
+        "src.trading_calendar.last_trading_day_before",
+        lambda _d: date(2026, 9, 1),
+    )
+    monkeypatch.setattr(
+        "src.pipeline.ml_retrain.forward_ml_retrain_t",
+        lambda n_day: date(2026, 9, 3),
+    )
+
+    def fake_run_main(timeout_sec, *, slot, n_day=None, t_day=None):
+        slots_run.append(slot)
+        return 0, f"ok-{slot}", rde._RUN_STATUS_OK
+
+    monkeypatch.setattr(rde, "_run_main_py", fake_run_main)
+
+    code = rde.main(["--slot", "1600", "--skip-email"])
+    assert code == 0
+    assert slots_run == ["1600", "1630"]
+    joined = "\n".join("\n".join(block) for block in log_blocks)
+    assert "append-rebuild-learning 소요시간:" in joined
+    assert "--force-ml-retrain 소요시간:" in joined
+    assert "슬롯 전체 소요시간:" in joined

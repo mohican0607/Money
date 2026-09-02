@@ -73,16 +73,18 @@ def _append_run_log(lines: list[str]) -> Path:
     return path
 
 
-def _format_elapsed_line(elapsed_sec: float) -> str:
-    """슬롯 전체 소요시간 — ``소요시간: 24분 33초``."""
+def _format_elapsed_line(elapsed_sec: float, *, label: str = "소요시간") -> str:
+    """소요시간 한 줄 — 기본 ``소요시간: 24분 33초``."""
     total_s = max(0, int(round(elapsed_sec)))
     minutes, seconds = divmod(total_s, 60)
-    return f"소요시간: {minutes}분 {seconds:02d}초"
+    return f"{label}: {minutes}분 {seconds:02d}초"
 
 
-def _append_elapsed(log_lines: list[str], started: float) -> None:
+def _append_elapsed(
+    log_lines: list[str], started: float, *, label: str = "소요시간"
+) -> None:
     """이메일 완료(또는 종료) 다음 행에 소요시간을 붙인다."""
-    line = _format_elapsed_line(time.perf_counter() - started)
+    line = _format_elapsed_line(time.perf_counter() - started, label=label)
     log_lines.append(line)
     print(line, flush=True)
 
@@ -689,6 +691,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     started = time.perf_counter()
+    slot_total_label = "슬롯 전체 소요시간" if args.slot == "1600" else "소요시간"
 
     _ensure_env_defaults(slot=args.slot)
 
@@ -726,7 +729,7 @@ def main(argv: list[str] | None = None) -> int:
     check_code = _check_trading_day_exit()
     if check_code != 0:
         log_lines.append(f"거래일 검사 종료 code={check_code}")
-        _append_elapsed(log_lines, started)
+        _append_elapsed(log_lines, started, label=slot_total_label)
         _append_run_log(log_lines)
         return 0 if check_code in (2, 3, 4) else check_code
 
@@ -797,7 +800,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(msg, flush=True)
                 log_lines.append(msg)
-                _append_elapsed(log_lines, started)
+                _append_elapsed(log_lines, started, label=slot_total_label)
                 _append_run_log(log_lines)
                 return 0
         elif args.slot == "1630":
@@ -828,6 +831,7 @@ def main(argv: list[str] | None = None) -> int:
             log_lines.append(
                 f"main.py args={n_day.strftime('%Y%m%d')} {t_day.strftime('%Y%m%d')}"
             )
+        step_started = time.perf_counter()
         main_exit, log_text, run_status = _run_main_py(
             timeout_sec,
             slot=args.slot,
@@ -835,6 +839,18 @@ def main(argv: list[str] | None = None) -> int:
             t_day=t_day if args.slot not in ("1600",) else None,
         )
         log_lines.append(f"main.py exit={main_exit} status={run_status}")
+        if args.slot == "1600":
+            _append_elapsed(
+                log_lines,
+                step_started,
+                label="append-rebuild-learning 소요시간",
+            )
+        elif args.slot == "1630":
+            _append_elapsed(
+                log_lines,
+                step_started,
+                label="--force-ml-retrain 소요시간",
+            )
 
         if args.slot == "1600":
             dated_path, monthly_path = None, None
@@ -855,6 +871,7 @@ def main(argv: list[str] | None = None) -> int:
                 log_lines.append(
                     f"chain_cmd={_format_cmd_line(_main_py_cmd(slot='1630', n_day=n_day, t_day=ml_t))}"
                 )
+                ml_started = time.perf_counter()
                 ml_exit, ml_log, ml_status = _run_main_py(
                     timeout_sec,
                     slot="1630",
@@ -862,6 +879,11 @@ def main(argv: list[str] | None = None) -> int:
                     t_day=ml_t,
                 )
                 log_lines.append(f"ML 재학습 exit={ml_exit} status={ml_status}")
+                _append_elapsed(
+                    log_lines,
+                    ml_started,
+                    label="--force-ml-retrain 소요시간",
+                )
                 log_text = (
                     log_text.rstrip()
                     + "\n\n--- ML 재학습 (--force-ml-retrain) ---\n"
@@ -905,7 +927,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         if args.skip_email:
-            _append_elapsed(log_lines, started)
+            _append_elapsed(log_lines, started, label=slot_total_label)
             _append_run_log(log_lines)
             if run_status == _RUN_STATUS_TIMEOUT:
                 return 124
@@ -925,7 +947,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(msg, file=sys.stderr if not sent else sys.stdout, flush=True)
         log_lines.append(msg)
-        _append_elapsed(log_lines, started)
+        _append_elapsed(log_lines, started, label=slot_total_label)
         _append_run_log(log_lines)
 
         if run_status == _RUN_STATUS_TIMEOUT:
@@ -963,7 +985,7 @@ def main(argv: list[str] | None = None) -> int:
             print(msg, file=sys.stderr if not sent else sys.stdout, flush=True)
             log_lines.append(msg)
 
-        _append_elapsed(log_lines, started)
+        _append_elapsed(log_lines, started, label=slot_total_label)
         _append_run_log(log_lines)
         return 1
 
