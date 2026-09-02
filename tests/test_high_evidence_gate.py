@@ -77,3 +77,17 @@ def test_passes_precision_gate_rejects_low_calibrated_despite_high_raw(
 def test_passes_precision_gate_accepts_strong_news_and_calibrated() -> None:
     row = _row(ml_prob=0.12, keyword_hits=2, mention_score=0.4)
     assert prk.passes_precision_gate(row, top_ml=0.12, rank_position=1)
+
+
+def test_passes_precision_gate_uses_relative_floor_not_abs_10(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "PRED_HIGH_NEWS_EVIDENCE_MIN", 0.55)
+    monkeypatch.setattr(config, "PRED_HIGH_CALIBRATED_RELATIVE", 0.72)
+    monkeypatch.setattr(config, "PRED_PRECISION_MIN_PILLARS", 1)
+    monkeypatch.setattr(config, "PRED_HIGH_SELECT_FLOOR", 0.18)
+    monkeypatch.setattr(config, "PRED_ML_HIGH_CONFIDENCE_PROB", 0.10)
+    row = _row(ml_prob=0.023, keyword_hits=2, mention_score=0.6)
+    assert prk.passes_precision_gate(row, top_ml=0.023, rank_position=1)
+    too_low = _row(ml_prob=0.010, keyword_hits=2, mention_score=0.6)
+    assert not prk.passes_precision_gate(too_low, top_ml=0.023, rank_position=2)

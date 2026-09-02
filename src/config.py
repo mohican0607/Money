@@ -284,10 +284,11 @@ PRED_PRECISION_MAX_RANK = _positive_int_env("PRED_PRECISION_MAX_RANK", 15)
 PRED_PRECISION_ML_FLOOR = _float_env("PRED_PRECISION_ML_FLOOR", 0.06)
 # 고확신 전용: 전일 수익률 ≥ 이 값이면 high 제외(일반 과열 차단보다 엄격)
 PRED_HIGH_EXHAUSTION_BLOCK_RET = _float_env("PRED_HIGH_EXHAUSTION_BLOCK_RET", 0.12)
-# 비과열 후보 풀 최고 ML 대비 상대 하한·절대 하한
+# 비과열 후보 풀 최고 ML 대비 상대 하한(raw 하이브리드 경로)
 PRED_HIGH_RELATIVE_ML = _float_env("PRED_HIGH_RELATIVE_ML", 0.48)
 PRED_HIGH_ABS_ML_FLOOR = _float_env("PRED_HIGH_ABS_ML_FLOOR", 0.28)
-PRED_HIGH_SELECT_FLOOR = _float_env("PRED_HIGH_SELECT_FLOOR", 0.32)
+# 선정점수 하한. 당일 1등 보정 ML 이 10% 미만이면 비율로 낮춘다.
+PRED_HIGH_SELECT_FLOOR = _float_env("PRED_HIGH_SELECT_FLOOR", 0.18)
 PRED_PRECISION_BUCKET_MIN_SAMPLES = _positive_int_env("PRED_PRECISION_BUCKET_MIN_SAMPLES", 8)
 PRED_PRECISION_BUCKET_MIN_RATIO = _float_env("PRED_PRECISION_BUCKET_MIN_RATIO", 0.28)
 PRED_PRECISION_CODE_MIN_TRIES = _positive_int_env("PRED_PRECISION_CODE_MIN_TRIES", 5)
@@ -303,14 +304,12 @@ PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS = _float_env(
 PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK = _non_negative_int_env(
     "PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK", 8
 )
-# N일 → N+1일 실전 확신은 보정확률·최종 순위·뉴스 근거를 모두 통과해야 한다.
-# 통과자가 없으면 빈 슬롯을 허용한다(강제 high/mid 금지).
-# 모집단 보정 후 상위 확률도 대개 수 %대다. 0.30 같은 구버전 하한은 전부 기각한다.
+# N일 → N+1일 실전 확신: 고확신은 당일 풀 1등 대비 상대 하한 + 뉴스·기둥.
+# 절대 10% 문턱은 쓰지 않는다. 통과자가 없으면 high 는 비울 수 있다.
 PRED_FORWARD_HIGH_CALIBRATED_MIN = _float_env(
-    "PRED_FORWARD_HIGH_CALIBRATED_MIN", 0.04
+    "PRED_FORWARD_HIGH_CALIBRATED_MIN", 0.01
 )
-# 고확신: 보정 ML 절대·상대 하한(``ml_rank_score`` 가 아닌 ``ml_prob`` 기준)
-PRED_HIGH_CALIBRATED_ABS_MIN = _float_env("PRED_HIGH_CALIBRATED_ABS_MIN", 0.06)
+PRED_HIGH_CALIBRATED_ABS_MIN = _float_env("PRED_HIGH_CALIBRATED_ABS_MIN", 0.01)
 PRED_HIGH_CALIBRATED_RELATIVE = _float_env("PRED_HIGH_CALIBRATED_RELATIVE", 0.72)
 # 뉴스·언급·맥락 합성 근거(0~1). 이 값 미만이면 high 불가.
 PRED_HIGH_NEWS_EVIDENCE_MIN = _float_env("PRED_HIGH_NEWS_EVIDENCE_MIN", 0.55)
@@ -438,14 +437,13 @@ PRED_SECTOR_RESCUE_HIGH_ENABLED = os.getenv(
 ).strip().lower() in ("1", "true", "yes", "on")
 PRED_OUTPUT_MAX = _positive_int_env("PRED_OUTPUT_MAX", 10)
 PRED_MID_OUTPUT_MAX = _positive_int_env("PRED_MID_OUTPUT_MAX", 5)
-# 레짐·오판 tightness 로 슬롯을 줄여도 이 개수 미만으로는 내리지 않음.
+# 검토 표 바닥(레짐이 슬롯 수를 줄이지 않음). 고확신이 비면 중확신 패딩.
 PRED_FORWARD_MIN_HIGH = _positive_int_env("PRED_FORWARD_MIN_HIGH", 3)
 PRED_FORWARD_MIN_MID = _positive_int_env("PRED_FORWARD_MIN_MID", 5)
-# 고확신이 비어도 표에 남길 최소 검토 종목(중확신 패딩).
 PRED_FORWARD_MIN_SLATE = _positive_int_env("PRED_FORWARD_MIN_SLATE", 8)
 # 예측 전용일 표 노출 상한: 고확신(~10)+중확신(~5). 게이트 0건이면 순위 watchlist 로 채움.
 PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 15)
-# 고/중 확신: ML 급등 확률 하한(순위 상위 슬롯에만 적용)
+# 표시 매핑·레거시 하이브리드용. 전방 고확신 게이트는 상대 하한을 쓴다.
 PRED_ML_HIGH_CONFIDENCE_PROB = max(0.08, _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.11))
 PRED_ML_MID_CONFIDENCE_PROB = max(0.04, _float_env("PRED_ML_MID_CONFIDENCE_PROB", 0.07))
 PRED_ML_MIN_OUTPUT_PROB = _float_env("PRED_ML_MIN_OUTPUT_PROB", 0.025)

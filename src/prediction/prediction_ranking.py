@@ -314,15 +314,13 @@ def _adaptive_calibrated_high_floor(
     *,
     regime_scale: float,
 ) -> float:
-    """풀 상위 보정확률·레짐에 따른 고확신 ML 하한."""
-    rs = max(0.25, min(1.0, float(regime_scale)))
+    """당일 풀 1등 보정 ML 대비 상대 하한. 절대 10% 문턱은 쓰지 않는다."""
+    _ = regime_scale
     top = _pool_top_calibrated_ml(pool)
     rel = float(config.PRED_HIGH_CALIBRATED_RELATIVE)
-    abs_min = float(config.PRED_HIGH_CALIBRATED_ABS_MIN) / rs
-    base = float(config.PRED_FORWARD_HIGH_CALIBRATED_MIN) / rs
     if top > 1e-12:
-        return max(base, abs_min, top * rel)
-    return max(base, abs_min)
+        return top * rel
+    return 0.0
 
 
 def row_has_news_evidence(row: PredictionRow) -> bool:
@@ -1627,23 +1625,15 @@ def _forward_conviction_score(row: PredictionRow) -> float:
 
 
 def _forward_slot_caps(regime_scale: float) -> tuple[int, int]:
-    """레짐·tightness 로 상한을 줄이되, 검토용 최솟값은 지킨다."""
-    rs = max(0.25, min(1.0, float(regime_scale)))
+    """슬롯 상한. 레짐·tightness 는 개수를 줄이지 않는다."""
+    _ = regime_scale
     high_cap = max(0, int(config.PRED_PRECISION_MAX_HIGH))
     mid_cap = (
         max(0, int(config.PRED_MID_OUTPUT_MAX))
         if config.PRED_FORWARD_MID_ENABLED
         else 0
     )
-    min_high = min(high_cap, max(0, int(config.PRED_FORWARD_MIN_HIGH)))
-    min_mid = min(mid_cap, max(0, int(config.PRED_FORWARD_MIN_MID))) if mid_cap else 0
-    max_high = (
-        max(min_high, min(high_cap, int(round(high_cap * rs)))) if high_cap else 0
-    )
-    max_mid = (
-        max(min_mid, min(mid_cap, int(round(mid_cap * rs)))) if mid_cap else 0
-    )
-    return max_high, max_mid
+    return high_cap, mid_cap
 
 
 def assign_forward_confidence_tiers(
@@ -1655,13 +1645,11 @@ def assign_forward_confidence_tiers(
     """
     N일 → N+1일 실전 확신 게이트.
 
-    보정 ML 확률·최종 순위·키워드 근거·비뉴스 기둥 합의를 모두 요구합니다.
-    조건을 통과한 행이 없으면 high/mid를 비워 둡니다. 과거 구현처럼 슬롯을
-    강제로 채우면 희귀 사건에서 ``고확신``이 사실상 상위 N개라는 뜻으로
-    변질되므로 fallback 승격과 테마/섹터 자동 승격을 금지합니다.
+    고확신은 절대 확률(10%)이 아니라 **당일 풀 1등 대비 상대 하한** +
+    뉴스·비뉴스 기둥입니다. 통과자가 없으면 high 는 비울 수 있지만,
+    검토 표는 ``fill_forward_review_slate`` 가 채웁니다.
     """
     rs = max(0.25, min(1.0, float(regime_scale)))
-    # tightness·레짐은 확률 하한에 반영. 슬롯 수는 최솟값(고 3 / 중 5) 아래로 내리지 않음.
     _ = feedback_ctx
     max_high, max_mid = _forward_slot_caps(rs)
 
@@ -1681,23 +1669,14 @@ def assign_forward_confidence_tiers(
     confidence_ranked = sorted(
         pool,
         key=lambda row: (
-            float(getattr(row, "ml_precision_score", 0.0) or 0.0),
             float(getattr(row, "ml_prob", 0.0) or 0.0),
             rank_score_for_row(row),
         ),
         reverse=True,
     )
-    top_precision = max(
-        (
-            float(getattr(row, "ml_precision_score", 0.0) or 0.0)
-            for row in confidence_ranked
-        ),
-        default=0.0,
-    )
     high_prob_floor = _adaptive_calibrated_high_floor(pool, regime_scale=rs)
     high_rank_max = int(config.PRED_FORWARD_HIGH_MAX_RANK)
     high_kw_min = int(config.PRED_FORWARD_HIGH_MIN_KEYWORD_HITS)
-    high_relative = float(config.PRED_FORWARD_HIGH_RELATIVE_PRECISION)
     high_n = 0
     for pos, row in enumerate(confidence_ranked, start=1):
         if high_n >= max_high or pos > high_rank_max:
@@ -1708,14 +1687,6 @@ def assign_forward_confidence_tiers(
         if calibrated is None:
             continue
         if calibrated + 1e-12 < high_prob_floor:
-            continue
-        precision_raw = float(
-            getattr(row, "ml_precision_score", 0.0) or 0.0
-        )
-        if (
-            top_precision > 1e-12
-            and precision_raw + 1e-12 < top_precision * high_relative
-        ):
             continue
         if not _high_tier_news_ok(row):
             continue
@@ -1732,7 +1703,7 @@ def assign_forward_confidence_tiers(
             continue
         pillars = compute_pillar_scores(row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None))
         non_news = count_non_news_strong_pillars(pillars, threshold=0.40)
-        if non_news < 2:
+        if non_news < max(1, int(config.PRED_PRECISION_MIN_PILLARS)):
             continue
         if not _code_history_ok(str(row.code).zfill(6)):
             continue
@@ -1740,7 +1711,7 @@ def assign_forward_confidence_tiers(
         high_n += 1
 
     mid_n = 0
-    mid_prob_floor = float(config.PRED_FORWARD_MID_CALIBRATED_MIN) / rs
+    mid_prob_floor = float(config.PRED_FORWARD_MID_CALIBRATED_MIN)
     mid_rank_max = int(config.PRED_FORWARD_MID_MAX_RANK)
     for pos, row in enumerate(ranked, start=1):
         if mid_n >= max_mid or pos > mid_rank_max:
@@ -1774,24 +1745,15 @@ def fill_forward_review_slate(
     feedback_ctx: dict[str, object] | None = None,
 ) -> None:
     """
-    20분 검토용: 고·중 합이 ``PRED_FORWARD_SHOW_MAX`` 에 못 미치면 mid 슬롯을 순위로 채웁니다.
+    20분 검토용: 고·중 합이 ``PRED_FORWARD_MIN_SLATE`` 에 못 미치면 mid 로 채웁니다.
 
-    엄격 게이트 통과가 적어도 표·freeze 에 ``PRED_FORWARD_SHOW_MAX`` 근처 후보가 남도록 합니다.
-    패딩은 ``PRED_FORWARD_SLATE_PAD_*`` 조건(오판 일수·tightness 하한)을 통과할 때만 적용합니다.
+    레짐·오판 tightness·연속 미스 일수는 슬롯을 비우지 않습니다.
     """
     if not pool or not config.PRED_CONFIDENCE_OUTPUT_ENABLED:
         return
     if not config.PRED_FORWARD_MID_ENABLED:
         return
-    streak = 0
-    tightness = 1.0
-    if feedback_ctx and config.PRED_FEEDBACK_ADAPTIVE_ENABLED:
-        streak = int(feedback_ctx.get("recent_miss_streak_days", 0) or 0)
-        tightness = float(feedback_ctx.get("adaptive_tightness", 1.0) or 1.0)
-    if streak > int(config.PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK):
-        return
-    if tightness + 1e-12 < float(config.PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS):
-        return
+    _ = feedback_ctx
     rs = max(0.25, min(1.0, float(regime_scale)))
     _max_high, max_mid = _forward_slot_caps(rs)
     cap = int(config.PRED_FORWARD_SHOW_MAX)
@@ -1898,10 +1860,10 @@ def finalize_ranked_predictions(
     if feedback_ctx and config.PRED_FEEDBACK_ADAPTIVE_ENABLED:
         from . import feedback_loop
 
-        tightness = float(feedback_ctx.get("adaptive_tightness", 1.0) or 1.0)
-        r_scale *= tightness
         feedback_loop.apply_feedback_rank_penalties(pool, feedback_ctx)
         pool = sorted(pool, key=rank_score_for_row, reverse=True)
+    # 레짐·tightness 는 순위 페널티만. 고/중 슬롯 개수는 줄이지 않는다.
+    slot_scale = 1.0
 
     if config.PRED_USE_DISPLAY_RANK_MAPPING:
         predict.apply_display_return_pct_ranking(
@@ -1924,26 +1886,18 @@ def finalize_ranked_predictions(
         # 실전 의미를 갖는다. 장후 재생에서만 permissive tier를 쓰지 않는다.
         if config.PRED_CONFIDENCE_OUTPUT_ENABLED:
             assign_forward_confidence_tiers(
-                pool, regime_scale=r_scale, feedback_ctx=feedback_ctx
+                pool, regime_scale=slot_scale, feedback_ctx=feedback_ctx
             )
             if config.PRED_PRECISION_GATE_ENABLED:
                 refine_confidence_tiers(
                     pool,
                     feedback_ctx=feedback_ctx,
-                    regime_scale=r_scale,
+                    regime_scale=slot_scale,
                 )
         pool = sorted(pool, key=rank_score_for_row, reverse=True)
-        if config.PRED_FEEDBACK_ADAPTIVE_ENABLED and feedback_ctx:
-            streak = int(feedback_ctx.get("recent_miss_streak_days", 0) or 0)
-            tightness = float(feedback_ctx.get("adaptive_tightness", 1.0) or 1.0)
-            if (
-                streak <= int(config.PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK)
-                and tightness + 1e-12
-                >= float(config.PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS)
-            ):
-                fill_forward_review_slate(
-                    pool, regime_scale=r_scale, feedback_ctx=feedback_ctx
-                )
+        fill_forward_review_slate(
+            pool, regime_scale=slot_scale, feedback_ctx=feedback_ctx
+        )
     else:
         for pos, row in enumerate(pool, start=1):
             row.confidence_tier = confidence_tier(
@@ -2057,44 +2011,34 @@ def passes_precision_gate(
         return False
 
     cal = _calibrated_ml_prob(row)
+    rel = float(config.PRED_HIGH_CALIBRATED_RELATIVE)
     if cal is not None:
-        abs_floor = max(
-            float(config.PRED_HIGH_CALIBRATED_ABS_MIN),
-            float(config.PRED_PRECISION_ML_FLOOR),
-            float(config.PRED_ML_HIGH_CONFIDENCE_PROB),
-        )
-        if cal + 1e-12 < abs_floor:
-            return False
-        rel = float(config.PRED_HIGH_CALIBRATED_RELATIVE)
         if top_ml > 1e-9 and cal + 1e-12 < top_ml * rel:
             return False
         ml = cal
     else:
         ml = _ml_rank_signal(row)
-        abs_floor = float(config.PRED_HIGH_ABS_ML_FLOOR)
-        if ml + 1e-12 < abs_floor:
-            return False
-        rel = float(config.PRED_HIGH_RELATIVE_ML)
-        if top_ml > 1e-9 and ml + 1e-12 < top_ml * rel:
+        rel_raw = float(config.PRED_HIGH_RELATIVE_ML)
+        if top_ml > 1e-9 and ml + 1e-12 < top_ml * rel_raw:
             return False
 
     sel = high_precision_select_score(row)
-    if sel + 1e-12 < float(config.PRED_HIGH_SELECT_FLOOR):
+    sel_floor = float(config.PRED_HIGH_SELECT_FLOOR)
+    if top_ml > 1e-9 and top_ml < 0.10:
+        sel_floor *= max(0.25, min(1.0, top_ml / 0.10))
+    if sel + 1e-12 < sel_floor:
         return False
     pillars = _pillar_scores(row)
     non_news = count_non_news_strong_pillars(pillars, threshold=0.40)
-    if non_news < int(config.PRED_PRECISION_MIN_PILLARS) and ml + 1e-12 < 0.45:
+    min_pillars = max(1, int(config.PRED_PRECISION_MIN_PILLARS))
+    if non_news < min_pillars:
         return False
     if pillars["news"] + 1e-12 >= 0.55 and non_news < 1:
         return False
-    if pillars["momentum"] + 1e-12 >= 0.70 and float(getattr(row, "ret_lag1", 0.0) or 0.0) >= 0.10:
-        if ml + 1e-12 < abs_floor + 0.15:
-            return False
     if not _code_history_ok(str(row.code).zfill(6)):
         return False
-    if not _bucket_ok(row, feedback_ctx):
-        if ml + 1e-12 < abs_floor + 0.20 or sel + 1e-12 < 0.50:
-            return False
+    if not _bucket_ok(row, feedback_ctx) and sel + 1e-12 < max(0.50, sel_floor):
+        return False
     return True
 
 
