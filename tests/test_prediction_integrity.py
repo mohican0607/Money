@@ -79,7 +79,13 @@ def test_reuse_prediction_freeze_after_market_close() -> None:
             "name": "A",
             "predicted_return_pct": 22.0,
             "confidence_tier": "high",
-        }
+        },
+        {
+            "code": "000002",
+            "name": "B",
+            "predicted_return_pct": 21.0,
+            "confidence_tier": "mid",
+        },
     ]
     assert _should_reuse_prediction_freeze(
         ignore_freeze_for_trading_day=False,
@@ -92,6 +98,22 @@ def test_reuse_prediction_freeze_after_market_close() -> None:
     assert not _should_reuse_prediction_freeze(
         ignore_freeze_for_trading_day=False,
         frozen_items=None,
+    )
+
+
+def test_singleton_freeze_is_not_reused() -> None:
+    items = [
+        {
+            "code": "000001",
+            "name": "A",
+            "predicted_return_pct": 22.0,
+            "confidence_tier": "mid",
+        }
+    ]
+    assert not _freeze_entry_usable(items)
+    assert not _should_reuse_prediction_freeze(
+        ignore_freeze_for_trading_day=False,
+        frozen_items=items,
     )
 
 

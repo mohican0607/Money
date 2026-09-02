@@ -1626,6 +1626,26 @@ def _forward_conviction_score(row: PredictionRow) -> float:
     return s
 
 
+def _forward_slot_caps(regime_scale: float) -> tuple[int, int]:
+    """레짐·tightness 로 상한을 줄이되, 검토용 최솟값은 지킨다."""
+    rs = max(0.25, min(1.0, float(regime_scale)))
+    high_cap = max(0, int(config.PRED_PRECISION_MAX_HIGH))
+    mid_cap = (
+        max(0, int(config.PRED_MID_OUTPUT_MAX))
+        if config.PRED_FORWARD_MID_ENABLED
+        else 0
+    )
+    min_high = min(high_cap, max(0, int(config.PRED_FORWARD_MIN_HIGH)))
+    min_mid = min(mid_cap, max(0, int(config.PRED_FORWARD_MIN_MID))) if mid_cap else 0
+    max_high = (
+        max(min_high, min(high_cap, int(round(high_cap * rs)))) if high_cap else 0
+    )
+    max_mid = (
+        max(min_mid, min(mid_cap, int(round(mid_cap * rs)))) if mid_cap else 0
+    )
+    return max_high, max_mid
+
+
 def assign_forward_confidence_tiers(
     pool: list[PredictionRow],
     *,
@@ -1641,21 +1661,9 @@ def assign_forward_confidence_tiers(
     변질되므로 fallback 승격과 테마/섹터 자동 승격을 금지합니다.
     """
     rs = max(0.25, min(1.0, float(regime_scale)))
-    max_high = max(
-        0,
-        min(
-            int(config.PRED_PRECISION_MAX_HIGH),
-            int(round(int(config.PRED_PRECISION_MAX_HIGH) * rs)),
-        ),
-    )
-    # tightness·레짐은 regime_scale(슬롯 수·확률 하한)에 이미 반영.
-    # 연속 오판으로 high를 0으로 닫지 않는다 — 설정된 상한(고 10 / 중 5)을 유지.
+    # tightness·레짐은 확률 하한에 반영. 슬롯 수는 최솟값(고 3 / 중 5) 아래로 내리지 않음.
     _ = feedback_ctx
-    max_mid = (
-        max(0, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
-        if config.PRED_FORWARD_MID_ENABLED
-        else 0
-    )
+    max_high, max_mid = _forward_slot_caps(rs)
 
     for row in pool:
         row.confidence_tier = "none"
@@ -1785,8 +1793,9 @@ def fill_forward_review_slate(
     if tightness + 1e-12 < float(config.PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS):
         return
     rs = max(0.25, min(1.0, float(regime_scale)))
-    max_mid = max(0, int(round(int(config.PRED_MID_OUTPUT_MAX) * rs)))
+    _max_high, max_mid = _forward_slot_caps(rs)
     cap = int(config.PRED_FORWARD_SHOW_MAX)
+    min_slate = min(cap, max(int(config.PRED_FORWARD_MIN_SLATE), max_mid))
     target = min(cap, len(pool))
     ranked = sorted(pool, key=rank_score_for_row, reverse=True)
     mid_n = sum(
@@ -1795,14 +1804,14 @@ def fill_forward_review_slate(
     rank_limit = max(int(config.PRED_FORWARD_MID_MAX_RANK), cap)
 
     for pos, row in enumerate(ranked, start=1):
-        if mid_n >= max_mid:
-            break
         tiered = sum(
             1
             for r in pool
             if str(getattr(r, "confidence_tier", "") or "") in ("high", "mid")
         )
         if tiered >= target:
+            break
+        if mid_n >= max_mid and tiered >= min_slate:
             break
         if str(getattr(row, "confidence_tier", "") or "") in ("high", "mid"):
             continue

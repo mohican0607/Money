@@ -124,6 +124,59 @@ def test_miss_streak_does_not_zero_high_slots(monkeypatch: pytest.MonkeyPatch) -
     assert high_n == 10
 
 
+def test_tight_regime_keeps_mid_slot_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "PRED_PRECISION_MAX_HIGH", 10)
+    monkeypatch.setattr(config, "PRED_MID_OUTPUT_MAX", 5)
+    monkeypatch.setattr(config, "PRED_FORWARD_MIN_HIGH", 3)
+    monkeypatch.setattr(config, "PRED_FORWARD_MIN_MID", 5)
+    monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", True)
+    high, mid = prediction_ranking._forward_slot_caps(0.286)
+    assert high == 3
+    assert mid == 5
+
+
+def test_tight_regime_pads_review_slate_instead_of_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 15)
+    monkeypatch.setattr(config, "PRED_MID_OUTPUT_MAX", 5)
+    monkeypatch.setattr(config, "PRED_FORWARD_MIN_MID", 5)
+    monkeypatch.setattr(config, "PRED_FORWARD_MIN_SLATE", 8)
+    monkeypatch.setattr(config, "PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK", 8)
+    monkeypatch.setattr(config, "PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS", 0.50)
+    monkeypatch.setattr(config, "PRED_FEEDBACK_ADAPTIVE_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_REQUIRE_NEWS_EVIDENCE", False)
+    from src.prediction.predict import PredictionRow
+
+    rows = [
+        PredictionRow(
+            f"{i:06d}",
+            f"N{i}",
+            1.0,
+            22.0,
+            ["kw"],
+            [],
+            confidence_tier="none",
+            keyword_hits=2,
+            rank_position=i + 1,
+            rank_score=1.0 - i * 0.05,
+            mention_score=0.4,
+        )
+        for i in range(12)
+    ]
+    prediction_ranking.fill_forward_review_slate(
+        rows,
+        regime_scale=0.286,
+        feedback_ctx={"recent_miss_streak_days": 8, "adaptive_tightness": 0.52},
+    )
+    tiered = [
+        r
+        for r in rows
+        if str(getattr(r, "confidence_tier", "") or "") in ("high", "mid")
+    ]
+    assert len(tiered) >= 8
+
+
 def test_slate_pad_still_runs_on_long_miss_streak(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
     monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", True)

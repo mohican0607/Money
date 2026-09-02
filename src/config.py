@@ -438,6 +438,11 @@ PRED_SECTOR_RESCUE_HIGH_ENABLED = os.getenv(
 ).strip().lower() in ("1", "true", "yes", "on")
 PRED_OUTPUT_MAX = _positive_int_env("PRED_OUTPUT_MAX", 10)
 PRED_MID_OUTPUT_MAX = _positive_int_env("PRED_MID_OUTPUT_MAX", 5)
+# 레짐·오판 tightness 로 슬롯을 줄여도 이 개수 미만으로는 내리지 않음.
+PRED_FORWARD_MIN_HIGH = _positive_int_env("PRED_FORWARD_MIN_HIGH", 3)
+PRED_FORWARD_MIN_MID = _positive_int_env("PRED_FORWARD_MIN_MID", 5)
+# 고확신이 비어도 표에 남길 최소 검토 종목(중확신 패딩).
+PRED_FORWARD_MIN_SLATE = _positive_int_env("PRED_FORWARD_MIN_SLATE", 8)
 # 예측 전용일 표 노출 상한: 고확신(~10)+중확신(~5). 게이트 0건이면 순위 watchlist 로 채움.
 PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 15)
 # 고/중 확신: ML 급등 확률 하한(순위 상위 슬롯에만 적용)

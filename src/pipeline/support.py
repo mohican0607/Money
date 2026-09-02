@@ -191,6 +191,9 @@ def _freeze_entry_usable(items: list[dict]) -> bool:
     if not ok:
         return False
     cap = int(config.PRED_FORWARD_SHOW_MAX)
+    if len(real) <= 1:
+        # 1종목 freeze 는 재사용하지 않음(레짐 축소로 말라 버린 slate).
+        return False
     if len(real) >= 3 and cap >= 6 and len(real) < min(cap, 6):
         if all(str(x.get("confidence_tier") or "none") == "high" for x in real):
             return False
