@@ -57,6 +57,8 @@ _LOCK_1530 = _LOG_DIR / ".run_1530.lock"
 _LOCK_1600 = _LOG_DIR / ".run_1600.lock"
 _LOCK_1630 = _LOG_DIR / ".run_1630.lock"
 _WAIT_PRIOR_MAX_SEC = 90 * 60  # 선행 슬롯(main.py timeout과 동일) 대기 상한
+_LOG_BLOCK_SEPARATOR = "\n\n\n\n"  # run_daily 로그 블록 사이 빈 줄 3줄
+_LOG_ML_RETRAIN_DIVIDER = "--- ML 재학습 (--force-ml-retrain) ---"
 
 
 def _append_run_log(lines: list[str]) -> Path:
@@ -66,7 +68,8 @@ def _append_run_log(lines: list[str]) -> Path:
     path = _LOG_DIR / f"run_daily_{day}.log"
     stamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST")
     with path.open("a", encoding="utf-8") as fh:
-        fh.write(f"\n=== {stamp} ===\n")
+        fh.write(_LOG_BLOCK_SEPARATOR)
+        fh.write(f"=== {stamp} ===\n")
         fh.write("\n".join(lines))
         if lines and not lines[-1].endswith("\n"):
             fh.write("\n")
@@ -867,6 +870,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"T={ml_t.isoformat()}"
                 )
                 print(chain_msg, flush=True)
+                log_lines.append(_LOG_ML_RETRAIN_DIVIDER)
                 log_lines.append(chain_msg)
                 log_lines.append(
                     f"chain_cmd={_format_cmd_line(_main_py_cmd(slot='1630', n_day=n_day, t_day=ml_t))}"

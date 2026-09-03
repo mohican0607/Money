@@ -7,6 +7,7 @@ from datetime import date
 from pathlib import Path
 
 from scripts.run_daily_email import (
+    _append_run_log,
     _build_email_body,
     _build_email_subject,
     _copy_slot_report_snapshot,
@@ -15,6 +16,7 @@ from scripts.run_daily_email import (
     _expected_monthly_report_path,
     _format_elapsed_line,
     _is_slot_report_snapshot,
+    _LOG_ML_RETRAIN_DIVIDER,
     _run_main_py,
     _send_run_email,
     _slot_report_snapshot_path,
@@ -426,5 +428,29 @@ def test_1600_logs_append_and_ml_elapsed_separately(monkeypatch) -> None:
     assert slots_run == ["1600", "1630"]
     joined = "\n".join("\n".join(block) for block in log_blocks)
     assert "append-rebuild-learning 소요시간:" in joined
+    assert _LOG_ML_RETRAIN_DIVIDER in joined
     assert "--force-ml-retrain 소요시간:" in joined
     assert "슬롯 전체 소요시간:" in joined
+    append_idx = joined.index("append-rebuild-learning 소요시간:")
+    divider_idx = joined.index(_LOG_ML_RETRAIN_DIVIDER)
+    chain_idx = joined.index("16:00 append 완료 → ML 재학습 즉시 실행")
+    assert append_idx < divider_idx < chain_idx
+
+
+def test_append_run_log_uses_triple_blank_separator(monkeypatch, tmp_path: Path) -> None:
+    from datetime import datetime, timezone, timedelta
+
+    from scripts import run_daily_email as rde
+
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    monkeypatch.setattr(rde, "_LOG_DIR", log_dir)
+    fixed_now = datetime(2026, 9, 3, 16, 0, 6, tzinfo=timezone(timedelta(hours=9)))
+    monkeypatch.setattr(rde, "datetime", type("FakeDT", (), {"now": staticmethod(lambda _tz: fixed_now)}))
+
+    _append_run_log(["status=started"])
+    _append_run_log(["status=done"])
+
+    text = (log_dir / "run_daily_20260903.log").read_text(encoding="utf-8")
+    assert text.startswith("\n\n\n\n===")
+    assert text.count("\n\n\n\n=== ") == 2
