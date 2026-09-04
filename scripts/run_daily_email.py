@@ -42,6 +42,7 @@ _LOG_DIR = ROOT / "scripts" / "logs"
 _RUN_STATUS_OK = "ok"
 _RUN_STATUS_TIMEOUT = "timeout"
 _RUN_STATUS_ERROR = "error"
+_RUN_STATUS_SKIPPED = "skipped"
 
 SLOT_LABELS = {
     "1430": "14:30",
@@ -76,20 +77,44 @@ def _append_run_log(lines: list[str]) -> Path:
     return path
 
 
-def _format_elapsed_line(elapsed_sec: float, *, label: str = "소요시간") -> str:
-    """소요시간 한 줄 — 기본 ``소요시간: 24분 33초``."""
+def _format_elapsed_line(
+    elapsed_sec: float,
+    *,
+    label: str = "소요시간",
+    started_at: datetime | None = None,
+    ended_at: datetime | None = None,
+) -> str:
+    """소요시간 한 줄 — 기본 ``소요시간: 24분 33초``. 시각이 있으면 ``(14:30:08 ~ 14:56:54)``."""
     total_s = max(0, int(round(elapsed_sec)))
     minutes, seconds = divmod(total_s, 60)
-    return f"{label}: {minutes}분 {seconds:02d}초"
+    line = f"{label}: {minutes}분 {seconds:02d}초"
+    if started_at is not None:
+        end = ended_at or datetime.now(KST)
+        line += f" ({started_at.strftime('%H:%M:%S')} ~ {end.strftime('%H:%M:%S')})"
+    return line
 
 
 def _append_elapsed(
-    log_lines: list[str], started: float, *, label: str = "소요시간"
+    log_lines: list[str],
+    started: float,
+    *,
+    label: str = "소요시간",
+    started_at: datetime | None = None,
 ) -> None:
     """이메일 완료(또는 종료) 다음 행에 소요시간을 붙인다."""
-    line = _format_elapsed_line(time.perf_counter() - started, label=label)
+    line = _format_elapsed_line(
+        time.perf_counter() - started,
+        label=label,
+        started_at=started_at,
+        ended_at=datetime.now(KST) if started_at is not None else None,
+    )
     log_lines.append(line)
     print(line, flush=True)
+
+
+def _finish_run_log(log_lines: list[str], *, status: str) -> None:
+    """완료 블록 — 시작 하트비트의 slot/status=started 는 반복하지 않는다."""
+    _append_run_log([f"status={status}", *log_lines])
 
 
 def _smtp_auth_hint(exc: BaseException) -> str:
@@ -694,6 +719,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     started = time.perf_counter()
+    started_at = datetime.now(KST)
     slot_total_label = "슬롯 전체 소요시간" if args.slot == "1600" else "소요시간"
 
     _ensure_env_defaults(slot=args.slot)
@@ -715,7 +741,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"slot={args.slot} skip_email={args.skip_email}",
                 "status=skipped_auto_disabled",
                 msg,
-                _format_elapsed_line(time.perf_counter() - started),
+                _format_elapsed_line(
+                    time.perf_counter() - started,
+                    started_at=started_at,
+                    ended_at=datetime.now(KST),
+                ),
             ]
         )
         return 0
@@ -726,14 +756,21 @@ def main(argv: list[str] | None = None) -> int:
         in ("1", "true", "True", "yes")
     )
 
-    log_lines: list[str] = [f"slot={args.slot} skip_email={args.skip_email}", "status=started"]
-    _append_run_log(log_lines)
+    slot_header = f"slot={args.slot} skip_email={args.skip_email}"
+    log_lines: list[str] = []
+    # 중단·행 대비 하트비트. 완료 블록에는 slot/status=started 를 다시 쓰지 않는다.
+    _append_run_log([slot_header, "status=started"])
 
     check_code = _check_trading_day_exit()
     if check_code != 0:
         log_lines.append(f"거래일 검사 종료 code={check_code}")
-        _append_elapsed(log_lines, started, label=slot_total_label)
-        _append_run_log(log_lines)
+        _append_elapsed(
+            log_lines, started, label=slot_total_label, started_at=started_at
+        )
+        _finish_run_log(
+            log_lines,
+            status=_RUN_STATUS_SKIPPED if check_code in (2, 3, 4) else _RUN_STATUS_ERROR,
+        )
         return 0 if check_code in (2, 3, 4) else check_code
 
     n_day, t_day = current_n_and_n_plus_one()
@@ -803,8 +840,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(msg, flush=True)
                 log_lines.append(msg)
-                _append_elapsed(log_lines, started, label=slot_total_label)
-                _append_run_log(log_lines)
+                _append_elapsed(
+                    log_lines, started, label=slot_total_label, started_at=started_at
+                )
+                _finish_run_log(log_lines, status=_RUN_STATUS_SKIPPED)
                 return 0
         elif args.slot == "1630":
             if not _wait_for_prior_slots_1630():
@@ -814,8 +853,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(msg, flush=True)
                 log_lines.append(msg)
-                _append_elapsed(log_lines, started)
-                _append_run_log(log_lines)
+                _append_elapsed(
+                    log_lines, started, label=slot_total_label, started_at=started_at
+                )
+                _finish_run_log(log_lines, status=_RUN_STATUS_SKIPPED)
                 return 0
 
         timeout_sec = config.RUN_DAILY_MAIN_TIMEOUT_SEC
@@ -931,8 +972,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         if args.skip_email:
-            _append_elapsed(log_lines, started, label=slot_total_label)
-            _append_run_log(log_lines)
+            _append_elapsed(
+                log_lines, started, label=slot_total_label, started_at=started_at
+            )
+            _finish_run_log(log_lines, status=run_status)
             if run_status == _RUN_STATUS_TIMEOUT:
                 return 124
             return main_exit if main_exit is not None else 1
@@ -951,8 +994,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(msg, file=sys.stderr if not sent else sys.stdout, flush=True)
         log_lines.append(msg)
-        _append_elapsed(log_lines, started, label=slot_total_label)
-        _append_run_log(log_lines)
+        _append_elapsed(
+            log_lines, started, label=slot_total_label, started_at=started_at
+        )
+        _finish_run_log(log_lines, status=run_status)
 
         if run_status == _RUN_STATUS_TIMEOUT:
             return 124
@@ -989,8 +1034,10 @@ def main(argv: list[str] | None = None) -> int:
             print(msg, file=sys.stderr if not sent else sys.stdout, flush=True)
             log_lines.append(msg)
 
-        _append_elapsed(log_lines, started, label=slot_total_label)
-        _append_run_log(log_lines)
+        _append_elapsed(
+            log_lines, started, label=slot_total_label, started_at=started_at
+        )
+        _finish_run_log(log_lines, status=run_status)
         return 1
 
 

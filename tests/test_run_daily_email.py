@@ -26,6 +26,9 @@ from scripts.run_daily_email import (
 
 
 def test_format_elapsed_line() -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
     assert _format_elapsed_line(0) == "소요시간: 0분 00초"
     assert _format_elapsed_line(33) == "소요시간: 0분 33초"
     assert _format_elapsed_line(24 * 60 + 33) == "소요시간: 24분 33초"
@@ -37,6 +40,15 @@ def test_format_elapsed_line() -> None:
     assert (
         _format_elapsed_line(15 * 60 + 40, label="--force-ml-retrain 소요시간")
         == "--force-ml-retrain 소요시간: 15분 40초"
+    )
+    kst = ZoneInfo("Asia/Seoul")
+    assert (
+        _format_elapsed_line(
+            26 * 60 + 53,
+            started_at=datetime(2026, 9, 4, 14, 30, 8, tzinfo=kst),
+            ended_at=datetime(2026, 9, 4, 14, 56, 54, tzinfo=kst),
+        )
+        == "소요시간: 26분 53초 (14:30:08 ~ 14:56:54)"
     )
 
 
@@ -435,6 +447,12 @@ def test_1600_logs_append_and_ml_elapsed_separately(monkeypatch) -> None:
     divider_idx = joined.index(_LOG_ML_RETRAIN_DIVIDER)
     chain_idx = joined.index("16:00 append 완료 → ML 재학습 즉시 실행")
     assert append_idx < divider_idx < chain_idx
+    assert log_blocks[0] == ["slot=1600 skip_email=True", "status=started"]
+    finish = log_blocks[-1]
+    assert finish[0] == "status=ok"
+    assert "status=started" not in finish
+    assert "slot=1600" not in finish
+    assert any(x.startswith("슬롯 전체 소요시간:") and "(" in x and "~" in x for x in finish)
 
 
 def test_append_run_log_uses_triple_blank_separator(monkeypatch, tmp_path: Path) -> None:

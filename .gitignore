@@ -1,5 +1,6 @@
 .venv/
 .env
+.env_*
 *.pyc
 _tmp_*.txt
 .pytest_cache/
