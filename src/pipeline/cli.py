@@ -107,7 +107,8 @@ def _print_usage() -> None:
   python main.py --weekly
       월간 배치 (config REPORT_TEST_DAY_START ~ END, --weekly 이름은 호환용)
   python main.py --serve-live-quotes
-      리포트 tooltip 장중 등락률용 로컬 프록시(127.0.0.1:8765). 리포트 열기 전 자동 기동되기도 함.
+      리포트 tooltip 장중 등락률용 로컬 프록시(127.0.0.1:8765).
+      PC 로그온·매일 08:50 작업(0.MoneyKRX_LiveQuotes_Morning)으로도 기동. 리포트 열기 전 자동 기동되기도 함.
 
   학습 스냅샷 (급등-뉴스 BreakoutEvent 풀, breakout_train_snapshot.json):
   (플래그 없음, 기본)

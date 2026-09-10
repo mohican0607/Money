@@ -56,6 +56,29 @@ def write_live_quotes_js(output_dir: Path | str, quotes: dict[str, float]) -> No
     js_path(out).write_text(body, encoding="utf-8")
 
 
+def _quotes_are_usable(quotes: dict[str, float] | None) -> bool:
+    """장중 값이 하나라도 있으면 True. 장 시작 전 전부 0.0 은 기존 JS를 덮지 않습니다."""
+    if not quotes:
+        return False
+    try:
+        return any(float(v) != 0.0 for v in quotes.values())
+    except (TypeError, ValueError):
+        return False
+
+
+def _write_live_quotes_js_if_usable(
+    output_dir: Path | str,
+    quotes: dict[str, float] | None,
+) -> None:
+    """유효 시세면 JS를 갱신. 파일이 없을 때만 빈/0 스냅샷으로 시드를 만듭니다."""
+    out = Path(output_dir)
+    if _quotes_are_usable(quotes):
+        write_live_quotes_js(out, quotes or {})
+        return
+    if not js_path(out).is_file():
+        write_live_quotes_js(out, quotes or {})
+
+
 def collect_stock_codes_from_day_reports(day_reports: list[Any]) -> list[str]:
     codes: set[str] = set()
     for dr in day_reports or []:
@@ -112,7 +135,7 @@ def ensure_live_quotes_for_report(
     if uniq:
         write_live_quotes_manifest(out, uniq)
         snap = _fetch_quotes(uniq)
-        write_live_quotes_js(out, snap or {})
+        _write_live_quotes_js_if_usable(out, snap)
     _ensure_daemon_process(out, port=port)
 
 
@@ -192,7 +215,7 @@ def _poll_loop(output_dir: Path) -> None:
         if codes:
             try:
                 snap = _fetch_quotes(codes)
-                if snap:
+                if _quotes_are_usable(snap):
                     write_live_quotes_js(output_dir, snap)
             except Exception:
                 pass
@@ -236,6 +259,16 @@ def health_ok(port: int = DEFAULT_PORT, *, host: str = "127.0.0.1", timeout: flo
         return False
 
 
+def _daemon_python() -> str:
+    """Windows에서는 콘솔 없는 pythonw 를 씁니다(로그온 후에도 창이 안 뜹니다)."""
+    exe = sys.executable
+    if sys.platform == "win32":
+        cand = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        if os.path.isfile(cand):
+            return cand
+    return exe
+
+
 def _ensure_daemon_process(output_dir: Path, *, port: int = DEFAULT_PORT) -> None:
     if health_ok(port):
         return
@@ -243,7 +276,7 @@ def _ensure_daemon_process(output_dir: Path, *, port: int = DEFAULT_PORT) -> Non
 
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     cmd = [
-        sys.executable,
+        _daemon_python(),
         "-m",
         "src.report.live_quotes",
         "--daemon",
@@ -251,9 +284,10 @@ def _ensure_daemon_process(output_dir: Path, *, port: int = DEFAULT_PORT) -> Non
         "--port",
         str(port),
     ]
-    kwargs: dict[str, Any] = {"cwd": root}
+    kwargs: dict[str, Any] = {"cwd": root, "stdin": subprocess.DEVNULL}
     if sys.platform == "win32":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        kwargs["close_fds"] = True
     subprocess.Popen(cmd, **kwargs)
     for _ in range(20):
         if health_ok(port):
@@ -268,14 +302,33 @@ def ensure_live_quotes_server_running(*, port: int = DEFAULT_PORT, host: str = "
     ensure_live_quotes_for_report(config.OUTPUT_DIR, port=port)
 
 
+def run_if_needed(*, port: int = DEFAULT_PORT) -> bool:
+    """이미 떠 있으면 False. 아니면 데몬을 블로킹 실행하고 True(정상 종료 시)."""
+    if health_ok(port):
+        return False
+    from src import config
+
+    os.environ.setdefault("LIVE_QUOTES_QUIET", "1")
+    run_live_quotes_daemon(config.OUTPUT_DIR, port=port)
+    return True
+
+
 def main() -> None:
     import argparse
 
     p = argparse.ArgumentParser(description="리포트 tooltip 장중 등락률 데몬")
     p.add_argument("--daemon", metavar="OUTPUT_DIR", default="")
+    p.add_argument(
+        "--if-needed",
+        action="store_true",
+        help="이미 127.0.0.1:8765 가 응답하면 즉시 종료, 아니면 데몬 실행",
+    )
     p.add_argument("--port", type=int, default=DEFAULT_PORT)
     p.add_argument("--host", default="127.0.0.1")
     args = p.parse_args()
+    if args.if_needed:
+        run_if_needed(port=args.port)
+        return
     if args.daemon:
         run_live_quotes_daemon(args.daemon, port=args.port, host=args.host)
     else:

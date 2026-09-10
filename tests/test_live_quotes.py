@@ -69,6 +69,37 @@ def test_ensure_writes_js_even_when_fetch_empty(tmp_path: Path, monkeypatch) -> 
     assert "window.__MONEY_LIVE_QUOTES__" in body
 
 
+def test_premarket_all_zero_does_not_overwrite_js(tmp_path: Path, monkeypatch) -> None:
+    from src.report.live_quotes import (
+        ensure_live_quotes_for_report,
+        js_path,
+        write_live_quotes_js,
+    )
+
+    out = tmp_path / "output"
+    out.mkdir()
+    write_live_quotes_js(out, {"005930": 1.5})
+    monkeypatch.setattr(
+        "src.report.live_quotes._fetch_quotes",
+        lambda codes: {"005930": 0.0},
+    )
+    monkeypatch.setattr("src.report.live_quotes._ensure_daemon_process", lambda *a, **k: None)
+    ensure_live_quotes_for_report(out, ["005930"])
+    assert "1.5" in js_path(out).read_text(encoding="utf-8")
+
+
+def test_run_if_needed_skips_when_healthy(monkeypatch) -> None:
+    from src.report import live_quotes
+
+    monkeypatch.setattr(live_quotes, "health_ok", lambda *a, **k: True)
+
+    def _fail(*_a, **_k):
+        raise AssertionError("daemon should not start")
+
+    monkeypatch.setattr(live_quotes, "run_live_quotes_daemon", _fail)
+    assert live_quotes.run_if_needed() is False
+
+
 def test_inject_live_quotes_script_despite_js_filename_in_body() -> None:
     from src.report.render import _ensure_report_interaction_script
 

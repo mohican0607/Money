@@ -7,7 +7,7 @@
 .DESCRIPTION
   - 15:30 선행 lock 종료 후, rebuild_learning·스냅샷만 갱신하고 이메일을 발송합니다.
   - 리포트 HTML 은 첨부하지 않습니다(15:30에서 이미 갱신·발송).
-  - 스케줄러: MoneyKRX_Daily1600_Append
+  - 스케줄러: 0.MoneyKRX_Daily1600_Append
 #>
 param(
     [string] $RepoRoot = (Split-Path -Parent $PSScriptRoot),
