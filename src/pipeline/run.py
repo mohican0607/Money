@@ -63,6 +63,7 @@ from .rows import (
 )
 from .support import (
     _display_prediction_rows_for_freeze,
+    _filter_frozen_items_to_listed,
     _freeze_entry_usable,
     _ignore_freeze_for_trading_day,
     _load_prediction_freeze_payload,
@@ -471,6 +472,22 @@ def _run_pipeline(
                 theme_w = {}
         t_key = T.isoformat()
         frozen_items = freeze_payload.get(t_key) if config.PREDICTION_FREEZE_ENABLED else None
+        if frozen_items:
+            listed_frozen = _filter_frozen_items_to_listed(
+                frozen_items,
+                codes,
+                returns_df=returns_ml,
+                observation_day=T,
+            )
+            dropped = len(frozen_items) - len(listed_frozen)
+            if dropped:
+                print(
+                    f"예측 고정 캐시: 미상장·상장폐지 {dropped}건 제외 T={t_key}",
+                    flush=True,
+                )
+                freeze_payload[t_key] = listed_frozen
+                freeze_changed = True
+                frozen_items = listed_frozen
         ignore_freeze_for_t = _ignore_freeze_for_trading_day(
             T,
             train_snapshot_mode=train_snapshot_mode,

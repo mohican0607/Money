@@ -7,13 +7,14 @@ FinanceDataReader 기반 KOSPI·KOSDAQ 일별 OHLCV·수익률·급등 종목 �
 """
 from __future__ import annotations
 
+import io
 import json
 import math
 import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -57,31 +58,185 @@ def _ensure_cache_dir() -> None:
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _kind_corp_code(val: object) -> str:
+    """KIND 종목코드를 6자리 문자열로. read_html 이 5930.0 으로 읽은 경우도 처리."""
+    s = str(val).strip()
+    if s.lower() == "nan" or not s:
+        return ""
+    try:
+        return f"{int(float(s)):06d}"
+    except (TypeError, ValueError):
+        digits = "".join(ch for ch in s if ch.isdigit())
+        return digits.zfill(6) if digits else ""
+
+
 def is_common_equity_code(code: str) -> bool:
     """보통주 6자리 숫자 코드만 True(우선주·스팩형 ``35320K`` 등 제외)."""
     c = str(code).strip()
     return len(c) == 6 and c.isdigit()
 
 
-def load_listing() -> pd.DataFrame:
+def _listing_cache_is_stale(path: Path | None = None) -> bool:
+    """상장 목록 parquet 이 없거나, mtime 의 KST 날짜가 오늘보다 이전이면 True."""
+    p = path or LISTING_CACHE
+    if not p.exists():
+        return True
+    try:
+        mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=trading_calendar.KST)
+    except OSError:
+        return True
+    return mtime.date() < datetime.now(trading_calendar.KST).date()
+
+
+_KIND_MARKET_MAP = {
+    "유가": "KOSPI",
+    "코스피": "KOSPI",
+    "KOSPI": "KOSPI",
+    "코스닥": "KOSDAQ",
+    "KOSDAQ": "KOSDAQ",
+    "코스닥글로벌": "KOSDAQ",
+    "코스닥 글로벌": "KOSDAQ",
+    "KOSDAQ GLOBAL": "KOSDAQ",
+}
+_KIND_LISTING_URL = (
+    "https://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13"
+)
+_KIND_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+}
+
+
+def _parse_kind_corp_list_html(text: str) -> pd.DataFrame:
+    """KIND 상장법인 엑셀(HTML) 본문을 Code/Name/Market 표로 바꿉니다. 코넥스는 제외."""
+    tables = pd.read_html(io.StringIO(text))
+    if not tables:
+        raise RuntimeError("KIND 상장법인 표가 비었습니다.")
+    raw = tables[0]
+    col_code = next((c for c in raw.columns if "종목코드" in str(c)), None)
+    col_name = next((c for c in raw.columns if "회사명" in str(c)), None)
+    col_mkt = next((c for c in raw.columns if "시장" in str(c)), None)
+    if col_code is None or col_name is None or col_mkt is None:
+        raise RuntimeError(f"KIND 상장법인 컬럼을 찾지 못했습니다: {list(raw.columns)}")
+    rows: list[dict[str, str]] = []
+    for _, rec in raw.iterrows():
+        code = _kind_corp_code(rec[col_code])
+        if not is_common_equity_code(code):
+            continue
+        market = _KIND_MARKET_MAP.get(str(rec[col_mkt]).strip())
+        if not market:
+            continue
+        name = str(rec[col_name]).strip()
+        if not name or name.lower() == "nan":
+            continue
+        rows.append({"Code": code, "Name": name, "Market": market})
+    out = pd.DataFrame(rows)
+    if out.empty:
+        raise RuntimeError("KIND 상장법인에서 KOSPI·KOSDAQ 종목을 찾지 못했습니다.")
+    return out.drop_duplicates(subset=["Code"], keep="first").reset_index(drop=True)
+
+
+def _fetch_kind_listing_frame() -> pd.DataFrame:
+    """KIND 상장법인 다운로드. 코스피(유가)·코스닥만 남깁니다."""
+    r = requests.get(_KIND_LISTING_URL, headers=_KIND_HEADERS, timeout=60)
+    r.raise_for_status()
+    text = r.content.decode("euc-kr", errors="replace")
+    return _parse_kind_corp_list_html(text)
+
+
+def _fetch_krx_listing_frame() -> pd.DataFrame:
+    """현재 상장 목록. FDR → KIND → pykrx 순으로 받습니다."""
+    try:
+        df = fdr.StockListing("KRX")
+        if df is not None and not df.empty and "Market" in df.columns:
+            out = df[df["Market"].isin(["KOSPI", "KOSDAQ", "KOSDAQ GLOBAL"])].copy()
+            if not out.empty:
+                return out
+    except Exception:
+        pass
+    try:
+        kind = _fetch_kind_listing_frame()
+        if kind is not None and not kind.empty:
+            print("상장 목록: KIND 상장법인 목록 사용", flush=True)
+            return kind
+    except Exception:
+        pass
+    live = _pykrx_listed_codes()
+    if not live:
+        raise RuntimeError("KRX 상장 목록을 받지 못했습니다 (FinanceDataReader·KIND·pykrx).")
+    if LISTING_CACHE.exists():
+        old = pd.read_parquet(LISTING_CACHE)
+        old["Code"] = old["Code"].astype(str).str.zfill(6)
+        kept = old[old["Code"].isin(live)].copy()
+        if not kept.empty:
+            return kept
+    rows = [{"Code": c, "Name": c, "Market": "KOSPI"} for c in sorted(live)]
+    return pd.DataFrame(rows)
+
+
+def _pykrx_listed_codes() -> set[str]:
+    """pykrx 기준 당일(실패 시 직전 거래일) KOSPI·KOSDAQ 보통주 코드."""
+    try:
+        from pykrx import stock
+    except Exception:
+        return set()
+    today = datetime.now(trading_calendar.KST).date()
+    dates = [today.strftime("%Y%m%d")]
+    try:
+        prev = trading_calendar.last_trading_day_on_or_before(today - timedelta(days=1))
+        ps = prev.strftime("%Y%m%d")
+        if ps not in dates:
+            dates.append(ps)
+    except Exception:
+        pass
+    out: set[str] = set()
+    for ds in dates:
+        for market in ("KOSPI", "KOSDAQ"):
+            try:
+                tickers = stock.get_market_ticker_list(ds, market=market) or []
+            except Exception:
+                continue
+            for code in tickers:
+                c6 = str(code).zfill(6)
+                if is_common_equity_code(c6):
+                    out.add(c6)
+        if out:
+            break
+    return out
+
+
+def load_listing(*, force_refresh: bool = False) -> pd.DataFrame:
     """
     KRX 상장 종목 목록을 로드합니다.
 
-    캐시 ``krx_listing.parquet`` 가 있으면 읽고, 없으면 FinanceDataReader로
-    ``StockListing("KRX")`` 를 받아 KOSPI/KOSDAQ/KOSDAQ GLOBAL 만 남긴 뒤 저장합니다.
+    캐시 ``krx_listing.parquet`` 가 오늘(KST) 받은 것이면 재사용하고,
+    날짜가 바뀌었거나 없으면 FinanceDataReader ``StockListing("KRX")`` ,
+    실패 시 KIND 상장법인 목록으로 KOSPI/KOSDAQ 만 남긴 뒤 저장합니다.
+    네트워크 실패 시 기존 캐시가 있으면 그대로 씁니다.
 
     Returns:
         최소 ``Code``, ``Name``, ``Market`` 컬럼을 가진 DataFrame.
     """
     _ensure_cache_dir()
-    if LISTING_CACHE.exists():
+    stale = force_refresh or _listing_cache_is_stale()
+    if LISTING_CACHE.exists() and not stale:
         return pd.read_parquet(LISTING_CACHE)
     print(
-        "네트워크: KRX 상장 목록 다운로드 중 (FinanceDataReader StockListing)...",
+        "네트워크: KRX 상장 목록 다운로드 중 (FinanceDataReader·KIND)...",
         flush=True,
     )
-    df = fdr.StockListing("KRX")
-    df = df[df["Market"].isin(["KOSPI", "KOSDAQ", "KOSDAQ GLOBAL"])].copy()
+    try:
+        df = _fetch_krx_listing_frame()
+    except Exception as exc:
+        if LISTING_CACHE.exists():
+            print(
+                f"상장 목록 갱신 실패({exc!r}) → 기존 캐시 사용 {LISTING_CACHE.name}",
+                flush=True,
+            )
+            return pd.read_parquet(LISTING_CACHE)
+        raise
     df.to_parquet(LISTING_CACHE, index=False)
     print(f"상장 목록 완료: {len(df)}종 -> {LISTING_CACHE.name}", flush=True)
     return df
@@ -1113,7 +1268,8 @@ def is_observation_day_trading_halted(
     거래량 0이면 정지로 보고 예측 후보에서 제외합니다.
     직전 거래일 정지 → 관측일 재개(거래량 > 0)는 포함합니다.
 
-    - OHLCV 캐시 마지막 거래일보다 뒤인 미래 관측일(봉 없음): 정지 아님.
+    - 해당 종목 마지막 봉이 유니버스(전종목) 마지막 봉보다 이전이면 상장폐지·거래종료로 보고 제외.
+    - 종목 마지막 봉 = 유니버스 마지막 봉인데 관측일이 그 이후(미래 T, 봉 없음): 정지 아님.
     - ``align_returns_ml_for_forecast`` 가 만든 synthetic 행(Volume 미기입): 정지 아님.
     - 해당 일 행이 있고 거래량 0: 정지.
     """
@@ -1126,8 +1282,18 @@ def is_observation_day_trading_halted(
     )
     sub = returns_df.loc[m]
     if sub.empty:
-        last_bar = returns_df["Date"].max()
-        if last_bar is not pd.NaT and observation_day > last_bar.date():
+        code_mask = returns_df["Code"].astype(str).str.zfill(6) == c6
+        code_last = returns_df.loc[code_mask, "Date"].max() if bool(code_mask.any()) else pd.NaT
+        if code_last is pd.NaT:
+            return True
+        universe_last = returns_df["Date"].max()
+        if (
+            universe_last is not pd.NaT
+            and pd.notna(code_last)
+            and code_last.date() < universe_last.date()
+        ):
+            return True
+        if pd.notna(code_last) and observation_day > code_last.date():
             return False
         return True
     vol = volume_on_date(returns_df, code, observation_day)

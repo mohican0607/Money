@@ -355,6 +355,82 @@ def test_observation_day_trading_halt_excludes_candidate() -> None:
     assert not stocks.is_observation_day_trading_halted(df, "123456", t)
 
 
+def test_delisted_code_older_than_universe_is_halted() -> None:
+    import pandas as pd
+
+    from src import stocks
+
+    t = date(2026, 9, 10)
+    df = pd.DataFrame(
+        [
+            {
+                "Date": pd.Timestamp(date(2026, 6, 29)),
+                "Code": "008500",
+                "Name": "일정실업",
+                "return_pct": -0.1,
+                "Volume": 1000.0,
+            },
+            {
+                "Date": pd.Timestamp(date(2026, 9, 9)),
+                "Code": "005930",
+                "Name": "삼성전자",
+                "return_pct": 0.01,
+                "Volume": 1000.0,
+            },
+        ]
+    )
+    assert stocks.is_observation_day_trading_halted(df, "008500", t)
+    assert not stocks.is_observation_day_trading_halted(df, "005930", t)
+
+
+def test_filter_frozen_items_drops_unlisted() -> None:
+    from src.pipeline.support import _filter_frozen_items_to_listed
+
+    items = [
+        {"code": "008500", "name": "일정실업", "predicted_return_pct": 22.0},
+        {"code": "005930", "name": "삼성전자", "predicted_return_pct": 21.0},
+    ]
+    out = _filter_frozen_items_to_listed(items, ["005930"])
+    assert [x["code"] for x in out] == ["005930"]
+
+
+def test_filter_frozen_items_drops_halted_even_if_listed() -> None:
+    import pandas as pd
+
+    from src.pipeline.support import _filter_frozen_items_to_listed
+
+    t = date(2026, 9, 10)
+    returns_df = pd.DataFrame(
+        [
+            {
+                "Date": pd.Timestamp(date(2026, 6, 29)),
+                "Code": "008500",
+                "Name": "일정실업",
+                "return_pct": -0.1,
+                "Volume": 1000.0,
+            },
+            {
+                "Date": pd.Timestamp(date(2026, 9, 9)),
+                "Code": "005930",
+                "Name": "삼성전자",
+                "return_pct": 0.01,
+                "Volume": 1000.0,
+            },
+        ]
+    )
+    items = [
+        {"code": "008500", "name": "일정실업", "predicted_return_pct": 22.0},
+        {"code": "005930", "name": "삼성전자", "predicted_return_pct": 21.0},
+    ]
+    out = _filter_frozen_items_to_listed(
+        items,
+        ["008500", "005930"],
+        returns_df=returns_df,
+        observation_day=t,
+    )
+    assert [x["code"] for x in out] == ["005930"]
+
+
 def test_future_observation_day_without_bar_is_not_halted() -> None:
     import pandas as pd
 

@@ -20,8 +20,10 @@ Set-Location E:\Git\Money; python scripts/build_ohlcv_full_cache.py 20250101 202
 
 
 2) 상장 목록만 다시 받기
-  코드상 krx_listing.parquet가 있으면 다시 안 받습니다.
-  다시 받으려면 파일을 지운 뒤, OHLCV 빌드나 main을 한 번 돌리면 됩니다.
+  krx_listing.parquet 는 **오늘(KST) 받은 캐시만** 재사용합니다. 날짜가 바뀌면
+  main / OHLCV 빌드 때 자동으로 다시 받습니다. FinanceDataReader KRX 목록이
+  막히면 KIND 상장법인 목록으로 코스피·코스닥만 채워 상장폐지 종목을 뺍니다.
+  강제로 다시 받으려면 파일을 지운 뒤 같은 명령을 실행하세요.
 
   Remove-Item E:\Git\Money\data\cache\krx_listing.parquet -ErrorAction SilentlyContinue python scripts/build_ohlcv_full_cache.py 20260101 20260410
 

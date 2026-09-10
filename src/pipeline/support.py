@@ -6,6 +6,7 @@ import math
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, time, timedelta
+from typing import Any
 
 import requests
 from tqdm import tqdm
@@ -277,6 +278,43 @@ def _ignore_freeze_for_trading_day(
         s0, s1 = cal_scope
         return s0 <= T <= s1
     return False
+
+
+def _filter_frozen_items_to_listed(
+    items: list[dict] | None,
+    listed_codes: set[str] | list[str],
+    *,
+    returns_df: Any | None = None,
+    observation_day: date | None = None,
+) -> list[dict]:
+    """현재 KRX 상장 목록에 없거나 관측일 기준 거래정지·상장폐지인 freeze 항목을 뺍니다."""
+    if not items:
+        return []
+    if _is_empty_slate_freeze(items):
+        return list(items)
+    allowed = {str(c).zfill(6) for c in listed_codes if str(c).strip()}
+    out: list[dict] = []
+    for x in items:
+        if x.get(_EMPTY_SLATE_KEY):
+            out.append(x)
+            continue
+        code = str(x.get("code", "")).zfill(6)
+        if code in allowed:
+            out.append(x)
+    if returns_df is None or observation_day is None:
+        return out
+    from src import stocks as stocks_mod
+
+    kept: list[dict] = []
+    for x in out:
+        if x.get(_EMPTY_SLATE_KEY):
+            kept.append(x)
+            continue
+        code = str(x.get("code", "")).zfill(6)
+        if stocks_mod.is_observation_day_trading_halted(returns_df, code, observation_day):
+            continue
+        kept.append(x)
+    return kept
 
 
 def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.PredictionRow]:
