@@ -440,6 +440,7 @@ def naver_chart_day_img_url(code: str) -> str:
 # ``table.rows-compare``: 헤더 ``th.sortable-col`` 클릭 정렬 + 누적 정확도 hover 툴팁(gap-tip)
 
 from .templates import (
+    LATEST_DAY_FOCUS_SNIPPET,
     REPORT_TABLE_INTERACTION_MARKER,
     REPORT_TABLE_INTERACTION_SNIPPET,
     _COMPACT_TEMPLATE,
@@ -849,11 +850,121 @@ _INTERACTION_BLOCK_RE = re.compile(
     r"<!-- money-report-table-interaction -->.*?</script>",
     re.DOTALL | re.IGNORECASE,
 )
+_LATEST_FOCUS_BLOCK_RE = re.compile(
+    r"<!-- money-latest-day-focus -->.*?<!-- /money-latest-day-focus -->",
+    re.DOTALL | re.IGNORECASE,
+)
+_TAB_BAR_BLOCK_RE = re.compile(
+    r'<div class="tab-bar(?:\s+tab-bar-bottom)?" role="tablist">.*?</div>',
+    re.DOTALL | re.IGNORECASE,
+)
+_TAB_PANEL_OPEN_RE = re.compile(r'<div class="tab-panel(?:\s+active)?"')
+_WEEK_TABS_BIND_RE = re.compile(
+    r"(bars\.forEach\(function \(bar\) \{\s*"
+    r"bar\.querySelectorAll\(\":scope > \.tab-btn\"\)\.forEach\(function \(b, i\) \{\s*"
+    r"b\.addEventListener\(\"click\", function \(\) \{ show\(i\); \}\);\s*"
+    r"\}\);\s*"
+    r"\}\);\s*)"
+    r"(\}\)\(\);)",
+)
+_SCROLL_RESTORATION_HEAD = (
+    '<script>if ("scrollRestoration" in history) history.scrollRestoration = "manual";</script>\n'
+)
+
+
+def _activate_last_week_tab_markup(html: str) -> str:
+    """정적 마크업에서 마지막 주/일자 탭·패널을 기본 선택으로 둔다."""
+
+    def _fix_bar(match: re.Match[str]) -> str:
+        block = match.group(0)
+        buttons = list(re.finditer(r"<button\b[\s\S]*?>", block))
+        if not buttons:
+            return block
+        parts: list[str] = []
+        last = 0
+        n = len(buttons)
+        for i, m in enumerate(buttons):
+            parts.append(block[last : m.start()])
+            tag = m.group(0)
+            tag = re.sub(
+                r'class="tab-btn(?:\s+active)?"',
+                'class="tab-btn active"' if i == n - 1 else 'class="tab-btn"',
+                tag,
+                count=1,
+            )
+            tag = re.sub(
+                r'aria-selected="(?:true|false)"',
+                f'aria-selected="{"true" if i == n - 1 else "false"}"',
+                tag,
+                count=1,
+            )
+            parts.append(tag)
+            last = m.end()
+        parts.append(block[last:])
+        return "".join(parts)
+
+    html = _TAB_BAR_BLOCK_RE.sub(_fix_bar, html)
+    opens = list(_TAB_PANEL_OPEN_RE.finditer(html))
+    if len(opens) >= 2:
+        parts = []
+        last = 0
+        n = len(opens)
+        for i, m in enumerate(opens):
+            parts.append(html[last : m.start()])
+            parts.append(
+                '<div class="tab-panel active"' if i == n - 1 else '<div class="tab-panel"'
+            )
+            last = m.end()
+        parts.append(html[last:])
+        html = "".join(parts)
+    return html
+
+
+def _ensure_week_tabs_open_last(html: str) -> str:
+    """구버전 주 탭 스크립트에 마지막 패널 표시 호출을 보강한다."""
+    if "show(panels.length - 1)" in html:
+        return html
+    return _WEEK_TABS_BIND_RE.sub(
+        r"\1    if (panels.length) show(panels.length - 1);\n  \2",
+        html,
+        count=1,
+    )
+
+
+def _ensure_scroll_restoration_head(html: str) -> str:
+    lower_head, sep, rest = html.partition("</head>")
+    if not sep:
+        return html
+    if "scrollRestoration" in lower_head:
+        return html
+    return lower_head + "  " + _SCROLL_RESTORATION_HEAD + sep + rest
+
+
+def _ensure_latest_day_focus_script(html: str) -> str:
+    """최근 일자 탭·스크롤 스크립트를 보강·교체하고, 마지막 탭을 기본으로 연다."""
+    snippet = LATEST_DAY_FOCUS_SNIPPET.strip()
+    if _LATEST_FOCUS_BLOCK_RE.search(html):
+        html = _LATEST_FOCUS_BLOCK_RE.sub(lambda _m: snippet, html, count=1)
+    elif "<!-- money-report-table-interaction -->" in html:
+        html = html.replace(
+            "<!-- money-report-table-interaction -->",
+            snippet + "\n<!-- money-report-table-interaction -->",
+            1,
+        )
+    else:
+        idx = html.lower().rfind("</body>")
+        if idx != -1:
+            html = html[:idx] + snippet + "\n" + html[idx:]
+    html = _ensure_scroll_restoration_head(html)
+    html = _activate_last_week_tab_markup(html)
+    html = _ensure_week_tabs_open_last(html)
+    return html
 
 
 def _ensure_report_interaction_script(html: str) -> str:
     """인터랙션 스크립트를 보강·교체(구버전 누적 HTML의 stale JS 갱신)."""
     html = _inject_live_quotes_script(html)
+    html = _ensure_latest_day_focus_script(html)
     if _INTERACTION_BLOCK_RE.search(html):
         snippet = REPORT_TABLE_INTERACTION_SNIPPET.strip()
         return _INTERACTION_BLOCK_RE.sub(lambda _m: snippet, html, count=1)

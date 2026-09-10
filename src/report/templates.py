@@ -784,14 +784,157 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       });
     });
   }
-  document.querySelectorAll("table.rows-compare").forEach(bindSortTable);
-  bindMarketRowFilters(document);
-  bindIntegrateTips(document);
-  bindStockChartTips(document);
-  bindLiveIntradayToggles(document);
-  bindForwardColumnIntradayRefresh(document);
+  function _safeBind(fn) {
+    try { fn(); } catch (err) {}
+  }
+  _safeBind(function () {
+    document.querySelectorAll("table.rows-compare").forEach(bindSortTable);
+  });
+  _safeBind(function () { bindMarketRowFilters(document); });
+  _safeBind(function () { bindIntegrateTips(document); });
+  _safeBind(function () { bindStockChartTips(document); });
+  _safeBind(function () { bindLiveIntradayToggles(document); });
+  _safeBind(function () { bindForwardColumnIntradayRefresh(document); });
+  if (typeof window.__moneyFocusLatestDay === "function") window.__moneyFocusLatestDay();
 })();
 </script>"""
+
+LATEST_DAY_FOCUS_MARKER = "money-latest-day-focus"
+# 차트·정렬 바인딩과 분리. 주 탭을 연 뒤 가장 최근(또는 해시) 일자 섹션으로 스크롤한다.
+LATEST_DAY_FOCUS_SNIPPET = r"""<!-- money-latest-day-focus -->
+<style>
+section[id^="day-"],
+section[id^="day-"] .day-heading-row h2 { scroll-margin-top: 12px; }
+</style>
+<script>
+(function () {
+  if (window.__moneyLatestDayFocusBound) {
+    if (typeof window.__moneyFocusLatestDay === "function") window.__moneyFocusLatestDay();
+    return;
+  }
+  window.__moneyLatestDayFocusBound = true;
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+  var userMoved = false;
+  var holdUntil = 0;
+  function onUserMove() { userMoved = true; }
+  window.addEventListener("wheel", onUserMove, { passive: true, once: true });
+  window.addEventListener("touchmove", onUserMove, { passive: true, once: true });
+  window.addEventListener("keydown", function (e) {
+    var k = e.key || "";
+    if (k === "PageDown" || k === "PageUp" || k === "ArrowDown" || k === "ArrowUp" || k === "Home" || k === "End" || k === " ") {
+      userMoved = true;
+    }
+  }, { once: true });
+  function hasClass(el, name) {
+    return !!(el && (" " + (el.className || "") + " ").indexOf(" " + name + " ") >= 0);
+  }
+  function closestClass(el, name) {
+    while (el && el.nodeType === 1) {
+      if (hasClass(el, name)) return el;
+      el = el.parentElement || el.parentNode;
+    }
+    return null;
+  }
+  function childrenByClass(parent, name) {
+    var out = [];
+    if (!parent) return out;
+    for (var i = 0; i < parent.children.length; i++) {
+      if (hasClass(parent.children[i], name)) out.push(parent.children[i]);
+    }
+    return out;
+  }
+  function dayIdFromHash() {
+    var h = (location.hash || "").replace(/^#/, "");
+    return /^day-\d{4}-\d{2}-\d{2}$/.test(h) ? h : "";
+  }
+  function latestDaySection() {
+    var all = document.querySelectorAll('section[id^="day-"]');
+    var days = [];
+    for (var i = 0; i < all.length; i++) {
+      if (/^day-\d{4}-\d{2}-\d{2}$/.test(all[i].id)) days.push(all[i]);
+    }
+    days.sort(function (a, b) { return String(a.id).localeCompare(String(b.id)); });
+    return days.length ? days[days.length - 1] : null;
+  }
+  function activateTabForPanel(panel) {
+    if (!panel) return false;
+    var wrap = closestClass(panel, "tabs-wrap");
+    if (!wrap) return false;
+    var panels = childrenByClass(wrap, "tab-panel");
+    var idx = -1;
+    for (var i = 0; i < panels.length; i++) if (panels[i] === panel) idx = i;
+    if (idx < 0) return false;
+    for (var j = 0; j < panels.length; j++) {
+      panels[j].classList.toggle("active", j === idx);
+    }
+    var bars = wrap.getElementsByClassName("tab-bar");
+    for (var b = 0; b < bars.length; b++) {
+      var btns = childrenByClass(bars[b], "tab-btn");
+      for (var k = 0; k < btns.length; k++) {
+        btns[k].classList.toggle("active", k === idx);
+        btns[k].setAttribute("aria-selected", k === idx ? "true" : "false");
+      }
+    }
+    void panel.offsetHeight;
+    return true;
+  }
+  function scrollToDay(sec) {
+    if (!sec) return false;
+    var heading = sec.querySelector(".day-heading-row h2") || sec.querySelector("h2") || sec;
+    if (!heading.hasAttribute("tabindex")) heading.setAttribute("tabindex", "-1");
+    void sec.offsetHeight;
+    var rect = heading.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return false;
+    var top = (window.pageYOffset || document.documentElement.scrollTop || 0) + rect.top - 12;
+    if (top < 0) top = 0;
+    try { window.scrollTo(0, top); } catch (e0) {}
+    if (typeof heading.scrollIntoView === "function") {
+      try { heading.scrollIntoView({ block: "start", inline: "nearest", behavior: "auto" }); } catch (e1) {
+        try { heading.scrollIntoView(true); } catch (e2) {}
+      }
+    }
+    try { heading.focus({ preventScroll: true }); } catch (e3) {}
+    return true;
+  }
+  function go(force) {
+    if (!force && userMoved && Date.now() > holdUntil) return;
+    var want = dayIdFromHash();
+    var target = want ? document.getElementById(want) : latestDaySection();
+    if (!target) {
+      var wrap = document.querySelector(".week-tabs-wrap") || document.querySelector(".tabs-wrap");
+      if (!wrap) return;
+      var panels = childrenByClass(wrap, "tab-panel");
+      if (panels.length) activateTabForPanel(panels[panels.length - 1]);
+      return;
+    }
+    var panel = closestClass(target, "tab-panel");
+    if (panel) activateTabForPanel(panel);
+    scrollToDay(target);
+  }
+  function schedule(force) {
+    if (force) holdUntil = Date.now() + 2500;
+    go(force);
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(function () {
+        go(false);
+        requestAnimationFrame(function () { go(false); });
+      });
+    }
+    setTimeout(function () { go(false); }, 0);
+    setTimeout(function () { go(false); }, 50);
+    setTimeout(function () { go(false); }, 200);
+    setTimeout(function () { go(false); }, 500);
+    setTimeout(function () { go(false); }, 1200);
+  }
+  window.__moneyFocusLatestDay = function () { schedule(true); };
+  schedule(true);
+  window.addEventListener("load", function () { schedule(true); });
+  window.addEventListener("pageshow", function () { schedule(true); });
+  window.addEventListener("hashchange", function () { userMoved = false; schedule(true); });
+})();
+</script>
+<!-- /money-latest-day-focus -->
+"""
 
 _ACTUAL_RET_FMT_MACROS = r"""{% macro fmt_ret_ratio_pct(ratio) -%}
 {% if ratio < 0 %}<span class="bad">{{ "%.2f"|format(ratio * 100) }}</span>{% else %}{{ "%.2f"|format(ratio * 100) }}{% endif %}
@@ -1452,12 +1595,12 @@ __ACTUAL_RET_CELL_MACRO__
     {% endif %}
     <div class="tab-bar" role="tablist">
       {% for d in days %}
-      <button type="button" class="tab-btn{% if loop.first %} active{% endif %}" role="tab"
-              aria-selected="{{ 'true' if loop.first else 'false' }}" data-tab-idx="{{ loop.index0 }}">{{ d.trading_day.isoformat() }}</button>
+      <button type="button" class="tab-btn{% if loop.last %} active{% endif %}" role="tab"
+              aria-selected="{{ 'true' if loop.last else 'false' }}" data-tab-idx="{{ loop.index0 }}">{{ d.trading_day.isoformat() }}</button>
       {% endfor %}
     </div>
     {% for d in days %}
-    <div class="tab-panel{% if loop.first %} active{% endif %}" role="tabpanel" data-tab-panel="{{ loop.index0 }}">
+    <div class="tab-panel{% if loop.last %} active{% endif %}" role="tabpanel" data-tab-panel="{{ loop.index0 }}">
       {{ day_panel(d, meta) }}
     </div>
     {% endfor %}
@@ -1477,6 +1620,7 @@ __ACTUAL_RET_CELL_MACRO__
       panels.forEach(function (p, j) { p.classList.toggle("active", j === i); });
     }
     btns.forEach(function (b, i) { b.addEventListener("click", function () { show(i); }); });
+    if (panels.length) show(panels.length - 1);
   })();
   </script>
   {% else %}
@@ -1496,6 +1640,7 @@ _COMPACT_TEMPLATE = r"""
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>{{ title }}</title>
+  <script>if ("scrollRestoration" in history) history.scrollRestoration = "manual";</script>
   <style>
     :root {
       --bg: #0f1419; --card: #1a2332; --text: #e7ecf3; --muted: #8b9cb3;
@@ -1526,6 +1671,8 @@ _COMPACT_TEMPLATE = r"""
     .tab-btn.active { background: var(--accent); color: #0f1419; border-color: var(--accent); font-weight: 600; }
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
+    section[id^="day-"],
+    section[id^="day-"] .day-heading-row h2 { scroll-margin-top: 12px; }
     .note { font-size: 0.82rem; color: var(--muted); margin-top: 10px; line-height: 1.45; }
     .day-stack { margin-bottom: 28px; padding-bottom: 4px; border-bottom: 1px solid #2a3f5c; }
     .day-stack:last-of-type { border-bottom: none; margin-bottom: 8px; }
@@ -1896,8 +2043,8 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 {% macro week_tabs_bar(week_panels, extra_class='') -%}
 <div class="tab-bar{% if extra_class %} {{ extra_class }}{% endif %}" role="tablist">
   {% for w in week_panels %}
-  <button type="button" class="tab-btn{% if loop.first %} active{% endif %}" role="tab"
-          aria-selected="{{ 'true' if loop.first else 'false' }}" data-tab-idx="{{ loop.index0 }}">{{ w.label }}</button>
+  <button type="button" class="tab-btn{% if loop.last %} active{% endif %}" role="tab"
+          aria-selected="{{ 'true' if loop.last else 'false' }}" data-tab-idx="{{ loop.index0 }}">{{ w.label }}</button>
   {% endfor %}
 </div>
 {%- endmacro %}
@@ -2031,7 +2178,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
     <p class="sub" style="margin-top:0">각 탭은 한 주(월~금)를 <strong>월요일 날짜</strong>로 묶었습니다. 탭 안에서는 해당 주의 거래일을 <strong>일자 순</strong>으로 위에서 아래에 표시합니다. 앵커: <code>#day-YYYY-MM-DD</code></p>
     {{ week_tabs_bar(week_panels) }}
     {% for w in week_panels %}
-    <div class="tab-panel{% if loop.first %} active{% endif %}" role="tabpanel" data-tab-panel="{{ loop.index0 }}" data-chart-view-end="{{ w.chart_view_end }}">
+    <div class="tab-panel{% if loop.last %} active{% endif %}" role="tabpanel" data-tab-panel="{{ loop.index0 }}" data-chart-view-end="{{ w.chart_view_end }}">
       {% for day in w.days %}
       {% if day.preserved_html %}
       {{ day.preserved_html | safe }}
@@ -2076,6 +2223,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
         b.addEventListener("click", function () { show(i); });
       });
     });
+    if (panels.length) show(panels.length - 1);
   })();
   </script>
   {% elif stack_days %}
@@ -2097,12 +2245,12 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
     <p class="sub" style="margin-top:0">각 탭: <strong>실제</strong> {{ meta.threshold }} 이상 급등 종목 + 모델 <strong>예측</strong> {{ meta.threshold }} 이상 후보(상위 예측·중복 제외).</p>
     <div class="tab-bar" role="tablist">
       {% for d in days %}
-      <button type="button" class="tab-btn{% if loop.first %} active{% endif %}" role="tab"
-              aria-selected="{{ 'true' if loop.first else 'false' }}" data-tab-idx="{{ loop.index0 }}">{{ d.trading_day.isoformat() }}</button>
+      <button type="button" class="tab-btn{% if loop.last %} active{% endif %}" role="tab"
+              aria-selected="{{ 'true' if loop.last else 'false' }}" data-tab-idx="{{ loop.index0 }}">{{ d.trading_day.isoformat() }}</button>
       {% endfor %}
     </div>
     {% for d in days %}
-    <div class="tab-panel{% if loop.first %} active{% endif %}" role="tabpanel" data-tab-panel="{{ loop.index0 }}">
+    <div class="tab-panel{% if loop.last %} active{% endif %}" role="tabpanel" data-tab-panel="{{ loop.index0 }}">
       <div class="day-market-block">
         <div class="day-heading-row">
           <h2>{{ d.trading_day.isoformat() }}</h2>
@@ -2130,6 +2278,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
       panels.forEach(function (p, j) { p.classList.toggle("active", j === i); });
     }
     btns.forEach(function (b, i) { b.addEventListener("click", function () { show(i); }); });
+    if (panels.length) show(panels.length - 1);
   })();
   </script>
   {% else %}
@@ -2176,7 +2325,7 @@ _INDEX_TEMPLATE = r"""
 </head>
 <body>
   <h1>{{ title }}</h1>
-  <p class="sub">월별 파일을 열면 <strong>ISO 주(월요일 기준)</strong> 단위 탭으로 구분되고, 탭 안에서는 거래일이 일자 순으로 나열됩니다.</p>
+  <p class="sub">월별 파일을 열면 <strong>ISO 주(월요일 기준)</strong> 단위 탭으로 구분되고, 기본으로 <strong>가장 최근 날짜</strong>가 있는 주 탭이 열리며 해당 일자로 이동합니다. 탭 안에서는 거래일이 일자 순으로 나열됩니다.</p>
   <section>
     <ul>
       {% for href, label in week_links %}
@@ -2816,8 +2965,16 @@ __ACTUAL_RET_CELL_MACRO_DATED__
 """
 
 _TEMPLATE = _TEMPLATE.replace("__ACTUAL_RET_CELL_MACRO__", _actual_ret_cell_macro("actual_ret_cell"))
+_TEMPLATE = _TEMPLATE.replace(
+    "{{ interaction_snippet | safe }}",
+    LATEST_DAY_FOCUS_SNIPPET + "\n{{ interaction_snippet | safe }}",
+)
 _COMPACT_TEMPLATE = _COMPACT_TEMPLATE.replace(
     "__ACTUAL_RET_CELL_MACRO_MONTHLY__", _actual_ret_cell_macro("actual_ret_cell_monthly")
+)
+_COMPACT_TEMPLATE = _COMPACT_TEMPLATE.replace(
+    "{{ interaction_snippet | safe }}",
+    LATEST_DAY_FOCUS_SNIPPET + "\n{{ interaction_snippet | safe }}",
 )
 _DATED_N_TEMPLATE = _DATED_N_TEMPLATE.replace(
     "__ACTUAL_RET_CELL_MACRO_DATED__", _actual_ret_cell_macro("actual_ret_cell_dated")

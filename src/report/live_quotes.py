@@ -251,12 +251,20 @@ def run_live_quotes_server(*, port: int = DEFAULT_PORT, host: str = "127.0.0.1")
 
 
 def health_ok(port: int = DEFAULT_PORT, *, host: str = "127.0.0.1", timeout: float = 0.35) -> bool:
+    """우리 데몬의 ``/health`` JSON 만 True. 다른 프로세스가 같은 포트를 쓰는 경우는 False."""
     url = f"http://{host}:{port}/health"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as resp:
-            return resp.status == 200
-    except (OSError, urllib.error.URLError, ValueError):
+            if resp.status != 200:
+                return False
+            body = json.loads(resp.read().decode("utf-8"))
+        return isinstance(body, dict) and body.get("ok") is True
+    except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError):
         return False
+
+
+def _is_pythonw() -> bool:
+    return Path(sys.executable).name.lower() == "pythonw.exe"
 
 
 def _daemon_python() -> str:
@@ -267,6 +275,39 @@ def _daemon_python() -> str:
         if os.path.isfile(cand):
             return cand
     return exe
+
+
+def _windows_daemon_creationflags() -> int:
+    """Cursor 작업 개체에서 빠져나와 IDE를 닫아도 데몬이 남게 합니다."""
+    import subprocess
+
+    # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB | CREATE_NO_WINDOW
+    return (
+        int(getattr(subprocess, "DETACHED_PROCESS", 0x00000008))
+        | int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+        | 0x01000000
+        | int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    )
+
+
+def _wait_health(port: int, *, attempts: int = 25, delay: float = 0.15) -> bool:
+    for _ in range(attempts):
+        if health_ok(port):
+            return True
+        time.sleep(delay)
+    return health_ok(port)
+
+
+def _try_scheduler_start_daemon() -> None:
+    """작업 스케줄러로 기동하면 Cursor Job에 묶이지 않습니다."""
+    import subprocess
+
+    subprocess.run(
+        ["schtasks", "/Run", "/TN", "0.MoneyKRX_LiveQuotes_Morning"],
+        capture_output=True,
+        timeout=20,
+        check=False,
+    )
 
 
 def _ensure_daemon_process(output_dir: Path, *, port: int = DEFAULT_PORT) -> None:
@@ -284,15 +325,21 @@ def _ensure_daemon_process(output_dir: Path, *, port: int = DEFAULT_PORT) -> Non
         "--port",
         str(port),
     ]
-    kwargs: dict[str, Any] = {"cwd": root, "stdin": subprocess.DEVNULL}
+    kwargs: dict[str, Any] = {
+        "cwd": root,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+    }
     if sys.platform == "win32":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        kwargs["close_fds"] = True
+        kwargs["creationflags"] = _windows_daemon_creationflags()
     subprocess.Popen(cmd, **kwargs)
-    for _ in range(20):
-        if health_ok(port):
-            return
-        time.sleep(0.15)
+    if _wait_health(port):
+        return
+    if sys.platform == "win32":
+        _try_scheduler_start_daemon()
+        _wait_health(port, attempts=40, delay=0.2)
 
 
 def ensure_live_quotes_server_running(*, port: int = DEFAULT_PORT, host: str = "127.0.0.1") -> None:
@@ -303,14 +350,19 @@ def ensure_live_quotes_server_running(*, port: int = DEFAULT_PORT, host: str = "
 
 
 def run_if_needed(*, port: int = DEFAULT_PORT) -> bool:
-    """이미 떠 있으면 False. 아니면 데몬을 블로킹 실행하고 True(정상 종료 시)."""
+    """이미 떠 있으면 False. 아니면 IDE와 분리된 데몬을 띄우고 True."""
     if health_ok(port):
         return False
     from src import config
 
-    os.environ.setdefault("LIVE_QUOTES_QUIET", "1")
-    run_live_quotes_daemon(config.OUTPUT_DIR, port=port)
-    return True
+    _ensure_daemon_process(config.OUTPUT_DIR, port=port)
+    if health_ok(port):
+        return True
+    if _is_pythonw():
+        os.environ.setdefault("LIVE_QUOTES_QUIET", "1")
+        run_live_quotes_daemon(config.OUTPUT_DIR, port=port)
+        return True
+    return False
 
 
 def main() -> None:
@@ -330,6 +382,10 @@ def main() -> None:
         run_if_needed(port=args.port)
         return
     if args.daemon:
+        # python.exe(Cursor 터미널)로 켜면 IDE 종료 시 같이 죽으므로 pythonw 로 넘깁니다.
+        if sys.platform == "win32" and not _is_pythonw():
+            _ensure_daemon_process(Path(args.daemon), port=args.port)
+            return
         run_live_quotes_daemon(args.daemon, port=args.port, host=args.host)
     else:
         run_live_quotes_server(port=args.port, host=args.host)

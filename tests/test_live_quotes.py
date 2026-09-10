@@ -97,7 +97,38 @@ def test_run_if_needed_skips_when_healthy(monkeypatch) -> None:
         raise AssertionError("daemon should not start")
 
     monkeypatch.setattr(live_quotes, "run_live_quotes_daemon", _fail)
+    monkeypatch.setattr(live_quotes, "_ensure_daemon_process", _fail)
     assert live_quotes.run_if_needed() is False
+
+
+def test_run_if_needed_spawns_detached_when_down(monkeypatch) -> None:
+    from src.report import live_quotes
+
+    hits = {"ensure": 0}
+
+    def health(*_a, **_k):
+        return hits["ensure"] > 0
+
+    def ensure(*_a, **_k):
+        hits["ensure"] += 1
+
+    monkeypatch.setattr(live_quotes, "health_ok", health)
+    monkeypatch.setattr(live_quotes, "_ensure_daemon_process", ensure)
+    monkeypatch.setattr(
+        live_quotes,
+        "run_live_quotes_daemon",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("must not block")),
+    )
+    assert live_quotes.run_if_needed() is True
+    assert hits["ensure"] == 1
+
+
+def test_windows_daemon_creationflags_break_away_from_job() -> None:
+    from src.report.live_quotes import _windows_daemon_creationflags
+
+    flags = _windows_daemon_creationflags()
+    assert flags & 0x01000000  # CREATE_BREAKAWAY_FROM_JOB
+    assert flags & 0x00000008  # DETACHED_PROCESS
 
 
 def test_inject_live_quotes_script_despite_js_filename_in_body() -> None:

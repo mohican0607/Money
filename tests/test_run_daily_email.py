@@ -76,7 +76,7 @@ def test_ml_retrain_after_append_enabled(monkeypatch) -> None:
     from scripts import run_daily_email as rde
 
     monkeypatch.setenv("RUN_DAILY_AUTO_1430", "N")
-    monkeypatch.setattr(rde, "_append_run_log", lambda lines: None)
+    monkeypatch.setattr(rde, "_append_run_log", lambda lines, **_k: None)
     code = rde.main(["--slot", "1430"])
     assert code == 0
 
@@ -86,7 +86,7 @@ def test_main_force_runs_disabled_slot(monkeypatch) -> None:
 
     monkeypatch.setenv("RUN_DAILY_AUTO_1430", "N")
     monkeypatch.setattr(rde, "_check_trading_day_exit", lambda: 2)
-    monkeypatch.setattr(rde, "_append_run_log", lambda lines: None)
+    monkeypatch.setattr(rde, "_append_run_log", lambda lines, **_k: None)
     code = rde.main(["--slot", "1430", "--force"])
     assert code == 0
 
@@ -412,7 +412,7 @@ def test_1600_logs_append_and_ml_elapsed_separately(monkeypatch) -> None:
 
     monkeypatch.setenv("RUN_DAILY_AUTO_1600", "1")
     monkeypatch.setenv("RUN_DAILY_AUTO_1630", "1")
-    monkeypatch.setattr(rde, "_append_run_log", lambda lines: log_blocks.append(list(lines)))
+    monkeypatch.setattr(rde, "_append_run_log", lambda lines, **_k: log_blocks.append(list(lines)))
     monkeypatch.setattr(rde, "_check_trading_day_exit", lambda: 0)
     monkeypatch.setattr(rde, "_wait_for_prior_slots_1600", lambda: True)
     monkeypatch.setattr(rde, "_ml_retrain_after_append_enabled", lambda: True)
@@ -447,11 +447,14 @@ def test_1600_logs_append_and_ml_elapsed_separately(monkeypatch) -> None:
     divider_idx = joined.index(_LOG_ML_RETRAIN_DIVIDER)
     chain_idx = joined.index("16:00 append 완료 → ML 재학습 즉시 실행")
     assert append_idx < divider_idx < chain_idx
-    assert log_blocks[0] == ["slot=1600 skip_email=True", "status=started"]
-    finish = log_blocks[-1]
-    assert finish[0] == "status=ok"
+    assert len(log_blocks) == 1
+    finish = log_blocks[0]
+    assert finish[0] == "slot=1600"
+    assert finish[1] == "결과=성공"
+    assert finish[2] == "status=ok"
     assert "status=started" not in finish
-    assert "slot=1600" not in finish
+    assert "내부작업=2건" in joined
+    assert "스케줄러=1건" in joined
     assert any(x.startswith("슬롯 전체 소요시간:") and "(" in x and "~" in x for x in finish)
 
 
@@ -472,3 +475,15 @@ def test_append_run_log_uses_triple_blank_separator(monkeypatch, tmp_path: Path)
     text = (log_dir / "run_daily_20260903.log").read_text(encoding="utf-8")
     assert text.startswith("\n\n\n\n===")
     assert text.count("\n\n\n\n=== ") == 2
+
+
+def test_run_log_heading_and_result_ko() -> None:
+    from scripts.run_daily_email import _run_log_heading, _status_result_ko
+
+    assert "슬롯 14:30" in _run_log_heading(slot="1430")
+    assert "시작" not in _run_log_heading(slot="1430", phase="start")
+    assert "완료" not in _run_log_heading(slot="1530", phase="finish")
+    assert "슬롯 15:30" in _run_log_heading(slot="1530", phase="finish")
+    assert _status_result_ko("ok") == "성공"
+    assert _status_result_ko("error") == "실패"
+    assert _status_result_ko("timeout") == "타임아웃(실패)"

@@ -16,6 +16,10 @@
   python scripts/run_daily_email.py --slot 1530
   python scripts/run_daily_email.py --slot 1600
   python scripts/run_daily_email.py --slot 1630
+
+작업 스케줄러에는 14:30 / 15:30 / 16:00 세 건만 등록합니다.
+16:00 한 슬롯이 학습 진단 병합과 ML 재학습(2건)을 이어서 실행합니다.
+일별 로그는 슬롯당 블록 하나(끝날 때 기록)입니다.
 """
 from __future__ import annotations
 
@@ -61,16 +65,42 @@ _WAIT_PRIOR_MAX_SEC = 90 * 60  # 선행 슬롯(main.py timeout과 동일) 대기
 _LOG_BLOCK_SEPARATOR = "\n\n\n\n"  # run_daily 로그 블록 사이 빈 줄 3줄
 _LOG_ML_RETRAIN_DIVIDER = "--- ML 재학습 (--force-ml-retrain) ---"
 
+_STATUS_RESULT_KO = {
+    _RUN_STATUS_OK: "성공",
+    _RUN_STATUS_ERROR: "실패",
+    _RUN_STATUS_TIMEOUT: "타임아웃(실패)",
+    _RUN_STATUS_SKIPPED: "건너뜀",
+    "skipped_auto_disabled": "건너뜀(자동 비활성)",
+}
 
-def _append_run_log(lines: list[str]) -> Path:
+
+def _status_result_ko(status: str) -> str:
+    """로그용 한글 결과. 알 수 없으면 status 문자열 그대로."""
+    return _STATUS_RESULT_KO.get(status, status)
+
+
+def _run_log_heading(*, slot: str | None = None, phase: str | None = None) -> str:
+    """슬롯당 한 블록. phase 는 호환용으로 무시한다."""
+    stamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST")
+    label = SLOT_LABELS.get(slot or "", slot or "")
+    if label:
+        return f"=== {stamp}  슬롯 {label} ==="
+    return f"=== {stamp} ==="
+
+
+def _append_run_log(
+    lines: list[str],
+    *,
+    slot: str | None = None,
+    phase: str | None = None,
+) -> Path:
     """스케줄 실행 기록 — 작업 스케줄러 콘솔 없을 때 확인용."""
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
     day = datetime.now(KST).strftime("%Y%m%d")
     path = _LOG_DIR / f"run_daily_{day}.log"
-    stamp = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S KST")
     with path.open("a", encoding="utf-8") as fh:
         fh.write(_LOG_BLOCK_SEPARATOR)
-        fh.write(f"=== {stamp} ===\n")
+        fh.write(_run_log_heading(slot=slot, phase=phase) + "\n")
         fh.write("\n".join(lines))
         if lines and not lines[-1].endswith("\n"):
             fh.write("\n")
@@ -112,9 +142,18 @@ def _append_elapsed(
     print(line, flush=True)
 
 
-def _finish_run_log(log_lines: list[str], *, status: str) -> None:
-    """완료 블록 — 시작 하트비트의 slot/status=started 는 반복하지 않는다."""
-    _append_run_log([f"status={status}", *log_lines])
+def _finish_run_log(log_lines: list[str], *, status: str, slot: str) -> None:
+    """완료 블록 — 슬롯·한글 결과·status 를 앞에 써서 성공/실패를 바로 구분한다."""
+    _append_run_log(
+        [
+            f"slot={slot}",
+            f"결과={_status_result_ko(status)}",
+            f"status={status}",
+            *log_lines,
+        ],
+        slot=slot,
+        phase="finish",
+    )
 
 
 def _smtp_auth_hint(exc: BaseException) -> str:
@@ -739,6 +778,7 @@ def main(argv: list[str] | None = None) -> int:
         _append_run_log(
             [
                 f"slot={args.slot} skip_email={args.skip_email}",
+                f"결과={_status_result_ko('skipped_auto_disabled')}",
                 "status=skipped_auto_disabled",
                 msg,
                 _format_elapsed_line(
@@ -746,7 +786,9 @@ def main(argv: list[str] | None = None) -> int:
                     started_at=started_at,
                     ended_at=datetime.now(KST),
                 ),
-            ]
+            ],
+            slot=args.slot,
+            phase="finish",
         )
         return 0
 
@@ -756,10 +798,7 @@ def main(argv: list[str] | None = None) -> int:
         in ("1", "true", "True", "yes")
     )
 
-    slot_header = f"slot={args.slot} skip_email={args.skip_email}"
     log_lines: list[str] = []
-    # 중단·행 대비 하트비트. 완료 블록에는 slot/status=started 를 다시 쓰지 않는다.
-    _append_run_log([slot_header, "status=started"])
 
     check_code = _check_trading_day_exit()
     if check_code != 0:
@@ -770,6 +809,7 @@ def main(argv: list[str] | None = None) -> int:
         _finish_run_log(
             log_lines,
             status=_RUN_STATUS_SKIPPED if check_code in (2, 3, 4) else _RUN_STATUS_ERROR,
+            slot=args.slot,
         )
         return 0 if check_code in (2, 3, 4) else check_code
 
@@ -811,6 +851,19 @@ def main(argv: list[str] | None = None) -> int:
             f"N={n_day.isoformat()} → T={t_day.isoformat()}"
         )
     print(header, flush=True)
+    if args.slot == "1600":
+        if ml_after:
+            job_note = "스케줄러=1건 · 내부작업=2건 (1.학습 진단  2.ML 재학습)"
+        else:
+            job_note = "스케줄러=1건 · 내부작업=1건 (학습 진단)"
+    elif args.slot in ("1430", "1530"):
+        job_note = "스케줄러=1건 · 내부작업=1건 (리포트+이메일)"
+    elif args.slot == "1630":
+        job_note = "스케줄러=미등록 · 내부작업=1건 (ML 재학습, 수동·16:00 연쇄)"
+    else:
+        job_note = ""
+    if job_note:
+        log_lines.append(job_note)
     log_lines.append(header)
 
     if args.slot == "1600":
@@ -843,7 +896,7 @@ def main(argv: list[str] | None = None) -> int:
                 _append_elapsed(
                     log_lines, started, label=slot_total_label, started_at=started_at
                 )
-                _finish_run_log(log_lines, status=_RUN_STATUS_SKIPPED)
+                _finish_run_log(log_lines, status=_RUN_STATUS_SKIPPED, slot=args.slot)
                 return 0
         elif args.slot == "1630":
             if not _wait_for_prior_slots_1630():
@@ -856,7 +909,7 @@ def main(argv: list[str] | None = None) -> int:
                 _append_elapsed(
                     log_lines, started, label=slot_total_label, started_at=started_at
                 )
-                _finish_run_log(log_lines, status=_RUN_STATUS_SKIPPED)
+                _finish_run_log(log_lines, status=_RUN_STATUS_SKIPPED, slot=args.slot)
                 return 0
 
         timeout_sec = config.RUN_DAILY_MAIN_TIMEOUT_SEC
@@ -975,7 +1028,7 @@ def main(argv: list[str] | None = None) -> int:
             _append_elapsed(
                 log_lines, started, label=slot_total_label, started_at=started_at
             )
-            _finish_run_log(log_lines, status=run_status)
+            _finish_run_log(log_lines, status=run_status, slot=args.slot)
             if run_status == _RUN_STATUS_TIMEOUT:
                 return 124
             return main_exit if main_exit is not None else 1
@@ -997,7 +1050,7 @@ def main(argv: list[str] | None = None) -> int:
         _append_elapsed(
             log_lines, started, label=slot_total_label, started_at=started_at
         )
-        _finish_run_log(log_lines, status=run_status)
+        _finish_run_log(log_lines, status=run_status, slot=args.slot)
 
         if run_status == _RUN_STATUS_TIMEOUT:
             return 124
@@ -1037,7 +1090,7 @@ def main(argv: list[str] | None = None) -> int:
         _append_elapsed(
             log_lines, started, label=slot_total_label, started_at=started_at
         )
-        _finish_run_log(log_lines, status=run_status)
+        _finish_run_log(log_lines, status=run_status, slot=args.slot)
         return 1
 
 
