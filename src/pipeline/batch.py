@@ -449,6 +449,17 @@ def _render_monthly_batch(
             # written_paths.append(theme_out)  # 자동 열기 제외(report_theme_*pct_*)
             print(f"완료(테마 {theme_thr_pct}%↑): {theme_out}")
 
+    # 테마 월간 HTML이 갱신된 뒤 상한 연결·변화 흐름 리포트도 같이 갱신
+    # (14:30·15:30 main.py 경로. 16:00은 테마 HTML을 쓰지 않으므로 여기 미호출)
+    try:
+        from src.report.theme_flow import update_theme_flow_report
+
+        flow_path = update_theme_flow_report(config.OUTPUT_DIR)
+        if flow_path is not None:
+            print(f"완료(테마 흐름): {flow_path}")
+    except Exception as exc:  # noqa: BLE001 — 흐름 HTML 실패가 본 리포트를 막지 않게
+        print(f"경고(테마 흐름 갱신 실패): {exc}")
+
     index_html = config.OUTPUT_DIR / "report_index_monthly.html"
     month_links = report.collect_monthly_report_index_links(config.OUTPUT_DIR)
     report.render_movers_index(

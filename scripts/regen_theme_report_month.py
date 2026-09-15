@@ -100,6 +100,14 @@ def main() -> int:
     n_unconf = text.count("미확인")
     print(f"완료: {path}", flush=True)
     print(f"원인 미확인={n_unknown}, 미확인={n_unconf}", flush=True)
+    try:
+        from src.report.theme_flow import update_theme_flow_report
+
+        flow = update_theme_flow_report(config.OUTPUT_DIR)
+        if flow is not None:
+            print(f"완료(테마 흐름): {flow}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"경고(테마 흐름 갱신 실패): {exc}", flush=True)
     return 0 if n_unknown == 0 and n_unconf == 0 else 2
 
 
