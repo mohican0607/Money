@@ -364,6 +364,16 @@ svg text{font-family:inherit}
 .line-col .cap{font-size:0.58rem;color:var(--muted);margin-top:3px;transform:rotate(-50deg);transform-origin:top left;white-space:nowrap;height:28px}
 .disclaimer{font-size:0.72rem;color:var(--muted);margin-top:28px}
 a{color:var(--accent)}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+@media (max-width:760px){
+  body{padding:10px 8px 32px;max-width:none;font-size:0.88rem}
+  h1{font-size:1.15rem}
+  .card{padding:10px 12px}
+  .bar-label{width:88px;font-size:0.72rem}
+  .stats{gap:10px}
+  .stat{min-width:80px}
+  .stat b{font-size:1.1rem}
+}
 </style>
 </head>
 <body>

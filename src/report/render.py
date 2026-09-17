@@ -447,6 +447,7 @@ from .templates import (
     _DATED_N_TEMPLATE,
     _INDEX_TEMPLATE,
     _TEMPLATE,
+    _inject_report_mobile_css,
 )
 
 _LIVE_QUOTES_SCRIPT = '<script src="live_quotes.js" id="money-live-quotes-js"></script>'
@@ -963,6 +964,7 @@ def _ensure_latest_day_focus_script(html: str) -> str:
 
 def _ensure_report_interaction_script(html: str) -> str:
     """인터랙션 스크립트를 보강·교체(구버전 누적 HTML의 stale JS 갱신)."""
+    html = _inject_report_mobile_css(html)
     html = _inject_live_quotes_script(html)
     html = _ensure_latest_day_focus_script(html)
     if _INTERACTION_BLOCK_RE.search(html):

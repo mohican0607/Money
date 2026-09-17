@@ -3462,6 +3462,7 @@ _THEME_DAY_SECTION_TEMPLATE = r"""
     {% for sec in day.sectors %}
     <h3>{{ sec.theme }} ({{ sec.count }})</h3>
     {{ sec.rationale_html | safe }}
+    <div class="table-wrap">
     <table class="stocks">
       <colgroup>
         <col class="col-stock"/><col class="col-theme"/><col class="col-market"/>
@@ -3483,6 +3484,7 @@ _THEME_DAY_SECTION_TEMPLATE = r"""
       {% endfor %}
       </tbody>
     </table>
+    </div>
     {% endfor %}
   </section>
 """
@@ -3554,6 +3556,21 @@ _THEME_REPORT_SHELL_TEMPLATE = r"""
     table.stocks tr:hover td { background: #121c28; }
     .disclaimer { font-size: 0.72rem; color: var(--muted); margin-top: 20px; }
     code { font-size: 0.72rem; color: var(--muted); }
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+    table.stocks td.reason, table.stocks td.col-reason {
+      overflow-wrap: anywhere; word-break: break-word; min-width: 0;
+    }
+    @media (max-width: 760px) {
+      body { padding: 10px 8px 28px; font-size: 0.9rem; max-width: none; }
+      h1 { font-size: 1.15rem; }
+      h2 { font-size: 0.98rem; }
+      section.day { padding: 10px; overflow-x: visible; }
+      table.stocks { font-size: 0.78rem; min-width: 640px; }
+      table.stocks td.col-theme, table.stocks td.theme { white-space: normal; overflow: visible; text-overflow: clip; }
+      table.stocks th.col-reason, table.stocks td.col-reason,
+      table.stocks th:nth-child(5), table.stocks td:nth-child(5) { width: 36%; }
+    }
   </style>
 </head>
 <body>

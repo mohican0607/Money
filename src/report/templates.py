@@ -16,6 +16,89 @@ ROWS_COMPARE_GROUP_COL_CSS = """
     table.rows-compare td:nth-child(1) { white-space: nowrap; vertical-align: top; }
 """
 
+# 메일 첨부·휴대폰 WebView에서 비교표가 폭에 찌그러지지 않도록.
+# (표만 가로 스크롤 · 헤더 버튼은 뷰포트에 유지 · 예측 근거가 옆 칸을 덮지 않게)
+REPORT_MOBILE_CSS = r"""
+    html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+    .table-wrap {
+      overflow-x: auto; -webkit-overflow-scrolling: touch;
+      margin-top: 10px; max-width: 100%;
+      overscroll-behavior-x: contain;
+    }
+    table.rows-compare { min-width: 920px; }
+    .market-theme-heading-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      width: 100%; max-width: 100%; box-sizing: border-box;
+    }
+    .live-intraday-toggle {
+      flex: 0 0 auto; white-space: nowrap; max-width: 100%;
+      font-family: inherit; font-size: 0.78rem; line-height: 1.3;
+      -webkit-appearance: none; appearance: none;
+      overflow: visible;
+    }
+    table.rows-compare td[data-sort-col="pred"] { white-space: nowrap; min-width: 7.5rem; }
+    .pred-live-intraday { white-space: nowrap; }
+    td.pred-reason-forward {
+      vertical-align: top; width: 16%; max-width: 14rem;
+      overflow-wrap: anywhere; word-break: break-word;
+    }
+    .pred-reason-inline {
+      max-width: 100% !important; min-width: 0;
+      white-space: normal; overflow-wrap: anywhere; word-break: break-word;
+    }
+    .pred-reason-plain, .pred-reason-cell {
+      max-width: 100%; min-width: 0;
+      overflow-wrap: anywhere; word-break: break-word;
+    }
+    .pred-reason-tip-compact { display: none; }
+    .gap-tip.tip-open > .gap-tip-popup { display: block !important; }
+    .gap-tip.integrate-tip.tip-open .integrate-tip-popup { display: block !important; }
+    @media (max-width: 760px) {
+      body { padding: 10px 8px 28px; font-size: 0.92rem; }
+      h1 { font-size: 1.2rem; line-height: 1.3; }
+      h2 { font-size: 1rem; }
+      section { padding: 12px 10px; border-radius: 10px; margin-bottom: 14px; overflow-x: visible; }
+      .day-stack, .day-market-block, section.day, article.dated-n-block section {
+        max-width: 100%; overflow-x: visible;
+      }
+      .sub, .hint, .note, .muted { font-size: 0.8rem; }
+      .tab-bar { gap: 6px; margin-bottom: 12px; }
+      .tab-btn {
+        padding: 10px 12px; font-size: 0.82rem; min-height: 42px;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .day-heading-row { gap: 6px 10px; max-width: 100%; }
+      .market-filter-radios, .rise-filter-radios { gap: 6px 10px; font-size: 0.78rem; }
+      .market-filter-label, .rise-filter-label { min-height: 36px; }
+      .live-intraday-toggle { padding: 8px 10px; min-height: 36px; }
+      td.pred-reason-forward:has(.pred-reason-tip-compact) .pred-reason-inline {
+        display: none !important;
+      }
+      .pred-reason-tip-compact { display: inline-block !important; }
+      td.pred-reason-forward:has(.pred-reason-tip-compact) {
+        width: 4.5rem; max-width: 4.5rem; min-width: 4.5rem;
+        white-space: nowrap;
+      }
+      .gap-tip-popup, .combo-tip-popup, .disclosure-tip-popup, .kw-list-popup,
+      .stock-chart-popup, .cumulative-hist-popup {
+        min-width: 0 !important;
+        left: 0 !important; right: auto !important;
+        width: min(920px, calc(100vw - 16px)) !important;
+        max-width: calc(100vw - 16px) !important;
+        box-sizing: border-box;
+      }
+      .integrate-tip-popup.integrate-tip-floating,
+      .stock-chart-popup.stock-chart-popup-floating {
+        width: calc(100vw - 16px) !important;
+        max-width: calc(100vw - 16px) !important;
+        min-width: 0 !important;
+        left: 8px !important;
+      }
+      .banner { padding: 10px 12px; font-size: 0.86rem; }
+      .movers-data-note { padding: 10px 12px; font-size: 0.82rem; }
+    }
+"""
+
 REPORT_TABLE_INTERACTION_MARKER = "money-report-table-interaction"
 # 비교표 정렬·필터·차트 tooltip·장중 실시간 등락률 갱신 스크립트(리포트 </body> 직전 삽입).
 REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
@@ -204,17 +287,79 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       tip.addEventListener("mouseleave", function (e) {
         var to = e.relatedTarget;
         if (to && tip.contains(to)) return;
+        if (tip.classList.contains("tip-open")) return;
         resetIntegratePopup(tip);
       });
       tip.addEventListener("focusout", function (e) {
         var to = e.relatedTarget;
         if (to && tip.contains(to)) return;
+        if (tip.classList.contains("tip-open")) return;
         resetIntegratePopup(tip);
       });
     });
 
     window.addEventListener("resize", refreshOpenIntegrateTips);
     window.addEventListener("scroll", refreshOpenIntegrateTips, true);
+  }
+  // 휴대폰·터치: hover 대신 탭으로 tooltip 열고 닫기.
+  function bindTouchTipToggles(root) {
+    var scope = root || document;
+    function closeAllTips(except) {
+      scope.querySelectorAll(".gap-tip.tip-open").forEach(function (tip) {
+        if (except && tip === except) return;
+        tip.classList.remove("tip-open");
+        var popup = tip.querySelector(".integrate-tip-popup");
+        if (popup) {
+          popup.classList.remove("integrate-tip-floating");
+          popup.style.removeProperty("left");
+          popup.style.removeProperty("top");
+          popup.style.removeProperty("display");
+        }
+      });
+    }
+    scope.querySelectorAll(".gap-tip").forEach(function (tip) {
+      var trigger = tip.querySelector(".gap-tip-trigger");
+      if (!trigger) return;
+      trigger.addEventListener("click", function (e) {
+        // 데스크톱 hover 환경에서는 클릭 토글 불필요(링크·스크롤 방해 방지).
+        var coarse = window.matchMedia && window.matchMedia("(hover: none), (pointer: coarse)").matches;
+        if (!coarse) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var opening = !tip.classList.contains("tip-open");
+        closeAllTips(tip);
+        if (opening) {
+          tip.classList.add("tip-open");
+          if (tip.classList.contains("integrate-tip")) {
+            var popup = tip.querySelector(".integrate-tip-popup");
+            var anchor = trigger;
+            if (popup && anchor) {
+              var margin = 8;
+              var gap = 6;
+              popup.classList.add("integrate-tip-floating");
+              popup.style.setProperty("display", "block", "important");
+              var pw = popup.offsetWidth;
+              var ph = popup.offsetHeight;
+              var ar = anchor.getBoundingClientRect();
+              var vw = window.innerWidth;
+              var vh = window.innerHeight;
+              var left = Math.max(margin, Math.min(ar.left, vw - pw - margin));
+              var top = ar.bottom + gap;
+              if (top + ph > vh - margin) top = Math.max(margin, ar.top - ph - gap);
+              popup.style.setProperty("left", left + "px", "important");
+              popup.style.setProperty("top", top + "px", "important");
+            }
+          }
+        } else {
+          tip.classList.remove("tip-open");
+        }
+      });
+    });
+    document.addEventListener("click", function (e) {
+      var t = e.target;
+      if (t && t.closest && t.closest(".gap-tip.tip-open")) return;
+      closeAllTips(null);
+    });
   }
   // --- 장중 등락률 API / live_quotes.js ---
   // html data-live-quotes-base 또는 기본 127.0.0.1:8765.
@@ -792,6 +937,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
   });
   _safeBind(function () { bindMarketRowFilters(document); });
   _safeBind(function () { bindIntegrateTips(document); });
+  _safeBind(function () { bindTouchTipToggles(document); });
   _safeBind(function () { bindStockChartTips(document); });
   _safeBind(function () { bindLiveIntradayToggles(document); });
   _safeBind(function () { bindForwardColumnIntradayRefresh(document); });
@@ -1200,7 +1346,7 @@ _TEMPLATE = r"""
       min-width: 8.5rem;
     }
     .stock-ret-col-lines .stock-ret-line { display: flex; justify-content: space-between; gap: 10px; }
-    .pred-reason-inline { font-size: 0.82rem; line-height: 1.45; white-space: normal; max-width: 28rem; }
+    .pred-reason-inline { font-size: 0.82rem; line-height: 1.45; white-space: normal; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
   </style>
 </head>
 <body>
@@ -1318,12 +1464,18 @@ __ACTUAL_RET_CELL_MACRO__
 {% endif %}
 {%- endmacro %}
 {% macro pred_rationale_cell(d, r) -%}
-<td class="pred-reason-forward" style="vertical-align:top;{% if d.forward_observation | default(false) %}white-space:normal;max-width:28rem;line-height:1.45{% else %}white-space:nowrap{% endif %}">
+<td class="pred-reason-forward">
   {% if r.pred_ret is not none %}
     {% set pred_reason_body = r.pred_reason_tooltip_html or r.pred_reason_detail_html %}
     {% if d.forward_observation | default(false) %}
       {% if pred_reason_body and pred_reason_body != '—' %}
       <div class="pred-reason-inline">{{ pred_reason_body | safe }}</div>
+      <span class="gap-tip pred-reason-tip pred-reason-tip-compact">
+        <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+        <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+          <div class="combo-tip-body">{{ pred_reason_body | safe }}</div>
+        </div>
+      </span>
       {% else %}—{% endif %}
     {% else %}
       {% if pred_reason_body and pred_reason_body != '—' %}
@@ -1394,6 +1546,7 @@ __ACTUAL_RET_CELL_MACRO__
     <h3 style="font-size:1rem;color:var(--ok);margin:16px 0 8px;">{% if d.forward_observation | default(false) %}예측 10% 이상 후보{% else %}실제·예측 10% 이상 포함 종목{% endif %}</h3>
     <p class="sub" style="margin-top:0">{% if d.forward_observation | default(false) %}모델 <strong>예측 상승률</strong> 10% 이상 후보입니다. 장 마감 전이므로 실제 상승률은 표시하지 않습니다.{% else %}당일 <strong>실제</strong> 10% 이상 상승 종목과, 모델 <strong>예측 상승률</strong> 10% 이상 후보(중복 제거)를 함께 표시합니다.{% endif %} 위 라디오로 20%이상 / 10~20% 구간을 전환할 수 있습니다.</p>
     {% if d.rows_compare %}
+    <div class="table-wrap">
     <table class="rows-compare">
       <colgroup><col class="col-group"/></colgroup>
       <thead>
@@ -1483,6 +1636,7 @@ __ACTUAL_RET_CELL_MACRO__
         {% endfor %}
       </tbody>
     </table>
+    </div>
     {% else %}
     <p class="sub">당일 실제·예측 {{ meta.threshold }} 이상 해당 종목 없음.</p>
     {% endif %}
@@ -1877,7 +2031,7 @@ _COMPACT_TEMPLATE = r"""
       min-width: 8.5rem;
     }
     .stock-ret-col-lines .stock-ret-line { display: flex; justify-content: space-between; gap: 10px; }
-    .pred-reason-inline { font-size: 0.82rem; line-height: 1.45; white-space: normal; max-width: 28rem; }
+    .pred-reason-inline { font-size: 0.82rem; line-height: 1.45; white-space: normal; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
   </style>
 </head>
 <body>
@@ -1995,12 +2149,18 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 {% endif %}
 {%- endmacro %}
 {% macro pred_rationale_cell(d, r) -%}
-<td class="pred-reason-forward" style="vertical-align:top;{% if d.forward_observation | default(false) %}white-space:normal;max-width:28rem;line-height:1.45{% else %}white-space:nowrap{% endif %}">
+<td class="pred-reason-forward">
   {% if r.pred_ret is not none %}
     {% set pred_reason_body = r.pred_reason_tooltip_html or r.pred_reason_detail_html %}
     {% if d.forward_observation | default(false) %}
       {% if pred_reason_body and pred_reason_body != '—' %}
       <div class="pred-reason-inline">{{ pred_reason_body | safe }}</div>
+      <span class="gap-tip pred-reason-tip pred-reason-tip-compact">
+        <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+        <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+          <div class="combo-tip-body">{{ pred_reason_body | safe }}</div>
+        </div>
+      </span>
       {% else %}—{% endif %}
     {% else %}
       {% if pred_reason_body and pred_reason_body != '—' %}
@@ -2063,6 +2223,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 {%- endmacro %}
 {% macro compact_day_table(d, meta, empty_extra='') -%}
 {% if d.rows_compare %}
+<div class="table-wrap">
 <table class="rows-compare">
   <colgroup><col class="col-group"/></colgroup>
   <thead>
@@ -2152,6 +2313,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
     {% endfor %}
   </tbody>
 </table>
+</div>
 {% else %}
 <p class="sub">{% if d.forward_observation | default(false) %}예측 전용 거래일 — 상위 예측 후보가 없습니다(모델·키워드 필터 결과).{% else %}해당일 실제·예측 {{ meta.threshold }} 이상 해당 종목 없음{% endif %}{% if empty_extra %} ({{ empty_extra }}){% endif %}.</p>
 {% endif %}
@@ -2590,7 +2752,7 @@ _DATED_N_TEMPLATE = r"""
       min-width: 8.5rem;
     }
     .stock-ret-col-lines .stock-ret-line { display: flex; justify-content: space-between; gap: 10px; }
-    .pred-reason-inline { font-size: 0.82rem; line-height: 1.45; white-space: normal; max-width: 28rem; }
+    .pred-reason-inline { font-size: 0.82rem; line-height: 1.45; white-space: normal; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
   </style>
 </head>
 <body>
@@ -2672,12 +2834,18 @@ _DATED_N_TEMPLATE = r"""
 {% endif %}
 {%- endmacro %}
 {% macro pred_rationale_cell(d, r) -%}
-<td class="pred-reason-forward" style="vertical-align:top;{% if d.forward_observation | default(false) %}white-space:normal;max-width:28rem;line-height:1.45{% else %}white-space:nowrap{% endif %}">
+<td class="pred-reason-forward">
   {% if r.pred_ret is not none %}
     {% set pred_reason_body = r.pred_reason_tooltip_html or r.pred_reason_detail_html %}
     {% if d.forward_observation | default(false) %}
       {% if pred_reason_body and pred_reason_body != '—' %}
       <div class="pred-reason-inline">{{ pred_reason_body | safe }}</div>
+      <span class="gap-tip pred-reason-tip pred-reason-tip-compact">
+        <span class="gap-tip-trigger" tabindex="0" role="button" aria-label="예측 근거">근거</span>
+        <div class="gap-tip-popup pred-reason-popup" role="tooltip">
+          <div class="combo-tip-body">{{ pred_reason_body | safe }}</div>
+        </div>
+      </span>
       {% else %}—{% endif %}
     {% else %}
       {% if pred_reason_body and pred_reason_body != '—' %}
@@ -2979,5 +3147,25 @@ _COMPACT_TEMPLATE = _COMPACT_TEMPLATE.replace(
 _DATED_N_TEMPLATE = _DATED_N_TEMPLATE.replace(
     "__ACTUAL_RET_CELL_MACRO_DATED__", _actual_ret_cell_macro("actual_ret_cell_dated")
 )
+
+
+def _inject_report_mobile_css(html: str) -> str:
+    """첫 ``</style>`` 직전에 모바일·첨부용 CSS를 넣거나, 기존 블록을 최신으로 교체."""
+    marker = "/* money-report-mobile-css */"
+    if marker in html:
+        start = html.find(marker)
+        style_end = html.find("</style>", start)
+        if style_end < 0:
+            return html
+        return html[:start] + marker + "\n" + REPORT_MOBILE_CSS + html[style_end:]
+    idx = html.find("</style>")
+    if idx < 0:
+        return html
+    return html[:idx] + f"\n    {marker}\n" + REPORT_MOBILE_CSS + html[idx:]
+
+
+_TEMPLATE = _inject_report_mobile_css(_TEMPLATE)
+_COMPACT_TEMPLATE = _inject_report_mobile_css(_COMPACT_TEMPLATE)
+_DATED_N_TEMPLATE = _inject_report_mobile_css(_DATED_N_TEMPLATE)
 
 _m_dated_style = re.search(r"<style>\s*(.*?)\s*</style>", _DATED_N_TEMPLATE, re.DOTALL)
