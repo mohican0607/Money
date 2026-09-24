@@ -225,20 +225,21 @@ THEME_CARRYOVER_ENABLED = os.getenv("THEME_CARRYOVER_ENABLED", "1").strip().lowe
     "yes",
     "on",
 )
-THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 2.0)
+THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 3.0)
 # 캘리브레이션 후 최종 예측 수익률(소수) 클램프 범위 (BIG_MOVE 20%와 맞춤)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 52
+PREDICTION_FREEZE_SCHEMA_VERSION = 57
 
-# --- 다요인(멀티팩터) 랭킹 가중치 (합≈1, 뉴스 최소) ---
-PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.48)
-PRED_FACTOR_W_MOMENTUM = _float_env("PRED_FACTOR_W_MOMENTUM", 0.14)
-PRED_FACTOR_W_FLOW = _float_env("PRED_FACTOR_W_FLOW", 0.11)
+# --- 다요인(멀티팩터) 랭킹 가중치 (합≈1): 언급·테마·수급 > 순수 ML ---
+PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.28)
+PRED_FACTOR_W_MOMENTUM = _float_env("PRED_FACTOR_W_MOMENTUM", 0.10)
+PRED_FACTOR_W_FLOW = _float_env("PRED_FACTOR_W_FLOW", 0.18)
 PRED_FACTOR_W_RELATIVE_STRENGTH = _float_env("PRED_FACTOR_W_RELATIVE_STRENGTH", 0.08)
-PRED_FACTOR_W_SECTOR = _float_env("PRED_FACTOR_W_SECTOR", 0.15)
-PRED_FACTOR_W_NEWS = _float_env("PRED_FACTOR_W_NEWS", 0.02)
+PRED_FACTOR_W_SECTOR = _float_env("PRED_FACTOR_W_SECTOR", 0.20)
+# 뉴스 기둥 = 종목 언급·테마 겹침·맥락 (상투어 교집합 비중은 기둥 내부에서 낮춤)
+PRED_FACTOR_W_NEWS = _float_env("PRED_FACTOR_W_NEWS", 0.14)
 PRED_FACTOR_W_MARKET = _float_env("PRED_FACTOR_W_MARKET", 0.02)
 PRED_FACTOR_MIN_STRONG_PILLARS = _positive_int_env("PRED_FACTOR_MIN_STRONG_PILLARS", 2)
 # 상위 순위 업종 쏠림 완화(동일 업종 최대 N종 / 상위 K)
@@ -277,7 +278,7 @@ PRED_PRECISION_GATE_ENABLED = os.getenv("PRED_PRECISION_GATE_ENABLED", "1").stri
 PRED_CONFIDENCE_OUTPUT_ENABLED = os.getenv(
     "PRED_CONFIDENCE_OUTPUT_ENABLED", "1"
 ).strip().lower() in ("1", "true", "yes", "on")
-PRED_PRECISION_MAX_HIGH = _positive_int_env("PRED_PRECISION_MAX_HIGH", 10)
+PRED_PRECISION_MAX_HIGH = _positive_int_env("PRED_PRECISION_MAX_HIGH", 5)
 PRED_PRECISION_MIN_CONVICTION = _float_env("PRED_PRECISION_MIN_CONVICTION", 0.42)
 PRED_PRECISION_MIN_PILLARS = _positive_int_env("PRED_PRECISION_MIN_PILLARS", 1)
 PRED_PRECISION_MAX_RANK = _positive_int_env("PRED_PRECISION_MAX_RANK", 15)
@@ -304,21 +305,22 @@ PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS = _float_env(
 PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK = _non_negative_int_env(
     "PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK", 8
 )
-# N일 → N+1일 실전 확신: 고확신은 당일 풀 1등 대비 상대 하한 + 뉴스·기둥.
-# 절대 10% 문턱은 쓰지 않는다. 통과자가 없으면 high 는 비울 수 있다.
+# N일 → N+1일 실전 확신: 상대 하한 + **절대 보정 ML 하한**.
+# 풀 1등이 2%면 상대만으로는 전부 고확신이 되므로 abs min 이 필수.
+# 통과자가 없으면 high 는 비운다(빈 칸 > 가짜 고확신).
 PRED_FORWARD_HIGH_CALIBRATED_MIN = _float_env(
-    "PRED_FORWARD_HIGH_CALIBRATED_MIN", 0.01
+    "PRED_FORWARD_HIGH_CALIBRATED_MIN", 0.08
 )
-PRED_HIGH_CALIBRATED_ABS_MIN = _float_env("PRED_HIGH_CALIBRATED_ABS_MIN", 0.01)
+PRED_HIGH_CALIBRATED_ABS_MIN = _float_env("PRED_HIGH_CALIBRATED_ABS_MIN", 0.08)
 PRED_HIGH_CALIBRATED_RELATIVE = _float_env("PRED_HIGH_CALIBRATED_RELATIVE", 0.72)
 # 뉴스·언급·맥락 합성 근거(0~1). 이 값 미만이면 high 불가.
-PRED_HIGH_NEWS_EVIDENCE_MIN = _float_env("PRED_HIGH_NEWS_EVIDENCE_MIN", 0.55)
-PRED_FORWARD_HIGH_MAX_RANK = _positive_int_env("PRED_FORWARD_HIGH_MAX_RANK", 15)
+PRED_HIGH_NEWS_EVIDENCE_MIN = _float_env("PRED_HIGH_NEWS_EVIDENCE_MIN", 0.72)
+PRED_FORWARD_HIGH_MAX_RANK = _positive_int_env("PRED_FORWARD_HIGH_MAX_RANK", 12)
 PRED_FORWARD_HIGH_RELATIVE_PRECISION = _float_env(
     "PRED_FORWARD_HIGH_RELATIVE_PRECISION", 0.85
 )
 PRED_FORWARD_HIGH_MIN_KEYWORD_HITS = _positive_int_env(
-    "PRED_FORWARD_HIGH_MIN_KEYWORD_HITS", 1
+    "PRED_FORWARD_HIGH_MIN_KEYWORD_HITS", 2
 )
 PRED_FORWARD_MID_ENABLED = os.getenv("PRED_FORWARD_MID_ENABLED", "1").strip().lower() in (
     "1",
@@ -327,9 +329,21 @@ PRED_FORWARD_MID_ENABLED = os.getenv("PRED_FORWARD_MID_ENABLED", "1").strip().lo
     "on",
 )
 PRED_FORWARD_MID_CALIBRATED_MIN = _float_env(
-    "PRED_FORWARD_MID_CALIBRATED_MIN", 0.02
+    "PRED_FORWARD_MID_CALIBRATED_MIN", 0.04
 )
 PRED_FORWARD_MID_MAX_RANK = _positive_int_env("PRED_FORWARD_MID_MAX_RANK", 12)
+# 표시 예측% ML 캡: 기본 끔.
+# 켜면 보정 ML 이 낮을 때 %를 깎아 리포트에 5%대 가짜가 생김.
+# 리포트는 예측≥BIG_MOVE(20%) 만 노출 — 낮은 %를 보여 주지 않는다.
+PRED_DISPLAY_PCT_ML_CAP_ENABLED = os.getenv(
+    "PRED_DISPLAY_PCT_ML_CAP_ENABLED", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+PRED_DISPLAY_PCT_ML_CAP_BASE = _float_env("PRED_DISPLAY_PCT_ML_CAP_BASE", 5.0)
+PRED_DISPLAY_PCT_ML_CAP_SCALE = _float_env("PRED_DISPLAY_PCT_ML_CAP_SCALE", 120.0)
+# 리포트·freeze 에 넣을 예측 상승률 하한(%%). BIG_MOVE 와 동일(기본 20).
+PRED_REPORT_MIN_PCT = _float_env(
+    "PRED_REPORT_MIN_PCT", BIG_MOVE_THRESHOLD * 100.0
+)
 
 # --- 랭킹 우선 예측(구조적 정확도 개선) ---
 # 1: ML 확률·순위 기반, pred_high=확신구간 / 0: 레거시(표시%≥20%)
@@ -475,8 +489,9 @@ PRED_EVAL_HIT_AT_K: tuple[int, ...] = tuple(
     )
 ) or (5, 10, 20, 40)
 TRAIN_START_DEFAULT = _date_env("TRAIN_START", date(2025, 4, 11))  # 급등–뉴스 이벤트·스냅샷 수집 시작
-# ML 랭커 학습: 관측일 T 직전 최근 N거래일만 사용(0=전구간). 표본·시간 폭증 방지.
-ML_TRAIN_LOOKBACK_DAYS = _non_negative_int_env("ML_TRAIN_LOOKBACK_DAYS", 150)
+# ML 랭커 학습: 관측일 T 직전 최근 N거래일(스냅샷 누적 이벤트와 함께 사용). 0=전구간.
+# 일별 append·force-ml-retrain 이 이 창을 넓혀 가며 적중률을 끌어올리는 것이 목표.
+ML_TRAIN_LOOKBACK_DAYS = _non_negative_int_env("ML_TRAIN_LOOKBACK_DAYS", 180)
 # 캐시 미스 시 일일 추론용 경량 학습(``--rebuild-train-snapshot`` 제외). 기본 끔 → 정확도 우선.
 ML_TRAIN_FAST_ON_CACHE_MISS = os.getenv("ML_TRAIN_FAST_ON_CACHE_MISS", "0").strip().lower() in (
     "1",
@@ -692,16 +707,16 @@ NEWS_NAVER_MARKET_QUERY_SEEDS_EXTRA = [
     "IPO",
 ]
 
-# 최근 오판 기반 키워드 가중치 피드백(자동 학습)
+# 최근 오판 기반 키워드 가중치 피드백(자동 학습 — 누적 accuracy 캐시와 함께 Hit 개선)
 KEYWORD_FEEDBACK_ENABLED = os.getenv("KEYWORD_FEEDBACK_ENABLED", "1").strip().lower() in (
     "1",
     "true",
     "yes",
     "on",
 )
-KEYWORD_FEEDBACK_SCORE_SCALE = _float_env("KEYWORD_FEEDBACK_SCORE_SCALE", 1.1)
-KEYWORD_FEEDBACK_DECAY = _float_env("KEYWORD_FEEDBACK_DECAY", 0.02)
-KEYWORD_FEEDBACK_STEP = _float_env("KEYWORD_FEEDBACK_STEP", 0.06)
+KEYWORD_FEEDBACK_SCORE_SCALE = _float_env("KEYWORD_FEEDBACK_SCORE_SCALE", 1.25)
+KEYWORD_FEEDBACK_DECAY = _float_env("KEYWORD_FEEDBACK_DECAY", 0.015)
+KEYWORD_FEEDBACK_STEP = _float_env("KEYWORD_FEEDBACK_STEP", 0.08)
 
 # --- 적응형 오판 반성 루프 (feedback_loop) ---
 PRED_FEEDBACK_ADAPTIVE_ENABLED = os.getenv(

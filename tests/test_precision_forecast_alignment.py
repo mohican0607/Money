@@ -146,6 +146,7 @@ def test_tight_regime_pads_review_slate_instead_of_one(monkeypatch: pytest.Monke
     monkeypatch.setattr(config, "PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS", 0.50)
     monkeypatch.setattr(config, "PRED_FEEDBACK_ADAPTIVE_ENABLED", True)
     monkeypatch.setattr(config, "PRED_REQUIRE_NEWS_EVIDENCE", False)
+    monkeypatch.setattr(config, "PRED_FORWARD_MID_CALIBRATED_MIN", 0.02)
     from src.prediction.predict import PredictionRow
 
     rows = [
@@ -161,6 +162,7 @@ def test_tight_regime_pads_review_slate_instead_of_one(monkeypatch: pytest.Monke
             rank_position=i + 1,
             rank_score=1.0 - i * 0.05,
             mention_score=0.4,
+            ml_prob=0.06,
         )
         for i in range(12)
     ]
@@ -186,6 +188,7 @@ def test_slate_pad_still_runs_on_long_miss_streak(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(config, "PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS", 0.50)
     monkeypatch.setattr(config, "PRED_FEEDBACK_ADAPTIVE_ENABLED", True)
     monkeypatch.setattr(config, "PRED_REQUIRE_NEWS_EVIDENCE", False)
+    monkeypatch.setattr(config, "PRED_FORWARD_MID_CALIBRATED_MIN", 0.02)
     from src.prediction.predict import PredictionRow
 
     rows = [
@@ -201,6 +204,7 @@ def test_slate_pad_still_runs_on_long_miss_streak(monkeypatch: pytest.MonkeyPatc
             rank_position=i + 1,
             rank_score=1.0 - i * 0.05,
             mention_score=0.4,
+            ml_prob=0.06,
         )
         for i in range(12)
     ]
@@ -233,10 +237,12 @@ def test_forward_high_requires_calibrated_probability_and_news_evidence(
     monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
     monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", False)
     monkeypatch.setattr(config, "PRED_PRECISION_CODE_FAIL_CLOSED", False)
-    strong = _row(probability=0.08, keyword_hits=2, mention_score=0.5)
-    weak_news = _row(probability=0.08, keyword_hits=0)
+    monkeypatch.setattr(config, "PRED_HIGH_CALIBRATED_ABS_MIN", 0.08)
+    monkeypatch.setattr(config, "PRED_FORWARD_HIGH_CALIBRATED_MIN", 0.08)
+    strong = _row(probability=0.12, keyword_hits=2, mention_score=0.5)
+    weak_news = _row(probability=0.12, keyword_hits=0)
     weak_news.code = "000002"
-    no_evidence = _row(probability=0.08, keyword_hits=1, mention_score=0.0)
+    no_evidence = _row(probability=0.12, keyword_hits=1, mention_score=0.0)
     no_evidence.code = "000003"
 
     prediction_ranking.assign_forward_confidence_tiers(
@@ -248,45 +254,29 @@ def test_forward_high_requires_calibrated_probability_and_news_evidence(
     assert no_evidence.confidence_tier == "none"
 
 
-def test_relative_high_assigns_when_all_calibrated_probs_are_low(
+def test_low_calibrated_pool_does_not_force_high(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """상위권이 전부 ~2.3%여도 상대 하한+뉴스면 고확신을 붙인다."""
+    """풀 최고 ML 이 2%대면 상대 하한만으로 고확신을 붙이지 않는다."""
     monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
     monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", False)
     monkeypatch.setattr(config, "PRED_PRECISION_GATE_ENABLED", True)
     monkeypatch.setattr(config, "PRED_PRECISION_CODE_FAIL_CLOSED", False)
     monkeypatch.setattr(config, "PRED_PRECISION_MAX_HIGH", 10)
-    monkeypatch.setattr(config, "PRED_FORWARD_HIGH_MAX_RANK", 15)
+    monkeypatch.setattr(config, "PRED_HIGH_CALIBRATED_ABS_MIN", 0.08)
+    monkeypatch.setattr(config, "PRED_FORWARD_HIGH_CALIBRATED_MIN", 0.08)
     monkeypatch.setattr(config, "PRED_HIGH_CALIBRATED_RELATIVE", 0.72)
-    monkeypatch.setattr(config, "PRED_PRECISION_MIN_PILLARS", 1)
-    monkeypatch.setattr(config, "PRED_FORWARD_HIGH_MIN_KEYWORD_HITS", 1)
-    monkeypatch.setattr(config, "PRED_HIGH_NEWS_EVIDENCE_MIN", 0.55)
-    monkeypatch.setattr(config, "PRED_ML_HIGH_CONFIDENCE_PROB", 0.10)
-    monkeypatch.setattr(config, "PRED_HIGH_SELECT_FLOOR", 0.18)
     rows = []
     for i in range(6):
         r = _row(probability=0.023 - i * 0.0004, keyword_hits=2, mention_score=0.6)
         r.code = f"{i + 1:06d}"
-        r.ml_precision_score = 0.023
         rows.append(r)
-    weak = _row(probability=0.010, keyword_hits=2, mention_score=0.6)
-    weak.code = "000099"
-    rows.append(weak)
-    no_news = _row(probability=0.023, keyword_hits=0, mention_score=0.0)
-    no_news.code = "000098"
-    rows.append(no_news)
 
     prediction_ranking.assign_forward_confidence_tiers(rows, regime_scale=0.286)
     prediction_ranking.refine_confidence_tiers(rows)
 
     high_codes = {r.code for r in rows if r.confidence_tier == "high"}
-    assert "000001" in high_codes
-    assert "000002" in high_codes
-    assert weak.code not in high_codes
-    assert no_news.code not in high_codes
-    assert len(high_codes) >= 3
-
+    assert high_codes == set()
 
 def test_refine_does_not_promote_zero_keyword_raw_ml100(
     monkeypatch: pytest.MonkeyPatch,

@@ -511,11 +511,14 @@ def weights_for_observation_day(
 
 
 def theme_kw_overlap_score(kw_news: frozenset[str], theme_weights: dict[str, float] | None) -> float:
-    """뉴스 키워드와 테마 가중치의 가중합(상한 캡). ML·로그용."""
+    """뉴스 키워드와 테마 가중치의 가중합(상한 캡). ML·로그용.
+
+    상투어·잡토큰은 ``filter_specific_keywords`` 로 제외합니다.
+    """
     if not theme_weights:
         return 0.0
     s = 0.0
-    for k in kw_news:
+    for k in filter_specific_keywords(kw_news):
         v = theme_weights.get(k)
         if v is not None and math.isfinite(float(v)):
             s += float(v)

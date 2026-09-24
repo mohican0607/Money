@@ -572,6 +572,7 @@ def test_fill_forward_review_slate_adds_mid_to_reach_cap(
     monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 8)
     monkeypatch.setattr(config, "PRED_MID_OUTPUT_MAX", 5)
     monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_FORWARD_MID_CALIBRATED_MIN", 0.02)
     rows = [
         PredictionRow(
             f"{i:06d}",
@@ -584,6 +585,7 @@ def test_fill_forward_review_slate_adds_mid_to_reach_cap(
             keyword_hits=2,
             rank_position=i + 1,
             rank_score=1.0 - i * 0.05,
+            ml_prob=0.06,
         )
         for i in range(12)
     ]

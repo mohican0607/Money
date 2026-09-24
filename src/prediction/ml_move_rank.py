@@ -386,7 +386,7 @@ def _feat_vector(
         ce = predict._count_code_events(sub, code)
     else:
         ce = int(code_event_count)
-    overlap = theme_carryover.theme_kw_overlap_score(kw_news, theme_weights)
+    overlap = theme_carryover.theme_kw_overlap_score(inter, theme_weights)
     if ks11_feats is not None:
         ks11_ret_lag1, ks11_std5 = float(ks11_feats[0]), float(ks11_feats[1])
     else:
@@ -1779,15 +1779,22 @@ def rank_predictions_ml(
         for pr in out:
             n_hit = int(getattr(pr, "keyword_hits", 0) or 0)
             mention = float(getattr(pr, "mention_score", 0.0) or 0.0)
+            base_ret = float(pr.predicted_return_pct) / 100.0
+            # 이미 20%↑ 추정인 후보만 하한을 유지. 그 미만은 리포트에서 걸러짐.
+            clamp_lo = (
+                float(config.PRED_RETURN_MIN)
+                if base_ret + 1e-12 >= float(config.PRED_RETURN_MIN)
+                else 0.0
+            )
             pr.predicted_return_pct = (
                 predict._feedback_calibrated_return(
-                    pr.predicted_return_pct / 100.0,
+                    base_ret,
                     code=pr.code,
                     n_hit=n_hit,
                     mention=mention,
                     feedback_ctx=feedback_ctx,
-                    clamp_lo=0.0,
-                    clamp_hi=0.35,
+                    clamp_lo=clamp_lo,
+                    clamp_hi=float(config.PRED_RETURN_MAX),
                     use_global_fallback=False,
                 )
                 * 100.0

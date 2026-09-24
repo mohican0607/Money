@@ -314,13 +314,16 @@ def _adaptive_calibrated_high_floor(
     *,
     regime_scale: float,
 ) -> float:
-    """당일 풀 1등 보정 ML 대비 상대 하한. 절대 10% 문턱은 쓰지 않는다."""
+    """상대 하한과 절대 하한 중 큰 값. 풀 1등이 2%여도 abs min 아래로 못 내려간다."""
     _ = regime_scale
+    abs_min = max(
+        float(config.PRED_HIGH_CALIBRATED_ABS_MIN),
+        float(config.PRED_FORWARD_HIGH_CALIBRATED_MIN),
+    )
     top = _pool_top_calibrated_ml(pool)
     rel = float(config.PRED_HIGH_CALIBRATED_RELATIVE)
-    if top > 1e-12:
-        return top * rel
-    return 0.0
+    rel_floor = (top * rel) if top > 1e-12 else 0.0
+    return max(abs_min, rel_floor)
 
 
 def row_has_news_evidence(row: PredictionRow) -> bool:
@@ -373,30 +376,82 @@ def _news_backed_rows(
 
 def _news_evidence_strength(row: PredictionRow) -> float:
     """
-    early 뉴스·키워드·종목명 언급·TF-IDF 맥락 합성 근거(0~1).
+    종목 언급·테마 캐리오버·뉴스 맥락 중심의 근거(0~1).
 
-    테마 캐리오버·섹터만 강하고 뉴스가 없으면 0.5 미만으로 떨어집니다.
+    업종 열기만으로는 뉴스로 치지 않습니다(섹터 캐리오버 오탐 방지).
+    상투어 키워드 개수만으로는 고확신 문턱을 넘지 않습니다.
     """
     nh = int(getattr(row, "keyword_hits", 0) or 0)
     mention = float(getattr(row, "mention_score", 0.0) or 0.0)
     nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
+    ind_ov = float(getattr(row, "industry_theme_overlap", 0.0) or 0.0)
+    theme = float(getattr(row, "theme_carryover_score", 0.0) or 0.0)
     gate = float(config.PRED_MENTION_GATE_MIN)
+    theme_n = min(1.0, max(0.0, theme) / 6.0)
+    has_text = (
+        mention + 1e-12 >= gate * 0.35
+        or nh >= 1
+        or nctx + 1e-12 >= 0.35
+        or theme_n + 1e-12 >= 0.20
+    )
+    if not has_text:
+        return 0.0
 
-    if nh >= 3:
-        return 1.0
-    if nh >= 2:
-        return min(1.0, 0.88 + 0.06 * min(1.0, mention / max(gate, 0.08)))
-    if nh >= 1 and mention + 1e-12 >= gate * 0.25:
-        return 0.72
-    if nh >= 1:
-        return 0.58
     if mention + 1e-12 >= gate:
-        return 0.78
-    if mention + 1e-12 >= gate * 0.45:
-        return 0.48
+        base = 0.78 + 0.12 * min(1.0, mention)
+        return min(1.0, base + 0.08 * theme_n + 0.05 * ind_ov)
+    if mention + 1e-12 >= gate * 0.55:
+        base = 0.62 + 0.10 * (mention / max(gate, 0.08))
+        if theme_n + 1e-12 >= 0.25:
+            base += 0.10
+        return min(1.0, base + 0.08 * nctx + 0.04 * ind_ov)
+
+    if theme_n + 1e-12 >= 0.35 and (nh >= 1 or nctx + 1e-12 >= 0.30):
+        return min(1.0, 0.74 + 0.10 * theme_n + 0.06 * nctx)
+    if theme_n + 1e-12 >= 0.28:
+        return min(1.0, 0.64 + 0.10 * theme_n + 0.06 * nctx)
+
+    if nctx + 1e-12 >= 0.45 and nh >= 2:
+        return 0.66
+    if nctx + 1e-12 >= 0.42 and mention + 1e-12 >= gate * 0.25:
+        return 0.58
     if nctx + 1e-12 >= 0.42:
-        return 0.40
+        return 0.46
+    if nh >= 3 and mention + 1e-12 >= gate * 0.25:
+        return 0.62
+    if nh >= 2:
+        return 0.44
+    if nh >= 1:
+        return 0.28
     return 0.0
+
+
+def clamp_display_pct_to_ml_prob(row: PredictionRow) -> None:
+    """(옵션) 보정 ML 이 낮으면 표시 예측% 상한을 깎습니다.
+
+    기본 꺼짐(``PRED_DISPLAY_PCT_ML_CAP_ENABLED=0``). 리포트는
+    ``PRED_REPORT_MIN_PCT``(20%) 미만을 아예 넣지 않으므로, 켠 경우에도
+    하한 아래로 깎지 않습니다.
+    """
+    if not config.PRED_DISPLAY_PCT_ML_CAP_ENABLED:
+        return
+    cal = _calibrated_ml_prob(row)
+    if cal is None:
+        return
+    try:
+        pct = float(getattr(row, "predicted_return_pct", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return
+    if not math.isfinite(pct) or pct <= 0:
+        return
+    base = float(config.PRED_DISPLAY_PCT_ML_CAP_BASE)
+    scale = float(config.PRED_DISPLAY_PCT_ML_CAP_SCALE)
+    hi = float(config.PRED_RETURN_MAX) * 100.0
+    floor = float(config.PRED_REPORT_MIN_PCT)
+    max_pct = min(hi, base + cal * scale)
+    max_pct = max(max_pct, floor)
+    if pct > max_pct + 1e-9:
+        row.predicted_return_pct = max_pct
 
 
 def _high_tier_news_ok(row: PredictionRow) -> bool:
@@ -451,7 +506,13 @@ def compute_pillar_scores(
         and ind_lim + 1e-12 >= float(config.PRED_SECTOR_BURST_LIM_MIN)
     ):
         sector = min(1.0, sector + 0.14 * ind_lim + 0.08 * br_hot + 0.06 * ind_ov)
-    news = _clamp01(0.35 * nctx + 0.35 * min(1.0, nh / 4.0) + 0.30 * min(mention, 1.0))
+    news = _clamp01(
+        0.38 * min(mention, 1.0)
+        + 0.20 * nctx
+        + 0.18 * min(1.0, float(getattr(row, "theme_carryover_score", 0.0) or 0.0) / 6.0)
+        + 0.16 * ind_ov
+        + 0.08 * min(1.0, nh / 4.0)
+    )
     # raw 혼합점수는 보정확률보다 스케일이 큼 → 0.35 기준 정규화
     ml_scale = 0.35 if getattr(row, "ml_rank_score", None) is not None else 0.15
 
@@ -512,6 +573,12 @@ def multi_factor_rank_score(
         s = min(1.0, s + 0.06 * prior_hot + 0.04 * p["sector"])
     if prior_hot + 1e-12 >= 0.18:
         s = min(1.0, s + 0.04 * prior_hot)
+    theme = float(getattr(row, "theme_carryover_score", 0.0) or 0.0)
+    if theme + 1e-12 >= 0.12:
+        s = min(1.0, s + 0.05 * min(1.0, theme / 6.0))
+    mention = float(getattr(row, "mention_score", 0.0) or 0.0)
+    if mention + 1e-12 >= float(config.PRED_MENTION_GATE_MIN):
+        s = min(1.0, s + 0.04 * min(1.0, mention))
     try:
         from .. import stocks as stocks_mod
 
@@ -889,6 +956,9 @@ def assign_hybrid_confidence_tiers(
         if sel + 1e-12 < max(0.35, top_sel * 0.55):
             continue
         if ml + 1e-12 < float(config.PRED_HIGH_ABS_ML_FLOOR) * 0.85:
+            continue
+        cal = _calibrated_ml_prob(row)
+        if cal is not None and cal + 1e-12 < float(config.PRED_HIGH_CALIBRATED_ABS_MIN):
             continue
         if not _dual_signal_ok(row, hybrid=hybrid_rank_score(row), top_hybrid=top_hybrid):
             # 이중신호 실패여도 ML·선정점수가 매우 높으면 허용
@@ -1645,9 +1715,8 @@ def assign_forward_confidence_tiers(
     """
     N일 → N+1일 실전 확신 게이트.
 
-    고확신은 절대 확률(10%)이 아니라 **당일 풀 1등 대비 상대 하한** +
-    뉴스·비뉴스 기둥입니다. 통과자가 없으면 high 는 비울 수 있지만,
-    검토 표는 ``fill_forward_review_slate`` 가 채웁니다.
+    고확신은 **절대 보정 ML 하한** + 당일 풀 상대 하한 + 뉴스·비뉴스 기둥입니다.
+    통과자가 없으면 high 는 비웁니다(빈 칸 > 가짜 고확신).
     """
     rs = max(0.25, min(1.0, float(regime_scale)))
     _ = feedback_ctx
@@ -1677,6 +1746,7 @@ def assign_forward_confidence_tiers(
     high_prob_floor = _adaptive_calibrated_high_floor(pool, regime_scale=rs)
     high_rank_max = int(config.PRED_FORWARD_HIGH_MAX_RANK)
     high_kw_min = int(config.PRED_FORWARD_HIGH_MIN_KEYWORD_HITS)
+    mention_gate = float(config.PRED_MENTION_GATE_MIN)
     high_n = 0
     for pos, row in enumerate(confidence_ranked, start=1):
         if high_n >= max_high or pos > high_rank_max:
@@ -1694,12 +1764,25 @@ def assign_forward_confidence_tiers(
             continue
         keyword_hits = int(getattr(row, "keyword_hits", 0) or 0)
         mention = float(getattr(row, "mention_score", 0.0) or 0.0)
+        theme = float(getattr(row, "theme_carryover_score", 0.0) or 0.0)
+        nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
+        # 키워드 0: (종목 테마 + 언급)만 예외. 시장 공통 테마·기본 언급값만으로 high 금지.
+        # 키워드 1: 테마 또는 (언급+맥락)으로 보강.
         if keyword_hits < high_kw_min:
-            continue
-        if (
-            mention + 1e-12 < float(config.PRED_MENTION_GATE_MIN)
-            and keyword_hits < 2
-        ):
+            strong_theme = theme + 1e-12 >= 0.18
+            if keyword_hits <= 0:
+                if not (
+                    strong_theme and mention + 1e-12 >= mention_gate
+                ):
+                    continue
+            else:
+                mention_ctx = (
+                    mention + 1e-12 >= mention_gate
+                    and nctx + 1e-12 >= 0.40
+                )
+                if not (strong_theme or mention_ctx):
+                    continue
+        if mention + 1e-12 < mention_gate and keyword_hits < 3 and theme + 1e-12 < 0.18:
             continue
         pillars = compute_pillar_scores(row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None))
         non_news = count_non_news_strong_pillars(pillars, threshold=0.40)
@@ -1789,6 +1872,9 @@ def fill_forward_review_slate(
             if nh < 1 and mention + 1e-12 < mention_gate * 0.5:
                 continue
         if prior_day_exhaustion_blocks_confidence(row):
+            continue
+        calibrated = float(getattr(row, "ml_prob", 0.0) or 0.0)
+        if calibrated + 1e-12 < float(config.PRED_FORWARD_MID_CALIBRATED_MIN) * 0.75:
             continue
         row.confidence_tier = "mid"
         mid_n += 1
@@ -1917,6 +2003,9 @@ def finalize_ranked_predictions(
                 x for x in row.reasons if not x.startswith("랭킹 모드:")
             ]
 
+    for row in pool:
+        clamp_display_pct_to_ml_prob(row)
+
     return pool
 
 
@@ -2011,13 +2100,21 @@ def passes_precision_gate(
         return False
 
     cal = _calibrated_ml_prob(row)
+    abs_min = max(
+        float(config.PRED_HIGH_CALIBRATED_ABS_MIN),
+        float(config.PRED_FORWARD_HIGH_CALIBRATED_MIN),
+    )
     rel = float(config.PRED_HIGH_CALIBRATED_RELATIVE)
     if cal is not None:
+        if cal + 1e-12 < abs_min:
+            return False
         if top_ml > 1e-9 and cal + 1e-12 < top_ml * rel:
             return False
         ml = cal
     else:
         ml = _ml_rank_signal(row)
+        if ml + 1e-12 < float(config.PRED_HIGH_ABS_ML_FLOOR) * 0.85:
+            return False
         rel_raw = float(config.PRED_HIGH_RELATIVE_ML)
         if top_ml > 1e-9 and ml + 1e-12 < top_ml * rel_raw:
             return False

@@ -199,7 +199,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
         for (var i = 0; i < marketRadios.length; i++) {
           if (marketRadios[i].checked) marketSel = marketRadios[i].value;
         }
-        var riseSel = "all";
+        var riseSel = "high";
         for (var j = 0; j < riseRadios.length; j++) {
           if (riseRadios[j].checked) riseSel = riseRadios[j].value;
         }
@@ -215,9 +215,7 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
             }
           }
           var riseVisible = true;
-          if (riseSel === "all") {
-            riseVisible = true;
-          } else if (riseSel === "high") {
+          if (riseSel === "high") {
             riseVisible = rb === "high";
           } else if (riseSel === "mid") {
             riseVisible = rb === "mid";
@@ -1408,9 +1406,7 @@ __ACTUAL_RET_CELL_MACRO__
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 예측후보 전체</label>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
@@ -1543,8 +1539,8 @@ __ACTUAL_RET_CELL_MACRO__
       {% endfor %}
     </p>
 
-    <h3 style="font-size:1rem;color:var(--ok);margin:16px 0 8px;">{% if d.forward_observation | default(false) %}예측 10% 이상 후보{% else %}실제·예측 10% 이상 포함 종목{% endif %}</h3>
-    <p class="sub" style="margin-top:0">{% if d.forward_observation | default(false) %}모델 <strong>예측 상승률</strong> 10% 이상 후보입니다. 장 마감 전이므로 실제 상승률은 표시하지 않습니다.{% else %}당일 <strong>실제</strong> 10% 이상 상승 종목과, 모델 <strong>예측 상승률</strong> 10% 이상 후보(중복 제거)를 함께 표시합니다.{% endif %} 위 라디오로 20%이상 / 10~20% 구간을 전환할 수 있습니다.</p>
+    <h3 style="font-size:1rem;color:var(--ok);margin:16px 0 8px;">{% if d.forward_observation | default(false) %}예측 {{ meta.threshold }} 이상 후보{% else %}실제·예측 {{ meta.threshold }} 이상 종목{% endif %}</h3>
+    <p class="sub" style="margin-top:0">{% if d.forward_observation | default(false) %}모델 <strong>예측 상승률</strong> {{ meta.threshold }} 이상 후보만 표시합니다. 장 마감 전이므로 실제 상승률은 표시하지 않습니다.{% else %}당일 <strong>실제</strong> {{ meta.threshold }} 이상 상승 종목과, 모델 <strong>예측 상승률</strong> {{ meta.threshold }} 이상 후보(중복 제거)만 표시합니다.{% endif %}</p>
     {% if d.rows_compare %}
     <div class="table-wrap">
     <table class="rows-compare">
@@ -2093,9 +2089,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 예측후보 전체</label>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
@@ -2765,9 +2759,7 @@ _DATED_N_TEMPLATE = r"""
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 예측후보 전체</label>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
-  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="mid"/> 10%~20%</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
@@ -2904,7 +2896,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
   {% elif meta.prediction_only and is_live_n %}
   <div class="banner">
     <strong>당일(N) 실행 모드.</strong> 예측에는 위 시각까지 반영된 뉴스가 쓰였습니다.
-    <strong>T={{ t_day.isoformat() }}</strong> 가 예측 전용이거나 일봉이 아직 확정되지 않았으면 <strong>실제 상승률</strong>은 빈 칸이거나, 당일 장 마감 전에는 pykrx·네이버 실시간 등락률을 <strong>— (xx%)</strong> 형태로만 참고합니다. <strong>누적 정확도</strong>는 실적이 없으면 빈 칸일 수 있습니다. 표는 <strong>예측/실제 10% 이상 후보</strong>를 포함하며, 라디오로 20%이상 / 10~20%를 전환할 수 있습니다.
+    <strong>T={{ t_day.isoformat() }}</strong> 가 예측 전용이거나 일봉이 아직 확정되지 않았으면 <strong>실제 상승률</strong>은 빈 칸이거나, 당일 장 마감 전에는 pykrx·네이버 실시간 등락률을 <strong>— (xx%)</strong> 형태로만 참고합니다. <strong>누적 정확도</strong>는 실적이 없으면 빈 칸일 수 있습니다. 표는 <strong>예측/실제 {{ meta.threshold }} 이상</strong>만 포함합니다.
     과거 기준일로 다시 실행하면 시장 20%↑ 종목과 예측을 함께 비교할 수 있습니다.
   </div>
   {% elif meta.prediction_only %}

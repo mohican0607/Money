@@ -429,7 +429,8 @@ def build_ohlcv_long(
         ``Date``, ``Code``, ``Name`` 및 시세 컬럼(Close 등). KRX 모드면 ``Change``(등락률) 포함 가능.
 
     Raises:
-        RuntimeError: 타임아웃 내 성공한 청크가 하나도 없을 때.
+        RuntimeError: 타임아웃 내 성공한 청크가 하나도 없고, 날짜 구간을 덮는 기존 캐시도 없을 때.
+            상장 목록에만 있는 종목 보강이 비어도 캐시가 ``[start, end]`` 를 덮으면 경고 후 캐시로 계속합니다.
 
     Note:
         ``USE_KRX_OHLCV=1`` 이면 KRX 일봉 우선(거래소 등락률), 실패 시 일반 심볼로 폴백.
@@ -492,9 +493,14 @@ def build_ohlcv_long(
         expected_codes = set(codes)
         missing_codes = sorted(expected_codes - cached_codes)
         if not use_sample and missing_codes:
+            sample = ", ".join(
+                f"{c}({name_by_code.get(c, c)})" for c in missing_codes[:8]
+            )
+            extra = f" 외 {len(missing_codes) - 8}종" if len(missing_codes) > 8 else ""
             print(
                 f"OHLCV 캐시 종목 보강 필요: {len(missing_codes)}종 누락 "
-                f"(캐시 {len(cached_codes)} / 기대 {len(expected_codes)}).",
+                f"(캐시 {len(cached_codes)} / 기대 {len(expected_codes)}): "
+                f"{sample}{extra}.",
                 flush=True,
             )
         if dmin <= start and dmax >= end and refresh_tail_days <= 0 and (
@@ -547,6 +553,27 @@ def build_ohlcv_long(
                 desc="가격 다운로드(캐시 보강)",
             )
             if not chunks:
+                date_complete = dmin <= start and dmax >= end
+                missing_only = bool(missing_codes) and not gaps
+                if missing_only and date_complete and not old.empty:
+                    sample = ", ".join(
+                        f"{c}({name_by_code.get(c, c)})" for c in missing_codes[:8]
+                    )
+                    extra = (
+                        f" 외 {len(missing_codes) - 8}종"
+                        if len(missing_codes) > 8
+                        else ""
+                    )
+                    print(
+                        f"경고: 상장 목록 대비 누락 {len(missing_codes)}종 보강이 비었습니다 "
+                        f"({sample}{extra}). "
+                        f"날짜 구간은 캐시 {dmin}~{dmax} 로 충족되어 기존 캐시로 계속합니다.",
+                        flush=True,
+                    )
+                    m = (old["Date"] >= pd.Timestamp(start)) & (
+                        old["Date"] <= pd.Timestamp(end)
+                    )
+                    return old.loc[m].copy()
                 raise RuntimeError(
                     f"가격 데이터를 가져오지 못했습니다. 보강 구간 {gap_label}. 네트워크/기간을 확인하세요."
                 )

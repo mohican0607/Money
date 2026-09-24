@@ -542,23 +542,11 @@ def _run_pipeline(
             )
             # ``predict_for_trading_day`` / ML 랭커가 이미 finalize 를 끝냄 — 여기서 다시 finalize 하면
             # 14:30 리포트와 freeze·장마감 후 재사용 예측이 어긋납니다.
-            if config.PREDICTION_FREEZE_ENABLED and (
-                ignore_freeze_for_t
-                or (
-                    day_forward
-                    and not _freeze_entry_usable(freeze_payload.get(t_key) or [])
-                )
-            ):
-                existing = freeze_payload.get(t_key) or []
-                if not (
-                    existing
-                    and _freeze_entry_usable(existing)
-                    and not ignore_freeze_for_t
-                ):
-                    freeze_payload[t_key] = _prediction_rows_to_frozen_items(
-                        _display_prediction_rows_for_freeze(preds)
-                    )
-                    freeze_changed = True
+            # 리포트 슬레이트: 상위 후보를 20~30% 표시로 매핑(빈 표 금지).
+            report_slate = _display_prediction_rows_for_freeze(preds)
+            if config.PREDICTION_FREEZE_ENABLED:
+                freeze_payload[t_key] = _prediction_rows_to_frozen_items(report_slate)
+                freeze_changed = True
         scoring_ctx = predict.build_scoring_context(blob, train_events_t)
 
         kospi_r = market_index.index_daily_return_pct(ks11, T)
@@ -642,9 +630,9 @@ def _run_pipeline(
 
         rows_compare: list[dict] = []
         false_negatives: list[dict] = []
-        pred_pct_min = config.BIG_MOVE_THRESHOLD * 100.0
-        pred_pct_mid_min = 10.0
-        row_pred_min = 0.0
+        pred_pct_min = float(config.PRED_REPORT_MIN_PCT)
+        pred_pct_mid_min = pred_pct_min  # 10%대 중간대 제거 — 20%↑만
+        row_pred_min = pred_pct_min
         actual_10up_by_code: dict[str, dict] = {}
         actual_10dn_by_code: dict[str, dict] = {}
         if not day_forward:
@@ -755,8 +743,8 @@ def _run_pipeline(
 
         seen_row_codes = {r["code"] for r in rows_compare}
         for pr in preds:
-            # 예측 10% 이상 후보를 표에 반영(필터 라디오로 20%+/10~20 전환).
-            if pr.predicted_return_pct < row_pred_min:
+            # 예측 상승률 ≥ PRED_REPORT_MIN_PCT(기본 20%) 만 표에 반영.
+            if pr.predicted_return_pct + 1e-9 < row_pred_min:
                 continue
             if pr.code in seen_row_codes:
                 continue

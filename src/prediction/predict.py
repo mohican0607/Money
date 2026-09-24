@@ -203,6 +203,8 @@ class PredictionRow:
     news_context_score: float = 0.0
     keyword_hits: int = 0
     mention_score: float = 0.0
+    # 전일 급등·테마 캐리오버와 당일 뉴스 가중 일치(가중합, 상한 캡 전)
+    theme_carryover_score: float = 0.0
     industry_momentum: float = 0.0
     industry_theme_overlap: float = 0.0
     industry_limit_up_heat: float = 0.0
@@ -482,33 +484,50 @@ def prediction_row_for_code(
     if _chronic_miss_blocks_prediction(code, mention, feedback_ctx):
         return None
     mention_gate = float(config.PRED_MENTION_GATE_MIN)
-    if n_hit < min_keyword_hits and mention < mention_gate:
-        if not (allow_momentum_only or allow_news_context_only or allow_investor_flow_only):
-            return None
-    if n_hit < 1 and mention < mention_gate:
-        if not (allow_momentum_only or allow_news_context_only or allow_investor_flow_only):
-            return None
-    score = n_hit * 1.0 + mention * 5.0
     tw = theme_weights or {}
     theme_hit = 0.0
-    if tw:
-        for k in kw_news:
+    if tw and config.THEME_CARRYOVER_ENABLED:
+        # 종목별 점수: 과거 급등 키워드∩당일 뉴스에 걸린 테마만 가산.
+        # (당일 뉴스 전체×테마 가중은 전 종목 동일 → 가짜 캐리오버가 됨)
+        spec_news = filter_specific_keywords(kw_news)
+        focus = filter_specific_keywords(hist_kw & spec_news)
+        mention_only = False
+        if not focus and mention + 1e-12 >= mention_gate * 0.55:
+            focus = spec_news
+            mention_only = True
+        for k in focus:
             v = tw.get(k)
             if v is not None and math.isfinite(float(v)):
                 theme_hit += float(v)
+        if mention_only:
+            theme_hit *= 0.35
         theme_hit = max(-12.0, min(theme_hit, 12.0))
-    if config.THEME_CARRYOVER_ENABLED:
-        score += float(config.THEME_CARRYOVER_SCORE_SCALE) * theme_hit
     try:
         from .. import stocks as stocks_mod
 
-        ind_ov = stocks_mod.industry_theme_overlap(code, kw_news)
-        if ind_ov + 1e-12 >= 0.55:
-            score += 1.8 * ind_ov
+        ind_ov = float(stocks_mod.industry_theme_overlap(code, kw_news) or 0.0)
     except Exception:
         ind_ov = 0.0
 
-    # 최근 오판 기반 키워드 가중치 피드백(온라인 학습). 교집합 키워드에 대해 가중합을 점수에 더합니다.
+    # 후보 자격: 종목 언급·테마 캐리오버·업종 테마 겹침·실질 키워드 중 하나
+    has_theme = theme_hit >= 0.06 and config.THEME_CARRYOVER_ENABLED
+    has_industry = ind_ov + 1e-12 >= 0.45
+    has_mention = mention + 1e-12 >= mention_gate * 0.55
+    has_kw = n_hit >= max(1, int(min_keyword_hits))
+    if not (has_mention or has_theme or has_industry or has_kw):
+        if not (allow_momentum_only or allow_news_context_only or allow_investor_flow_only):
+            return None
+    if n_hit < 1 and mention < mention_gate and not (has_theme or has_industry):
+        if not (allow_momentum_only or allow_news_context_only or allow_investor_flow_only):
+            return None
+
+    # 점수: 언급·테마·업종 흐름이 본체, 키워드 교집합은 보조
+    score = (
+        mention * 8.0
+        + float(config.THEME_CARRYOVER_SCORE_SCALE) * theme_hit
+        + 3.2 * ind_ov
+        + min(4, n_hit) * 0.7
+    )
     if config.KEYWORD_FEEDBACK_ENABLED and inter:
         try:
             kw_w = prediction_accuracy_cache.keyword_feedback_weights()
@@ -524,19 +543,21 @@ def prediction_row_for_code(
                 score += float(config.KEYWORD_FEEDBACK_SCORE_SCALE) * s
     matched = sorted(inter, key=len, reverse=True)
     reasons: list[str] = []
-    if theme_hit >= 0.06 and config.THEME_CARRYOVER_ENABLED:
+    if has_theme:
         reasons.append(
             f"전일 급등·뉴스 테마 키워드와 당일 뉴스 가중 일치 약 {theme_hit:.2f}(익일 테마 캐리오버)"
         )
-    if n_hit:
-        reasons.append(f"당일 뉴스·과거 급등 프로필 키워드 교집합 {n_hit}개")
+    if has_industry:
+        reasons.append(f"업종·테마 키워드 겹침 {ind_ov:.2f}")
     if mention >= mention_gate:
         reasons.append("뉴스 본문·제목에 종목명 다수 등장")
+    elif has_mention:
+        reasons.append("뉴스에 종목명 언급")
+    if n_hit:
+        reasons.append(f"실질 키워드 교집합 {n_hit}개(상투어 제외)")
     reasons.append(
-        "표시 예측 상승률(%)은 키워드·종목명·테마·과거 급등 통계 등을 반영한 내부 추정과 "
-        f"전체 훈련 급등 평균을 함께 반영한 스무딩 값입니다"
-        f"({config.PRED_RETURN_MIN * 100:.0f}~{config.PRED_RETURN_MAX * 100:.0f}% 구간). "
-        "훈련 사례가 없으면 전체 훈련 급등 평균을 사용합니다."
+        "표시 예측 상승률(%)은 종목 언급·테마 흐름·업종 겹침·과거 급등 통계를 반영한 내부 추정입니다"
+        f"({config.PRED_RETURN_MIN * 100:.0f}~{config.PRED_RETURN_MAX * 100:.0f}% 구간)."
     )
     base_ret = _historical_mean_return(train_events, code)
     pred_ret = _calibrate_predicted_return(
@@ -554,7 +575,7 @@ def prediction_row_for_code(
     )
     if config.PRED_RETURN_CALIBRATION_ENABLED:
         reasons.append(
-            "예측 수익률은 신호 강도(키워드 일치·종목명 언급)에 따라 기본값 주변으로만 완만히 보정했습니다."
+            "예측 수익률은 신호 강도(종목 언급·테마·실질 키워드)에 따라 기본값 주변으로만 완만히 보정했습니다."
         )
     if config.PRED_ERROR_FEEDBACK_ENABLED:
         reasons.append(
@@ -569,6 +590,8 @@ def prediction_row_for_code(
         reasons=reasons,
         keyword_hits=n_hit,
         mention_score=mention,
+        theme_carryover_score=float(theme_hit),
+        industry_theme_overlap=float(ind_ov),
     )
 
 

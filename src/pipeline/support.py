@@ -349,6 +349,10 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
                     ),
                     keyword_hits=int(x.get("keyword_hits", 0) or 0),
                     mention_score=float(x.get("mention_score", 0.0) or 0.0),
+                    theme_carryover_score=float(x.get("theme_carryover_score", 0.0) or 0.0),
+                    industry_theme_overlap=float(
+                        x.get("industry_theme_overlap", 0.0) or 0.0
+                    ),
                     rank_score=(
                         float(x["rank_score"])
                         if x.get("rank_score") is not None
@@ -372,19 +376,25 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
 def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> list[predict.PredictionRow]:
     """리포트·freeze 에 고정할 예측 후보.
 
-    고·중 확신을 우선한다. 0건이면 순위 상위 none-tier 로 cap 까지 채운다.
-    ``PRED_REQUIRE_NEWS_EVIDENCE`` 이면 뉴스 근거 없는 행은 제외한다.
+    뉴스 근거 있는 상위 후보를 고·중 확신 우선으로 뽑고, 표시 예측상승률을
+    ``PRED_RETURN_MIN``~``PRED_RETURN_MAX``(기본 20~30%) 구간에 순위 매핑합니다.
+    확신 슬롯이 비어도 상위 랭크를 비우지 않습니다(책임 회피용 공칸 금지).
     """
     cap = max(1, int(config.PRED_FORWARD_SHOW_MAX))
-    rows = prediction_ranking._news_backed_rows(rows)
-    if not rows:
+    min_slate = min(cap, max(1, int(config.PRED_FORWARD_MIN_SLATE)))
+    backed = prediction_ranking._news_backed_rows(rows)
+    if not backed:
+        backed = list(rows)
+    if not backed:
         return []
+
     ranked = sorted(
-        rows,
+        backed,
         key=lambda r: (
             0
             if str(getattr(r, "confidence_tier", "") or "") == "high"
             else (1 if str(getattr(r, "confidence_tier", "") or "") == "mid" else 2),
+            -(float(getattr(r, "rank_score", 0.0) or 0.0)),
             int(getattr(r, "rank_position", None) or 9999),
             str(r.code).zfill(6),
         ),
@@ -395,9 +405,33 @@ def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> li
         if prediction_ranking.is_high_confidence_prediction(r)
         or prediction_ranking.is_mid_confidence_prediction(r)
     ]
-    if tiered:
-        return list(tiered[:cap])
-    return list(ranked[:cap])
+    if len(tiered) >= min_slate:
+        selected = list(tiered[:cap])
+    else:
+        # 고·중 부족 시 순위 상위로 채움(빈 리포트 금지)
+        seen = {str(r.code).zfill(6) for r in tiered}
+        selected = list(tiered)
+        for r in ranked:
+            if len(selected) >= max(min_slate, min(cap, len(ranked))):
+                break
+            c = str(r.code).zfill(6)
+            if c in seen:
+                continue
+            seen.add(c)
+            selected.append(r)
+        selected = selected[:cap]
+
+    predict.apply_display_return_pct_ranking(
+        selected,
+        rank_value=lambda r: float(
+            getattr(r, "rank_score", None)
+            or getattr(r, "ml_prob", None)
+            or getattr(r, "score", 0.0)
+            or 0.0
+        ),
+        reason_prefix="표시 예측 상승률은 당일 후보 순위(테마·언급·수급·ML) 기준으로",
+    )
+    return selected
 
 
 def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[dict]:
@@ -423,6 +457,12 @@ def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[
             ),
             "keyword_hits": int(getattr(r, "keyword_hits", 0) or 0),
             "mention_score": float(getattr(r, "mention_score", 0.0) or 0.0),
+            "theme_carryover_score": float(
+                getattr(r, "theme_carryover_score", 0.0) or 0.0
+            ),
+            "industry_theme_overlap": float(
+                getattr(r, "industry_theme_overlap", 0.0) or 0.0
+            ),
             "rank_score": (
                 None if getattr(r, "rank_score", None) is None else float(r.rank_score)
             ),
