@@ -183,6 +183,7 @@ def test_slate_pad_still_runs_on_long_miss_streak(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(config, "PRED_CONFIDENCE_OUTPUT_ENABLED", True)
     monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", True)
     monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 12)
+    monkeypatch.setattr(config, "PRED_FORWARD_MIN_SLATE", 8)
     monkeypatch.setattr(config, "PRED_MID_OUTPUT_MAX", 5)
     monkeypatch.setattr(config, "PRED_FORWARD_SLATE_PAD_MAX_MISS_STREAK", 8)
     monkeypatch.setattr(config, "PRED_FORWARD_SLATE_PAD_MIN_TIGHTNESS", 0.50)

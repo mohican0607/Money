@@ -229,7 +229,7 @@ def theme_rotation_peer_codes(
                 rp = float(r.get("return_pct") or 0.0)
             except (TypeError, ValueError):
                 continue
-            if rp + 1e-12 < 0.10:
+            if rp + 1e-12 < 0.04:
                 continue
             ic = stocks_mod.industry_code_for_stock(str(r["Code"]))
             if not ic:
@@ -240,7 +240,7 @@ def theme_rotation_peer_codes(
     hot_ind_keys = {
         k
         for k in industry_hits
-        if industry_hits[k] >= 2 or industry_best[k] + 1e-12 >= 0.18
+        if industry_hits[k] >= 1 or industry_best[k] + 1e-12 >= 0.08
     }
 
     out: list[str] = []
@@ -253,7 +253,7 @@ def theme_rotation_peer_codes(
             out.append(c6)
 
     sl_t = returns_ml.loc[returns_ml["Date"] == pd.Timestamp(target_day)]
-    scored: list[tuple[float, str]] = []
+    scored: list[tuple[float, str, str]] = []
     for _, r in sl_t.iterrows():
         code = str(r["Code"]).zfill(6)
         if code not in allowed:
@@ -268,15 +268,32 @@ def theme_rotation_peer_codes(
         ic = stocks_mod.industry_code_for_stock(code)
         if not ic or str(ic) not in hot_ind_keys:
             continue
-        sweet = 1.0 - abs(rl - 0.10) / max(0.06, block - lag_min)
-        scored.append((sweet + 0.10 * min(vs, 2.5), code))
+        sweet = 1.0 - abs(rl - 0.06) / max(0.05, block - lag_min)
+        # 거래량 급감은 감점하지 않음(음수 vol_surge 무시)
+        scored.append((sweet + 0.10 * max(0.0, min(vs, 2.5)), code, str(ic)))
     scored.sort(key=lambda x: (-x[0], x[1]))
-    for _, code in scored[: max_codes // 2]:
+
+    # 업종별 상위 보장 — 글로벌 정렬만 쓰면 대형 업종 중간 모멘텀이 잘림
+    per_ind_cap = max(6, min(16, max_codes // 8))
+    by_ind_lists: dict[str, list[str]] = defaultdict(list)
+    for _, code, ic in scored:
+        if len(by_ind_lists[ic]) >= per_ind_cap:
+            continue
+        by_ind_lists[ic].append(code)
+    for ic in sorted(by_ind_lists.keys()):
+        for code in by_ind_lists[ic]:
+            _add(code)
+
+    for _, code, _ic in scored:
+        if len(out) >= max_codes:
+            break
         _add(code)
         ic = stocks_mod.industry_code_for_stock(code)
         if ic:
-            for peer in stocks_mod.peers_for_industry(ic)[:16]:
+            for peer in stocks_mod.peers_for_industry(ic)[:12]:
                 _add(peer)
+                if len(out) >= max_codes:
+                    break
     return out[:max_codes]
 
 

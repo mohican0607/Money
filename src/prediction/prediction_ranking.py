@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
@@ -78,6 +79,9 @@ def blocks_high_confidence(row: PredictionRow) -> bool:
 def high_precision_select_score(row: PredictionRow) -> float:
     """
     고확신 선정용 점수 — 하이브리드·ML 합의 + 전일 과열 페널티 + 로테이션 가산.
+
+    실제 20%↑ 다수는 전날 종목명 뉴스가 없음 → 키워드 0·섹터 캐리오버만으로
+    깎아내지 않고, 로테이션·업종 열기가 있으면 가산합니다.
     """
     ml = _ml_rank_signal(row)
     h = hybrid_rank_score(row)
@@ -92,16 +96,24 @@ def high_precision_select_score(row: PredictionRow) -> float:
         score -= 0.20 * min(1.0, (rl - 0.10) / 0.08)
     rot = theme_rotation_score(row)
     if rot + 1e-12 >= 0.28:
-        score += 0.08 * rot
+        score += 0.12 * rot
     burst = sector_burst_rotation_bonus(row)
     if burst > 0 and rl + 1e-12 < 0.10:
-        score += 0.06 * burst
+        score += 0.08 * burst
+    lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    prior = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+    br = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
+    sec_hot = max(lim, prior, br)
+    sector_led = rot + 1e-12 >= 0.24 or sec_hot + 1e-12 >= 0.28 or burst + 1e-12 >= 0.08
     pillars = compute_pillar_scores(row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None))
     if pillars["news"] + 1e-12 >= 0.55 and count_non_news_strong_pillars(pillars, threshold=0.40) < 1:
         score *= 0.72
     if int(getattr(row, "keyword_hits", 0) or 0) <= 0:
-        score *= 0.62
-    if _carryover_without_news(row):
+        if sector_led:
+            score = min(1.0, score * 1.06)
+        else:
+            score *= 0.88
+    if _carryover_without_news(row) and not sector_led:
         score *= 0.55
     return float(score)
 
@@ -140,9 +152,9 @@ def sector_burst_rotation_bonus(row: PredictionRow) -> float:
 
 def theme_rotation_score(row: PredictionRow) -> float:
     """
-    핫 섹터 내 전일 중간 모멘텀(로테이션) 점수(0~1).
+    업종 열기(중간) + 전일 소·중 모멘텀 로테이션 점수(0~1).
 
-    상한가·과열 리더(ret_lag1 높음)보다 익일 +20% 로테이션 후보를 우선합니다.
+    이미 과열된 섹터 리더(상한가권)보다, 열기가 막 생긴 업종의 중간 상승주를 우선합니다.
     """
     if not config.PRED_THEME_ROTATION_ENABLED:
         return 0.0
@@ -155,15 +167,140 @@ def theme_rotation_score(row: PredictionRow) -> float:
     if lag + 1e-12 < lag_min or lag + 1e-12 >= min(lag_max, block):
         return 0.0
     prior_hot = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
-    sec = max(
-        float(getattr(row, "industry_momentum", 0.0) or 0.0),
-        float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0),
-        float(getattr(row, "sector_breadth_hot", 0.0) or 0.0),
-    )
-    if prior_hot + 1e-12 < 0.12 and sec + 1e-12 < 0.18:
+    lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    br = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
+    mom = float(getattr(row, "industry_momentum", 0.0) or 0.0)
+    sec = max(mom, lim, br)
+    sec_min = float(config.PRED_THEME_ROTATION_SEC_MIN)
+    prior_min = float(config.PRED_THEME_ROTATION_PRIOR_MIN)
+    if prior_hot + 1e-12 < prior_min and sec + 1e-12 < sec_min:
         return 0.0
-    sweet = 1.0 - abs(lag - 0.10) / max(0.06, block - lag_min)
-    return _clamp01(0.30 * prior_hot + 0.38 * sec + 0.32 * sweet)
+    # 과열 섹터(lim≥0.45)는 로테이션 가산 축소 — 실측에서 익일 둔화
+    if lim + 1e-12 >= 0.45:
+        sec = min(sec, 0.28)
+    # 스위트스팟: 전일 +2~+10% (기존 +10% 중심은 이미 달린 종목)
+    sweet = 1.0 - abs(lag - 0.06) / max(0.05, block - lag_min)
+    sweet = _clamp01(sweet)
+    return _clamp01(0.22 * prior_hot + 0.40 * sec + 0.38 * sweet)
+
+
+# 뉴스에 자주 나오지만 급등 신호가 아닌 미디어·지수성 종목(리포트 슬레이트 제외)
+_REPORT_BLOCK_CODES = frozenset(
+    {
+        "040300",  # YTN
+        "030200",  # KT (통신·뉴스 언급 과다)
+        "017670",  # SK텔레콤
+        "032640",  # LG유플러스
+    }
+)
+_REPORT_BLOCK_NAME_RE = re.compile(r"(방송|신문|뉴스|미디어|통신)$")
+
+
+def is_report_noise_ticker(row: PredictionRow) -> bool:
+    """리포트 후보에서 뺄 미디어·지수성 잡음 종목."""
+    code = str(getattr(row, "code", "") or "").zfill(6)
+    if code in _REPORT_BLOCK_CODES:
+        return True
+    name = str(getattr(row, "name", "") or "").strip()
+    if _REPORT_BLOCK_NAME_RE.search(name):
+        return True
+    return False
+
+
+def report_breakout_pick_score(row: PredictionRow) -> float:
+    """
+    리포트 슬레이트 선정 점수.
+
+    최근 실측: 실제 20%↑ 다수는 전날 종목명 언급=0, 업종·로테이션·전일 모멘텀이 핵심.
+    """
+    if is_report_noise_ticker(row):
+        return -1.0
+    rot = theme_rotation_score(row)
+    burst = sector_burst_rotation_bonus(row)
+    lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+    prior = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+    br = float(getattr(row, "sector_breadth_hot", 0.0) or 0.0)
+    mom = float(getattr(row, "momentum_score", 0.0) or 0.0)
+    flow = float(getattr(row, "investor_flow_score", 0.0) or 0.0)
+    mention = float(getattr(row, "mention_score", 0.0) or 0.0)
+    ml = _ml_rank_signal(row)
+    lag = float(getattr(row, "ret_lag1", 0.0) or 0.0)
+    tier = str(getattr(row, "confidence_tier", "") or "")
+    has_signal = (
+        rot + 1e-12 >= 0.01
+        or burst + 1e-12 >= 0.01
+        or lim + 1e-12 >= 0.10
+        or prior + 1e-12 >= 0.10
+        or br + 1e-12 >= 0.12
+        or mom + 1e-12 >= 0.28
+        or tier in ("high", "mid")
+    )
+    if not has_signal:
+        return 0.0
+    if lag + 1e-12 >= float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET):
+        # 전일 이미 과열 리더는 슬레이트 하위
+        sweet = 0.05
+    elif 0.015 <= lag + 1e-12 < 0.10:
+        sweet = 1.0
+    elif 0.10 <= lag + 1e-12 < 0.16:
+        sweet = 0.55
+    elif lag <= 0:
+        sweet = 0.20
+    else:
+        sweet = 0.10
+    # 업종 열기: 중간(0.10~0.35) 가산, 과열(≥0.45) 강한 감점
+    lim_n = _clamp01(lim)
+    if 0.10 <= lim + 1e-12 < 0.38:
+        lim_term = 0.20 * lim_n
+    elif lim + 1e-12 >= 0.45:
+        lim_term = 0.02 * lim_n
+    else:
+        lim_term = 0.08 * lim_n
+    br_n = _clamp01(br)
+    if br + 1e-12 >= 0.38:
+        br_term = 0.03 * br_n
+    else:
+        br_term = 0.10 * br_n
+    tier_bonus = 0.0
+    if tier == "high":
+        tier_bonus = 0.10
+    elif tier == "mid":
+        tier_bonus = 0.05
+    return float(
+        0.30 * rot
+        + 0.14 * burst
+        + lim_term
+        + 0.10 * _clamp01(prior)
+        + br_term
+        + 0.08 * _clamp01(mom / 0.55)
+        + 0.12 * sweet
+        + 0.05 * _clamp01(flow)
+        + 0.03 * min(1.0, mention)
+        + 0.05 * _clamp01(ml / 0.35)
+        + tier_bonus
+        # 실측: 중간 업종열기 + 전일 +3~9% 가 과열 섹터보다 20%↑에 가깝다
+        + (
+            0.10
+            if (
+                0.08 <= lim + 1e-12 < 0.22
+                and 0.03 <= lag + 1e-12 < 0.10
+            )
+            else 0.0
+        )
+        # 조용한 중간 모멘텀(거래량 미폭발) — 시그네틱스형 잠행 후 급등
+        + (
+            0.18
+            if (
+                0.04 <= lag + 1e-12 < 0.10
+                and float(getattr(row, "vol_surge_ratio", 0.0) or 0.0) < 0.35
+                and (lim + 1e-12 >= 0.08 or br + 1e-12 >= 0.12 or prior + 1e-12 >= 0.08)
+            )
+            else 0.0
+        )
+        # 최근 미포착 급등과 같은 업종 — 반성 교훈 가산
+        + float(config.PRED_MISS_REFLECTION_PICK_SCORE_WEIGHT)
+        * float(getattr(row, "miss_reflection_boost", 0.0) or 0.0)
+    )
 
 
 def enrich_prediction_rows_from_returns_ml(
@@ -203,6 +340,105 @@ def enrich_prediction_rows_from_returns_ml(
         row.industry_limit_up_heat = ind_lim
         row.prior_industry_hot = ind_cache.prior_hot(str(row.code))
         row.sector_breadth_hot = ind_cache.sector_breadth(str(row.code))
+
+
+def inject_theme_rotation_candidates(
+    rows: list[PredictionRow],
+    returns_ml: pd.DataFrame | None,
+    *,
+    target_day: date,
+    listing_codes: list[str] | None = None,
+    listing_names: dict[str, str] | None = None,
+    max_inject: int | None = None,
+) -> list[PredictionRow]:
+    """
+    ML 상위 컷에 못 든 테마 로테이션 후보를 리포트 슬레이트 풀에 보강합니다.
+
+    실제 20%↑ 다수가 뉴스·ML 상위 밖 중간 모멘텀이라, freeze 직전에 합칩니다.
+    """
+    if returns_ml is None or returns_ml.empty or not config.PRED_THEME_ROTATION_ENABLED:
+        return list(rows)
+    from .candidate_pool import theme_rotation_peer_codes
+    from .market_features import IndustryFeatureCache, momentum_for_code, ohlcv_lookup, ohlcv_row_for_code
+    from .predict import PredictionRow as PR
+
+    have = {str(r.code).zfill(6) for r in rows}
+    if listing_codes is None:
+        listing_codes = sorted(
+            {
+                str(c).zfill(6)
+                for c in returns_ml["Code"].astype(str).str.zfill(6).unique()
+                if str(c).strip()
+            }
+        )
+    names = listing_names or {}
+    cap = max_inject if max_inject is not None else int(config.PRED_THEME_ROTATION_ENRICH_MAX)
+    rot = theme_rotation_peer_codes(
+        returns_ml, target_day, listing_codes, max_codes=max(cap * 4, 240)
+    )
+    missing = [c for c in rot if c not in have]
+    if not missing:
+        return list(rows)
+    try:
+        from .. import stocks as stocks_mod
+
+        missing = [
+            c
+            for c in missing
+            if stocks_mod.is_common_equity_code(c)
+            and not stocks_mod.is_observation_day_trading_halted(returns_ml, c, target_day)
+        ]
+    except Exception:
+        pass
+    if not missing:
+        return list(rows)
+    ohlcv_idx = ohlcv_lookup(returns_ml)
+    ind_cache = IndustryFeatureCache(target_day, ohlcv_idx, returns_ml, frozenset())
+    ind_cache.prewarm(missing)
+    scored_extra: list[tuple[float, PredictionRow]] = []
+    for code in missing:
+        name = names.get(code) or names.get(code.lstrip("0")) or code
+        try:
+            from .. import stocks as stocks_mod
+
+            name = stocks_mod.name_for_code(code) or name
+        except Exception:
+            pass
+        row = PR(
+            code,
+            name,
+            0.0,
+            float(config.PRED_REPORT_MIN_PCT),
+            [],
+            ["테마 로테이션 보강 후보"],
+            keyword_hits=0,
+            mention_score=0.0,
+            confidence_tier="none",
+        )
+        ohlcv_row = ohlcv_row_for_code(ohlcv_idx, code, target_day)
+        if ohlcv_row is not None:
+            row.ret_lag1 = float(ohlcv_row.get("ret_lag1") or 0.0)
+            row.vol_surge_ratio = float(ohlcv_row.get("vol_surge_ratio") or 0.0)
+            row.investor_flow_score = float(ohlcv_row.get("investor_flow_score") or 0.0)
+            row.open_gap = float(ohlcv_row.get("open_gap") or 0.0)
+        row.momentum_score = momentum_for_code(ohlcv_idx, code, target_day)
+        im, ov, lim = ind_cache.industry_feats(code)
+        row.industry_momentum = im
+        row.industry_theme_overlap = ov
+        row.industry_limit_up_heat = lim
+        row.prior_industry_hot = ind_cache.prior_hot(code)
+        row.sector_breadth_hot = ind_cache.sector_breadth(code)
+        rot_sc = theme_rotation_score(row)
+        if rot_sc + 1e-12 < 0.20:
+            continue
+        scored_extra.append((report_breakout_pick_score(row), row))
+    scored_extra.sort(key=lambda x: (-x[0], str(x[1].code).zfill(6)))
+    # ML 풀과 합친 뒤 슬레이트가 고르도록 충분히 넣음(중간 열기 종목이 앞순위에서 잘리지 않게)
+    keep_n = max(cap, min(len(scored_extra), 140))
+    extra = [r for _, r in scored_extra[:keep_n]]
+    if not extra:
+        return list(rows)
+    return list(rows) + extra
 
 
 def _promote_theme_rotation_confidence(
@@ -605,6 +841,10 @@ def multi_factor_rank_score(
     rot = theme_rotation_score(row)
     if rot > 0:
         s = min(1.0, s + float(config.PRED_THEME_ROTATION_RANK_BOOST) * rot)
+    # 뉴스 없는 섹터·로테이션 급등 패턴을 키워드 부재로 죽이지 않음
+    if int(getattr(row, "keyword_hits", 0) or 0) <= 0:
+        if rot + 1e-12 >= 0.24 or ind_lim + 1e-12 >= 0.28 or prior_hot + 1e-12 >= 0.28:
+            s = min(1.0, s + 0.04)
     return _clamp01(s)
 
 
@@ -1759,20 +1999,49 @@ def assign_forward_confidence_tiers(
         if calibrated + 1e-12 < high_prob_floor:
             continue
         if not _high_tier_news_ok(row):
-            continue
-        if _carryover_without_news(row):
-            continue
+            # 뉴스 약해도 로테이션+업종열기 동시 강하면 고확신 후보 유지
+            rot0 = theme_rotation_score(row)
+            lim0 = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+            prior0 = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+            burst0 = sector_burst_rotation_bonus(row)
+            sector_rescue = (
+                rot0 + 1e-12 >= 0.40
+                and (
+                    lim0 + 1e-12 >= 0.28
+                    or prior0 + 1e-12 >= 0.22
+                    or burst0 + 1e-12 >= 0.10
+                )
+            )
+            if not sector_rescue:
+                continue
+        elif _carryover_without_news(row):
+            rot0 = theme_rotation_score(row)
+            lim0 = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+            if rot0 + 1e-12 < 0.40 or lim0 + 1e-12 < 0.28:
+                continue
         keyword_hits = int(getattr(row, "keyword_hits", 0) or 0)
         mention = float(getattr(row, "mention_score", 0.0) or 0.0)
         theme = float(getattr(row, "theme_carryover_score", 0.0) or 0.0)
         nctx = float(getattr(row, "news_context_score", 0.0) or 0.0)
-        # 키워드 0: (종목 테마 + 언급)만 예외. 시장 공통 테마·기본 언급값만으로 high 금지.
-        # 키워드 1: 테마 또는 (언급+맥락)으로 보강.
+        rot = theme_rotation_score(row)
+        lim = float(getattr(row, "industry_limit_up_heat", 0.0) or 0.0)
+        prior = float(getattr(row, "prior_industry_hot", 0.0) or 0.0)
+        lag = float(getattr(row, "ret_lag1", 0.0) or 0.0)
+        # 키워드 부족: 언급+테마 또는 (강한 로테이션 ∧ 업종열기)
         if keyword_hits < high_kw_min:
             strong_theme = theme + 1e-12 >= 0.18
+            sector_led = (
+                rot + 1e-12 >= 0.40
+                and (
+                    lim + 1e-12 >= 0.28
+                    or prior + 1e-12 >= 0.22
+                    or sector_burst_rotation_bonus(row) + 1e-12 >= 0.10
+                )
+            )
             if keyword_hits <= 0:
                 if not (
-                    strong_theme and mention + 1e-12 >= mention_gate
+                    (strong_theme and mention + 1e-12 >= mention_gate)
+                    or sector_led
                 ):
                     continue
             else:
@@ -1780,9 +2049,14 @@ def assign_forward_confidence_tiers(
                     mention + 1e-12 >= mention_gate
                     and nctx + 1e-12 >= 0.40
                 )
-                if not (strong_theme or mention_ctx):
+                if not (strong_theme or mention_ctx or sector_led):
                     continue
-        if mention + 1e-12 < mention_gate and keyword_hits < 3 and theme + 1e-12 < 0.18:
+        if (
+            mention + 1e-12 < mention_gate
+            and keyword_hits < 3
+            and theme + 1e-12 < 0.18
+            and rot + 1e-12 < 0.40
+        ):
             continue
         pillars = compute_pillar_scores(row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None))
         non_news = count_non_news_strong_pillars(pillars, threshold=0.40)
@@ -1806,7 +2080,10 @@ def assign_forward_confidence_tiers(
         calibrated = float(getattr(row, "ml_prob", 0.0) or 0.0)
         if calibrated + 1e-12 < mid_prob_floor:
             continue
-        if int(getattr(row, "keyword_hits", 0) or 0) < 1:
+        nh = int(getattr(row, "keyword_hits", 0) or 0)
+        if nh < 1 and theme_rotation_score(row) + 1e-12 < float(
+            config.PRED_THEME_ROTATION_TIER_MIN
+        ):
             continue
         pillars = compute_pillar_scores(
             row, ks11_ret_lag1=getattr(row, "ks11_ret_lag1", None)
@@ -1815,6 +2092,15 @@ def assign_forward_confidence_tiers(
             continue
         row.confidence_tier = "mid"
         mid_n += 1
+
+    rot_ranked = sorted(ranked, key=theme_rotation_score, reverse=True)
+    high_n, mid_n = _promote_theme_rotation_confidence(
+        rot_ranked,
+        max_high=max_high,
+        max_mid=max_mid,
+        high_n=high_n,
+        mid_n=mid_n,
+    )
 
     for pos, row in enumerate(ranked, start=1):
         row.rank_position = pos
@@ -1828,13 +2114,15 @@ def fill_forward_review_slate(
     feedback_ctx: dict[str, object] | None = None,
 ) -> None:
     """
-    20분 검토용: 고·중 합이 ``PRED_FORWARD_MIN_SLATE`` 에 못 미치면 mid 로 채웁니다.
+    검토용 mid 패딩.
 
-    레짐·오판 tightness·연속 미스 일수는 슬롯을 비우지 않습니다.
+    ``PRED_FORWARD_MIN_SLATE`` 이 0 이면 **채우지 않는다**(빈 고·중이 정답).
     """
     if not pool or not config.PRED_CONFIDENCE_OUTPUT_ENABLED:
         return
     if not config.PRED_FORWARD_MID_ENABLED:
+        return
+    if int(config.PRED_FORWARD_MIN_SLATE) <= 0:
         return
     _ = feedback_ctx
     rs = max(0.25, min(1.0, float(regime_scale)))

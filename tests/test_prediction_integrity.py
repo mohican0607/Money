@@ -42,8 +42,16 @@ def test_compare_table_excludes_actual_only_rows_on_forward_days() -> None:
 
 
 def test_closed_day_table_keeps_actual_big_movers() -> None:
-    assert _compare_row_belongs_in_closed_day_table({"actual_big": True, "pred_high": False})
-    assert not _compare_row_belongs_in_closed_day_table({"actual_big": False, "pred_high": False})
+    """장 마감 표는 예측 후보 + 실제 20%↑(미포착 포함)."""
+    assert _compare_row_belongs_in_closed_day_table(
+        {"actual_big": True, "pred_high": False, "pred_ret": None}
+    )
+    assert not _compare_row_belongs_in_closed_day_table(
+        {"actual_big": False, "pred_high": False, "pred_ret": None}
+    )
+    assert _compare_row_belongs_in_closed_day_table(
+        {"actual_big": True, "pred_high": True, "pred_ret": 22.0}
+    )
 
 
 def test_closed_day_table_keeps_frozen_pred_at_threshold() -> None:
@@ -156,11 +164,14 @@ def test_freeze_roundtrip_preserves_prediction_codes_and_tiers() -> None:
     restored = _prediction_rows_from_frozen_items(frozen)
     assert [r.code for r in restored] == ["000001", "000002"]
     assert [r.confidence_tier for r in restored] == ["high", "mid"]
-    assert [round(r.predicted_return_pct, 1) for r in restored] == [25.0, 22.0]
+    assert [round(r.predicted_return_pct, 1) for r in restored] == [30.0, 20.0]
 
 
-def test_freeze_pads_none_tier_when_no_high_mid(monkeypatch) -> None:
+def test_freeze_empty_when_only_weak_none(monkeypatch) -> None:
+    """확신 없는 none 만 있으면 리포트 슬레이트를 채우지 않는다."""
     monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 10)
+    monkeypatch.setattr(config, "PRED_FORWARD_MIN_SLATE", 0)
+    monkeypatch.setattr(config, "PRED_REPORT_CONVICTION_MIN", 0.55)
     rows = [
         PredictionRow(
             f"{i:06d}",
@@ -176,13 +187,8 @@ def test_freeze_pads_none_tier_when_no_high_mid(monkeypatch) -> None:
         for i in range(1, 11)
     ]
     display = _display_prediction_rows_for_freeze(rows)
-    assert [r.code for r in display] == [f"{i:06d}" for i in range(1, 11)]
-    frozen = _prediction_rows_to_frozen_items(display)
-    assert len(frozen) == 10
-    assert _freeze_entry_usable(frozen)
-    assert [r.code for r in _prediction_rows_from_frozen_items(frozen)] == [
-        f"{i:06d}" for i in range(1, 11)
-    ]
+    assert display == []
+    assert _prediction_rows_to_frozen_items(display) == []
 
 
 def test_empty_slate_marker_is_not_reused() -> None:
@@ -205,13 +211,14 @@ def test_freeze_reuses_historical_none_tier() -> None:
     assert _freeze_entry_usable(junk)
 
 
-def test_display_freeze_drops_rows_without_news(monkeypatch) -> None:
+def test_display_freeze_keeps_high_drops_weak_none(monkeypatch) -> None:
     monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 10)
-    monkeypatch.setattr(config, "PRED_REQUIRE_NEWS_EVIDENCE", True)
+    monkeypatch.setattr(config, "PRED_FORWARD_MIN_SLATE", 0)
+    monkeypatch.setattr(config, "PRED_REPORT_CONVICTION_MIN", 0.55)
     rows = [
         PredictionRow(
             "000001",
-            "뉴스있음",
+            "약한뉴스",
             1.0,
             22.0,
             ["테마"],
@@ -222,7 +229,7 @@ def test_display_freeze_drops_rows_without_news(monkeypatch) -> None:
         ),
         PredictionRow(
             "000002",
-            "뉴스없음",
+            "고확신",
             1.0,
             25.0,
             [],
@@ -235,7 +242,7 @@ def test_display_freeze_drops_rows_without_news(monkeypatch) -> None:
         ),
     ]
     display = _display_prediction_rows_for_freeze(rows)
-    assert [r.code for r in display] == ["000001"]
+    assert [r.code for r in display] == ["000002"]
 
 
 def test_freeze_does_not_pad_when_few_tiered(monkeypatch) -> None:
@@ -554,7 +561,8 @@ def test_ranking_mode_never_pred_high_on_tier_none_even_with_high_display(
     )
 
 
-def test_freeze_rejects_short_high_only_slate() -> None:
+def test_freeze_rejects_short_high_only_slate(monkeypatch) -> None:
+    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 15)
     items = [
         {"code": "000001", "predicted_return_pct": 25.0, "confidence_tier": "high"},
         {"code": "000002", "predicted_return_pct": 24.0, "confidence_tier": "high"},
@@ -570,6 +578,7 @@ def test_fill_forward_review_slate_adds_mid_to_reach_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 8)
+    monkeypatch.setattr(config, "PRED_FORWARD_MIN_SLATE", 8)
     monkeypatch.setattr(config, "PRED_MID_OUTPUT_MAX", 5)
     monkeypatch.setattr(config, "PRED_FORWARD_MID_ENABLED", True)
     monkeypatch.setattr(config, "PRED_FORWARD_MID_CALIBRATED_MIN", 0.02)

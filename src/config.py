@@ -230,16 +230,16 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 3.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 57
+PREDICTION_FREEZE_SCHEMA_VERSION = 67
 
-# --- 다요인(멀티팩터) 랭킹 가중치 (합≈1): 언급·테마·수급 > 순수 ML ---
-PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.28)
-PRED_FACTOR_W_MOMENTUM = _float_env("PRED_FACTOR_W_MOMENTUM", 0.10)
-PRED_FACTOR_W_FLOW = _float_env("PRED_FACTOR_W_FLOW", 0.18)
+# --- 다요인(멀티팩터) 랭킹 가중치 (합≈1): 섹터·수급·로테이션 친화 ---
+PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.20)
+PRED_FACTOR_W_MOMENTUM = _float_env("PRED_FACTOR_W_MOMENTUM", 0.14)
+PRED_FACTOR_W_FLOW = _float_env("PRED_FACTOR_W_FLOW", 0.16)
 PRED_FACTOR_W_RELATIVE_STRENGTH = _float_env("PRED_FACTOR_W_RELATIVE_STRENGTH", 0.08)
-PRED_FACTOR_W_SECTOR = _float_env("PRED_FACTOR_W_SECTOR", 0.20)
+PRED_FACTOR_W_SECTOR = _float_env("PRED_FACTOR_W_SECTOR", 0.30)
 # 뉴스 기둥 = 종목 언급·테마 겹침·맥락 (상투어 교집합 비중은 기둥 내부에서 낮춤)
-PRED_FACTOR_W_NEWS = _float_env("PRED_FACTOR_W_NEWS", 0.14)
+PRED_FACTOR_W_NEWS = _float_env("PRED_FACTOR_W_NEWS", 0.08)
 PRED_FACTOR_W_MARKET = _float_env("PRED_FACTOR_W_MARKET", 0.02)
 PRED_FACTOR_MIN_STRONG_PILLARS = _positive_int_env("PRED_FACTOR_MIN_STRONG_PILLARS", 2)
 # 상위 순위 업종 쏠림 완화(동일 업종 최대 N종 / 상위 K)
@@ -252,7 +252,7 @@ PRED_INDUSTRY_HEAT_LOOKBACK_DAYS = _positive_int_env("PRED_INDUSTRY_HEAT_LOOKBAC
 PRED_INDUSTRY_LEADER_SLOTS = _positive_int_env("PRED_INDUSTRY_LEADER_SLOTS", 5)
 PRED_INDUSTRY_MUST_KEEP_MAX = _positive_int_env("PRED_INDUSTRY_MUST_KEEP_MAX", 280)
 PRED_INDUSTRY_MUST_KEEP_SWAP_MAX = _positive_int_env("PRED_INDUSTRY_MUST_KEEP_SWAP_MAX", 180)
-PRED_PREPOOL_HOT_PROMOTE_MAX = _positive_int_env("PRED_PREPOOL_HOT_PROMOTE_MAX", 14)
+PRED_PREPOOL_HOT_PROMOTE_MAX = _positive_int_env("PRED_PREPOOL_HOT_PROMOTE_MAX", 28)
 # 핫 섹터 내 전일 과열 리더 대신 중간 모멘텀(로테이션) 종목 우선
 PRED_THEME_ROTATION_ENABLED = os.getenv("PRED_THEME_ROTATION_ENABLED", "1").strip().lower() in (
     "1",
@@ -260,11 +260,13 @@ PRED_THEME_ROTATION_ENABLED = os.getenv("PRED_THEME_ROTATION_ENABLED", "1").stri
     "yes",
     "on",
 )
-PRED_THEME_ROTATION_LAG_MIN = _float_env("PRED_THEME_ROTATION_LAG_MIN", 0.04)
-PRED_THEME_ROTATION_LAG_MAX = _float_env("PRED_THEME_ROTATION_LAG_MAX", 0.19)
-PRED_THEME_ROTATION_RANK_BOOST = _float_env("PRED_THEME_ROTATION_RANK_BOOST", 0.22)
-PRED_THEME_ROTATION_TIER_MIN = _float_env("PRED_THEME_ROTATION_TIER_MIN", 0.32)
-PRED_THEME_ROTATION_ENRICH_MAX = _positive_int_env("PRED_THEME_ROTATION_ENRICH_MAX", 48)
+PRED_THEME_ROTATION_LAG_MIN = _float_env("PRED_THEME_ROTATION_LAG_MIN", 0.015)
+PRED_THEME_ROTATION_LAG_MAX = _float_env("PRED_THEME_ROTATION_LAG_MAX", 0.16)
+PRED_THEME_ROTATION_RANK_BOOST = _float_env("PRED_THEME_ROTATION_RANK_BOOST", 0.32)
+PRED_THEME_ROTATION_TIER_MIN = _float_env("PRED_THEME_ROTATION_TIER_MIN", 0.28)
+PRED_THEME_ROTATION_ENRICH_MAX = _positive_int_env("PRED_THEME_ROTATION_ENRICH_MAX", 64)
+PRED_THEME_ROTATION_SEC_MIN = _float_env("PRED_THEME_ROTATION_SEC_MIN", 0.10)
+PRED_THEME_ROTATION_PRIOR_MIN = _float_env("PRED_THEME_ROTATION_PRIOR_MIN", 0.06)
 
 # --- 고확신 정밀 게이트(다중 신호 합의) ---
 PRED_PRECISION_GATE_ENABLED = os.getenv("PRED_PRECISION_GATE_ENABLED", "1").strip().lower() in (
@@ -451,12 +453,14 @@ PRED_SECTOR_RESCUE_HIGH_ENABLED = os.getenv(
 ).strip().lower() in ("1", "true", "yes", "on")
 PRED_OUTPUT_MAX = _positive_int_env("PRED_OUTPUT_MAX", 10)
 PRED_MID_OUTPUT_MAX = _positive_int_env("PRED_MID_OUTPUT_MAX", 5)
-# 검토 표 바닥(레짐이 슬롯 수를 줄이지 않음). 고확신이 비면 중확신 패딩.
-PRED_FORWARD_MIN_HIGH = _positive_int_env("PRED_FORWARD_MIN_HIGH", 3)
-PRED_FORWARD_MIN_MID = _positive_int_env("PRED_FORWARD_MIN_MID", 5)
-PRED_FORWARD_MIN_SLATE = _positive_int_env("PRED_FORWARD_MIN_SLATE", 8)
-# 예측 전용일 표 노출 상한: 고확신(~10)+중확신(~5). 게이트 0건이면 순위 watchlist 로 채움.
-PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 15)
+# 검토 표: 고·중확신만. 맞출 때까지 none 으로 채우지 않음(0=패딩 없음).
+PRED_FORWARD_MIN_HIGH = _non_negative_int_env("PRED_FORWARD_MIN_HIGH", 0)
+PRED_FORWARD_MIN_MID = _non_negative_int_env("PRED_FORWARD_MIN_MID", 0)
+PRED_FORWARD_MIN_SLATE = _non_negative_int_env("PRED_FORWARD_MIN_SLATE", 0)
+# 리포트 노출 상한 — 소수 정밀 후보만(회사 자존심).
+PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 5)
+# none 티어라도 리포트에 넣을 최소 급등 점수(잠행·로테이션). 미달이면 제외.
+PRED_REPORT_CONVICTION_MIN = _float_env("PRED_REPORT_CONVICTION_MIN", 0.55)
 # 표시 매핑·레거시 하이브리드용. 전방 고확신 게이트는 상대 하한을 쓴다.
 PRED_ML_HIGH_CONFIDENCE_PROB = max(0.08, _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.11))
 PRED_ML_MID_CONFIDENCE_PROB = max(0.04, _float_env("PRED_ML_MID_CONFIDENCE_PROB", 0.07))
@@ -747,6 +751,22 @@ ML_INCREMENTAL_MISS_BOOST_ENABLED = os.getenv(
 ).strip().lower() in ("1", "true", "yes", "on")
 ML_INCREMENTAL_MISS_MAX_ENTRIES = _positive_int_env(
     "ML_INCREMENTAL_MISS_MAX_ENTRIES", 480
+)
+# 미포착 급등 업종을 다음 관측일에 가산(표 축소 후에도 FN 학습 유지)
+PRED_MISS_REFLECTION_ENABLED = os.getenv(
+    "PRED_MISS_REFLECTION_ENABLED", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+PRED_MISS_REFLECTION_WINDOW_DAYS = _positive_int_env(
+    "PRED_MISS_REFLECTION_WINDOW_DAYS", 12
+)
+PRED_MISS_REFLECTION_HALF_LIFE_DAYS = _float_env(
+    "PRED_MISS_REFLECTION_HALF_LIFE_DAYS", 4.0
+)
+PRED_MISS_REFLECTION_INDUSTRY_BOOST_MAX = _float_env(
+    "PRED_MISS_REFLECTION_INDUSTRY_BOOST_MAX", 0.28
+)
+PRED_MISS_REFLECTION_PICK_SCORE_WEIGHT = _float_env(
+    "PRED_MISS_REFLECTION_PICK_SCORE_WEIGHT", 0.18
 )
 
 # --- 스케줄 리포트 이메일 (scripts/run_daily_email.py) ---

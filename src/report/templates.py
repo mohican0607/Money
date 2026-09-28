@@ -1539,8 +1539,8 @@ __ACTUAL_RET_CELL_MACRO__
       {% endfor %}
     </p>
 
-    <h3 style="font-size:1rem;color:var(--ok);margin:16px 0 8px;">{% if d.forward_observation | default(false) %}예측 {{ meta.threshold }} 이상 후보{% else %}실제·예측 {{ meta.threshold }} 이상 종목{% endif %}</h3>
-    <p class="sub" style="margin-top:0">{% if d.forward_observation | default(false) %}모델 <strong>예측 상승률</strong> {{ meta.threshold }} 이상 후보만 표시합니다. 장 마감 전이므로 실제 상승률은 표시하지 않습니다.{% else %}당일 <strong>실제</strong> {{ meta.threshold }} 이상 상승 종목과, 모델 <strong>예측 상승률</strong> {{ meta.threshold }} 이상 후보(중복 제거)만 표시합니다.{% endif %}</p>
+    <h3 style="font-size:1rem;color:var(--ok);margin:16px 0 8px;">{% if d.forward_observation | default(false) %}예측 {{ meta.threshold }} 이상 후보{% else %}예측 {{ meta.threshold }} 이상 후보{% endif %}</h3>
+    <p class="sub" style="margin-top:0">{% if d.forward_observation | default(false) %}모델 <strong>예측 상승률</strong> {{ meta.threshold }} 이상 <strong>확신 후보</strong>만 표시합니다. 장 마감 전이므로 실제 상승률은 표시하지 않습니다.{% else %}모델 <strong>확신 후보</strong>(예측 {{ meta.threshold }} 이상)와 당일 <strong>실제 20%↑ 전 종목</strong>을 함께 표시합니다. 예측 없이 오른 종목은 미포착입니다.{% endif %}</p>
     {% if d.rows_compare %}
     <div class="table-wrap">
     <table class="rows-compare">
@@ -2398,7 +2398,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
   {% elif days|length > 1 %}
   <section class="tabs-wrap">
     <h2>거래일별 (탭)</h2>
-    <p class="sub" style="margin-top:0">각 탭: <strong>실제</strong> {{ meta.threshold }} 이상 급등 종목 + 모델 <strong>예측</strong> {{ meta.threshold }} 이상 후보(상위 예측·중복 제외).</p>
+    <p class="sub" style="margin-top:0">각 탭: 모델 <strong>예측</strong> {{ meta.threshold }} 이상 확신 후보만.</p>
     <div class="tab-bar" role="tablist">
       {% for d in days %}
       <button type="button" class="tab-btn{% if loop.last %} active{% endif %}" role="tab"
@@ -2441,7 +2441,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
   {% for d in days %}
   <section class="day-market-block">
     <div class="day-heading-row">
-      <h2>{{ d.trading_day.isoformat() }} · 실제·예측 {{ meta.threshold }} 이상</h2>
+      <h2>{{ d.trading_day.isoformat() }} · 예측 {{ meta.threshold }} 이상</h2>
       {{ market_filter_radios(d.trading_day.isoformat() ~ "-single") }}
     </div>
     {{ forward_pred_rationale_panel(d, meta) }}

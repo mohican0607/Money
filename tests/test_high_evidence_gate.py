@@ -56,15 +56,18 @@ def test_substantive_keywords_reject_filler_and_media() -> None:
 
     assert not is_substantive_keyword("기준")
     assert not is_substantive_keyword("더벨")
+    assert not is_substantive_keyword("ytn")
     assert not is_substantive_keyword("원을")
     assert not is_substantive_keyword("기사입니다")
+    assert not is_substantive_keyword("한편")
+    assert not is_substantive_keyword("일부터")
     assert not is_substantive_keyword("개월")
     assert not is_substantive_keyword("개최")
     assert not is_substantive_keyword("기존")
     assert is_substantive_keyword("반도체")
     assert is_substantive_keyword("로봇")
     cleaned = filter_specific_keywords(
-        ["기준", "대비", "더벨", "반도체", "로봇", "원을", "상한가", "개월", "개최"]
+        ["기준", "대비", "더벨", "ytn", "반도체", "로봇", "원을", "상한가", "개월", "개최", "한편"]
     )
     assert cleaned == frozenset({"반도체", "로봇"})
 
@@ -160,15 +163,15 @@ def test_clamp_display_pct_respects_report_floor(
     assert float(row.predicted_return_pct) >= 20.0
 
 
-def test_report_slate_fills_even_when_soft_pct_below_20(
+def test_report_slate_conviction_only_no_none_padding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """소프트 라벨이 5%대여도 리포트 슬레이트는 20%↑로 매핑해 비우지 않는다."""
+    """약한 none 은 버리고, 고·중(또는 강한 급등점수)만 슬레이트에 넣는다."""
     from src.pipeline import support as pipe_support
 
-    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 8)
-    monkeypatch.setattr(config, "PRED_FORWARD_MIN_SLATE", 5)
-    monkeypatch.setattr(config, "PRED_REQUIRE_NEWS_EVIDENCE", True)
+    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 5)
+    monkeypatch.setattr(config, "PRED_FORWARD_MIN_SLATE", 0)
+    monkeypatch.setattr(config, "PRED_REPORT_CONVICTION_MIN", 0.55)
     rows = []
     for i in range(12):
         r = _row(
@@ -176,7 +179,7 @@ def test_report_slate_fills_even_when_soft_pct_below_20(
             keyword_hits=2,
             mention_score=0.5,
             ml_prob=0.02,
-            confidence_tier="none",
+            confidence_tier="mid" if i < 3 else "none",
         )
         r.name = f"N{i}"
         r.predicted_return_pct = 5.0
@@ -185,11 +188,58 @@ def test_report_slate_fills_even_when_soft_pct_below_20(
         r.score = float(r.rank_score)
         r.reasons = []
         r.matched_keywords = ["반도체"]
+        r.industry_limit_up_heat = 0.4 - i * 0.02
+        r.prior_industry_hot = 0.3
+        r.sector_breadth_hot = 0.25
+        r.ret_lag1 = 0.06
+        r.theme_carryover_score = 1.0
         rows.append(r)
 
     slate = pipe_support._display_prediction_rows_for_freeze(rows)
-    assert len(slate) >= 5
+    assert 1 <= len(slate) <= 5
+    # mid 3종이 우선, 나머지는 급등점수 하한 통과분만
+    assert all(
+        str(getattr(r, "confidence_tier", "") or "") in ("high", "mid")
+        or prk.report_breakout_pick_score(r) + 1e-9 >= 0.55
+        for r in slate
+    )
     assert all(float(r.predicted_return_pct) + 1e-9 >= 20.0 for r in slate)
+    assert all(str(r.code) != "040300" for r in slate)
+
+
+def test_report_slate_blocks_ytn(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.pipeline import support as pipe_support
+
+    monkeypatch.setattr(config, "PRED_FORWARD_SHOW_MAX", 5)
+    monkeypatch.setattr(config, "PRED_FORWARD_MIN_SLATE", 0)
+    monkeypatch.setattr(config, "PRED_REPORT_CONVICTION_MIN", 0.55)
+    good = _row(code="000001", keyword_hits=1, mention_score=0.2, ml_prob=0.05)
+    good.name = "테마주"
+    good.predicted_return_pct = 5.0
+    good.rank_score = 0.5
+    good.rank_position = 2
+    good.score = 0.5
+    good.reasons = []
+    good.matched_keywords = []
+    good.industry_limit_up_heat = 0.5
+    good.prior_industry_hot = 0.4
+    good.ret_lag1 = 0.07
+    good.confidence_tier = "mid"
+    noise = _row(code="040300", keyword_hits=0, mention_score=1.0, ml_prob=0.05)
+    noise.name = "YTN"
+    noise.predicted_return_pct = 5.0
+    noise.rank_score = 0.9
+    noise.rank_position = 1
+    noise.score = 0.9
+    noise.reasons = []
+    noise.matched_keywords = []
+    noise.industry_limit_up_heat = 0.1
+    noise.ret_lag1 = 0.01
+    noise.confidence_tier = "high"
+    slate = pipe_support._display_prediction_rows_for_freeze([noise, good])
+    codes = {str(r.code).zfill(6) for r in slate}
+    assert "040300" not in codes
+    assert "000001" in codes
 
 
 def test_news_evidence_one_keyword_alone_not_high() -> None:

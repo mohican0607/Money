@@ -374,62 +374,90 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
 
 
 def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> list[predict.PredictionRow]:
-    """리포트·freeze 에 고정할 예측 후보.
+    """리포트·freeze 에 고정할 **확신 후보만**.
 
-    뉴스 근거 있는 상위 후보를 고·중 확신 우선으로 뽑고, 표시 예측상승률을
-    ``PRED_RETURN_MIN``~``PRED_RETURN_MAX``(기본 20~30%) 구간에 순위 매핑합니다.
-    확신 슬롯이 비어도 상위 랭크를 비우지 않습니다(책임 회피용 공칸 금지).
+    고·중확신, 또는 급등 점수(``PRED_REPORT_CONVICTION_MIN``) 이상만 넣는다.
+    맞출 때까지 none 으로 채우지 않는다 — 없으면 빈 표.
     """
     cap = max(1, int(config.PRED_FORWARD_SHOW_MAX))
-    min_slate = min(cap, max(1, int(config.PRED_FORWARD_MIN_SLATE)))
-    backed = prediction_ranking._news_backed_rows(rows)
-    if not backed:
-        backed = list(rows)
-    if not backed:
+    min_slate = max(0, int(config.PRED_FORWARD_MIN_SLATE))
+    conviction_min = float(config.PRED_REPORT_CONVICTION_MIN)
+    pool = [
+        r
+        for r in rows
+        if not prediction_ranking.is_report_noise_ticker(r)
+    ]
+    if not pool:
         return []
 
-    ranked = sorted(
-        backed,
+    def _conviction_ok(r: predict.PredictionRow) -> bool:
+        tier = str(getattr(r, "confidence_tier", "") or "")
+        if tier in ("high", "mid"):
+            return True
+        return prediction_ranking.report_breakout_pick_score(r) + 1e-12 >= conviction_min
+
+    eligible = [r for r in pool if _conviction_ok(r)]
+    if not eligible:
+        return []
+
+    scored = sorted(
+        eligible,
         key=lambda r: (
             0
             if str(getattr(r, "confidence_tier", "") or "") == "high"
             else (1 if str(getattr(r, "confidence_tier", "") or "") == "mid" else 2),
-            -(float(getattr(r, "rank_score", 0.0) or 0.0)),
+            -prediction_ranking.report_breakout_pick_score(r),
             int(getattr(r, "rank_position", None) or 9999),
             str(r.code).zfill(6),
         ),
     )
-    tiered = [
-        r
-        for r in ranked
-        if prediction_ranking.is_high_confidence_prediction(r)
-        or prediction_ranking.is_mid_confidence_prediction(r)
-    ]
-    if len(tiered) >= min_slate:
-        selected = list(tiered[:cap])
-    else:
-        # 고·중 부족 시 순위 상위로 채움(빈 리포트 금지)
-        seen = {str(r.code).zfill(6) for r in tiered}
-        selected = list(tiered)
-        for r in ranked:
-            if len(selected) >= max(min_slate, min(cap, len(ranked))):
+    max_per_ind = max(1, int(getattr(config, "PRED_SECTOR_DIVERSITY_MAX_PER_INDUSTRY", 3) or 3))
+    selected: list[predict.PredictionRow] = []
+    ind_counts: dict[str, int] = {}
+    overflow: list[predict.PredictionRow] = []
+    for r in scored:
+        try:
+            from src import stocks as stocks_mod
+
+            ind = str(stocks_mod.industry_name_for_code(str(r.code)) or "") or "_unknown"
+        except Exception:
+            ind = "_unknown"
+        n = ind_counts.get(ind, 0)
+        if n >= max_per_ind:
+            overflow.append(r)
+            continue
+        ind_counts[ind] = n + 1
+        selected.append(r)
+        if len(selected) >= cap:
+            break
+    if len(selected) < cap:
+        seen = {str(r.code).zfill(6) for r in selected}
+        for r in overflow:
+            if len(selected) >= cap:
                 break
             c = str(r.code).zfill(6)
             if c in seen:
                 continue
             seen.add(c)
             selected.append(r)
-        selected = selected[:cap]
+    # min_slate>0 일 때만 보충 — 기본 0(패딩 금지)
+    if min_slate > 0 and len(selected) < min_slate:
+        seen = {str(r.code).zfill(6) for r in selected}
+        for r in scored:
+            if len(selected) >= min_slate:
+                break
+            c = str(r.code).zfill(6)
+            if c in seen:
+                continue
+            seen.add(c)
+            selected.append(r)
 
+    if not selected:
+        return []
     predict.apply_display_return_pct_ranking(
         selected,
-        rank_value=lambda r: float(
-            getattr(r, "rank_score", None)
-            or getattr(r, "ml_prob", None)
-            or getattr(r, "score", 0.0)
-            or 0.0
-        ),
-        reason_prefix="표시 예측 상승률은 당일 후보 순위(테마·언급·수급·ML) 기준으로",
+        rank_value=lambda r: float(prediction_ranking.report_breakout_pick_score(r)),
+        reason_prefix="표시 예측 상승률은 확신·로테이션 급등 점수 순위 기준으로",
     )
     return selected
 

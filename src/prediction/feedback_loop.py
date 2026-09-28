@@ -16,6 +16,7 @@ from .. import config, trading_calendar
 from . import accuracy_cache as prediction_accuracy_cache
 
 INCREMENTAL_MISS_PATH = config.TRAIN_CACHE_DIR / "incremental_miss_boost.json"
+MISS_REFLECTION_PATH = config.TRAIN_CACHE_DIR / "miss_reflection_lessons.json"
 
 
 def _parse_t_code_key(key: str) -> tuple[date | None, str]:
@@ -224,6 +225,10 @@ def build_enriched_feedback_context(*, as_of: date | None = None) -> dict[str, o
     base["recent_pred_high_precision"] = recent_prec
     base["recent_miss_streak_days"] = streak
     base["feedback_as_of"] = as_of.isoformat()
+    fn_ind, fn_tag_top, fp_tag_top = _load_reflection_weights(as_of=as_of)
+    base["fn_industry_weights"] = fn_ind
+    base["fn_miss_tag_top"] = fn_tag_top
+    base["fp_miss_tag_top"] = fp_tag_top
     return base
 
 
@@ -313,22 +318,241 @@ def feedback_rank_penalty(row: Any, feedback_ctx: dict[str, object] | None) -> f
     return float(min(max_p, max(0.0, penalty)))
 
 
+def stamp_miss_reflection_boosts(
+    rows: list[Any],
+    feedback_ctx: dict[str, object] | None,
+) -> None:
+    """행에 ``miss_reflection_boost`` 만 찍음(랭크 재곱셈 없음)."""
+    if not rows:
+        return
+    for row in rows:
+        boost = miss_reflection_industry_boost(row, feedback_ctx)
+        try:
+            setattr(row, "miss_reflection_boost", boost)
+        except Exception:
+            pass
+
+
 def apply_feedback_rank_penalties(
     rows: list[Any],
     feedback_ctx: dict[str, object] | None,
 ) -> None:
-    """풀 내 ``rank_score``·``score`` 에 오판 이력 패널티 반영(in-place)."""
+    """풀 내 ``rank_score``·``score`` 에 오판 이력 패널티·미포착 업종 가산 반영(in-place)."""
     if not rows or not feedback_ctx:
         return
     for row in rows:
         p = feedback_rank_penalty(row, feedback_ctx)
-        if p <= 1e-12:
+        boost = miss_reflection_industry_boost(row, feedback_ctx)
+        try:
+            setattr(row, "miss_reflection_boost", boost)
+        except Exception:
+            pass
+        if p <= 1e-12 and boost <= 1e-12:
             continue
-        mult = 1.0 - p
+        mult = (1.0 - p) * (1.0 + boost)
         if hasattr(row, "rank_score") and row.rank_score is not None:
             row.rank_score = float(row.rank_score) * mult
         if hasattr(row, "score") and row.score is not None:
             row.score = float(row.score) * mult
+
+
+def miss_reflection_industry_boost(
+    row: Any,
+    feedback_ctx: dict[str, object] | None,
+) -> float:
+    """최근 미포착 급등과 같은 업표면 0~MAX 가산 비율."""
+    if not config.PRED_MISS_REFLECTION_ENABLED or not feedback_ctx:
+        return 0.0
+    weights = feedback_ctx.get("fn_industry_weights")
+    if not isinstance(weights, dict) or not weights:
+        return 0.0
+    code = str(getattr(row, "code", "") or "").zfill(6)
+    if not code:
+        return 0.0
+    try:
+        from .. import stocks as stocks_mod
+
+        ic = str(stocks_mod.industry_code_for_stock(code) or "").strip()
+    except Exception:
+        return 0.0
+    if not ic:
+        return 0.0
+    raw = weights.get(ic)
+    if not isinstance(raw, (int, float)) or not math.isfinite(float(raw)):
+        return 0.0
+    cap = float(config.PRED_MISS_REFLECTION_INDUSTRY_BOOST_MAX)
+    return float(min(cap, max(0.0, float(raw))))
+
+
+def _default_reflection_payload() -> dict[str, Any]:
+    return {"version": 1, "days": {}, "updated_at": ""}
+
+
+def _load_reflection_weights(
+    *, as_of: date
+) -> tuple[dict[str, float], list[str], list[str]]:
+    """최근 창의 FN 업종 가중·태그 요약."""
+    empty: tuple[dict[str, float], list[str], list[str]] = ({}, [], [])
+    if not config.PRED_MISS_REFLECTION_ENABLED:
+        return empty
+    if not MISS_REFLECTION_PATH.is_file():
+        return empty
+    try:
+        data = json.loads(MISS_REFLECTION_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return empty
+    days = data.get("days")
+    if not isinstance(days, dict):
+        return empty
+    hl = float(config.PRED_MISS_REFLECTION_HALF_LIFE_DAYS)
+    win = int(config.PRED_MISS_REFLECTION_WINDOW_DAYS)
+    cutoff = as_of - timedelta(days=max(3, win))
+    ind_acc: dict[str, float] = {}
+    fn_tags: dict[str, float] = {}
+    fp_tags: dict[str, float] = {}
+    for t_iso, rec in days.items():
+        if not isinstance(rec, dict):
+            continue
+        try:
+            t_d = date.fromisoformat(str(t_iso)[:10])
+        except ValueError:
+            continue
+        # as_of 당일 결과는 아직 미래 정보 — 전일까지만.
+        if t_d < cutoff or t_d >= as_of:
+            continue
+        w = _recency_weight(t_d, as_of=as_of, half_life_days=hl)
+        if w <= 0:
+            continue
+        for ic, v in (rec.get("fn_industries") or {}).items():
+            if not isinstance(ic, str) or not ic:
+                continue
+            if not isinstance(v, (int, float)) or not math.isfinite(float(v)):
+                continue
+            ind_acc[ic] = ind_acc.get(ic, 0.0) + float(v) * w
+        for tag, c in (rec.get("fn_tags") or {}).items():
+            if isinstance(tag, str) and isinstance(c, (int, float)):
+                fn_tags[tag] = fn_tags.get(tag, 0.0) + float(c) * w
+        for tag, c in (rec.get("fp_tags") or {}).items():
+            if isinstance(tag, str) and isinstance(c, (int, float)):
+                fp_tags[tag] = fp_tags.get(tag, 0.0) + float(c) * w
+    if not ind_acc:
+        return (
+            {},
+            [k for k, _ in sorted(fn_tags.items(), key=lambda x: -x[1])[:5]],
+            [k for k, _ in sorted(fp_tags.items(), key=lambda x: -x[1])[:5]],
+        )
+    peak = max(ind_acc.values())
+    cap = float(config.PRED_MISS_REFLECTION_INDUSTRY_BOOST_MAX)
+    if peak <= 1e-12:
+        scaled: dict[str, float] = {}
+    else:
+        scaled = {
+            ic: float(min(cap, (v / peak) * cap))
+            for ic, v in ind_acc.items()
+            if v > 1e-12
+        }
+    return (
+        scaled,
+        [k for k, _ in sorted(fn_tags.items(), key=lambda x: -x[1])[:5]],
+        [k for k, _ in sorted(fp_tags.items(), key=lambda x: -x[1])[:5]],
+    )
+
+
+def append_miss_reflection_lessons(dr: Any) -> None:
+    """장 마감 확정일의 FN/FP 진단을 업종·태그 교훈으로 저장."""
+    if not config.PRED_MISS_REFLECTION_ENABLED:
+        return
+    if getattr(dr, "forward_observation", False):
+        return
+    from ..learning import support as miss_diag
+    from .. import stocks as stocks_mod
+
+    missed, pred_misses = miss_diag.build_miss_rows_for_day(dr)
+    if not missed and not pred_misses:
+        return
+    t_iso = dr.trading_day.isoformat()
+    fn_ind: dict[str, float] = {}
+    fn_ind_labels: dict[str, str] = {}
+    fn_tags: dict[str, int] = {}
+    fp_tags: dict[str, int] = {}
+    fn_names: list[str] = []
+    for m in missed:
+        code = str(m.get("code") or "").zfill(6)
+        if not code:
+            continue
+        try:
+            ic = str(stocks_mod.industry_code_for_stock(code) or "").strip()
+        except Exception:
+            ic = ""
+        ap = float(m.get("actual_pct") or 0.0)
+        # 급등 폭이 클수록 업종 교훈 가중 ↑ (20%→1.0, 30%→1.5)
+        w = 1.0 + max(0.0, min(1.5, (ap - 20.0) / 20.0))
+        if ic:
+            fn_ind[ic] = fn_ind.get(ic, 0.0) + w
+            if ic not in fn_ind_labels:
+                try:
+                    fn_ind_labels[ic] = (
+                        stocks_mod.industry_name_for_code(code) or ic
+                    )
+                except Exception:
+                    fn_ind_labels[ic] = ic
+        for t in m.get("tags") or []:
+            if isinstance(t, str) and t:
+                fn_tags[t] = fn_tags.get(t, 0) + 1
+        name = str(m.get("name") or code)
+        if name and len(fn_names) < 6:
+            fn_names.append(name)
+    for m in pred_misses:
+        for t in m.get("tags") or []:
+            if isinstance(t, str) and t:
+                fp_tags[t] = fp_tags.get(t, 0) + 1
+
+    path = MISS_REFLECTION_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = _default_reflection_payload()
+    else:
+        data = _default_reflection_payload()
+    days = data.get("days")
+    if not isinstance(days, dict):
+        days = {}
+    days[t_iso] = {
+        "fn_industries": {k: round(v, 4) for k, v in fn_ind.items()},
+        "fn_tags": fn_tags,
+        "fp_tags": fp_tags,
+        "fn_count": len(missed),
+        "fp_count": len(pred_misses),
+        "fn_sample": fn_names,
+    }
+    # 오래된 일 정리
+    keep_after = dr.trading_day - timedelta(days=max(30, int(config.PRED_MISS_REFLECTION_WINDOW_DAYS) * 3))
+    pruned = {}
+    for k, v in days.items():
+        try:
+            kd = date.fromisoformat(str(k)[:10])
+        except ValueError:
+            continue
+        if kd >= keep_after:
+            pruned[k] = v
+    data["days"] = pruned
+    data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=0), encoding="utf-8")
+
+    top_ind = sorted(fn_ind.items(), key=lambda x: -x[1])[:4]
+    ind_labels = [fn_ind_labels.get(ic, ic) for ic, _w in top_ind]
+    print(
+        f"오판 반성 기록: T={t_iso} 미포착={len(missed)} 오판={len(pred_misses)}"
+        + (f" → 업종가산 {', '.join(ind_labels)}" if ind_labels else "")
+        + (
+            f" FN태그={','.join(list(fn_tags.keys())[:3])}"
+            if fn_tags
+            else ""
+        ),
+        flush=True,
+    )
 
 
 def adaptive_feedback_shrink_bounds(
@@ -355,6 +579,7 @@ def _default_incremental_miss() -> dict[str, list]:
 
 def append_incremental_miss_from_day_report(dr: Any) -> None:
     """장 마감 확정일 miss 진단을 경량 JSON에 누적(ML 부스트용)."""
+    append_miss_reflection_lessons(dr)
     if not config.ML_INCREMENTAL_MISS_BOOST_ENABLED:
         return
     if getattr(dr, "forward_observation", False):

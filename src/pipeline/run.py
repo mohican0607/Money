@@ -43,6 +43,7 @@ from .rows import (
     _enrich_forward_pred_rationale,
     _enrich_rows_pred_miss_tooltip,
     _gap_analysis_html_for_row,
+    _merge_actual_big_movers_into_rows_compare,
     _pred_reason_fields,
     _prediction_row_strict_or_loose,
     _rise_band_for_row,
@@ -372,6 +373,15 @@ def _run_pipeline(
                 f"miss_streak={streak}일",
                 flush=True,
             )
+        fn_ind = pipeline_feedback_ctx.get("fn_industry_weights")
+        if isinstance(fn_ind, dict) and fn_ind and config.PRED_MISS_REFLECTION_ENABLED:
+            n_ind = len(fn_ind)
+            top_tags = pipeline_feedback_ctx.get("fn_miss_tag_top") or []
+            tag_note = f" FN원인={','.join(str(x) for x in top_tags[:3])}" if top_tags else ""
+            print(
+                f"오판 반성: T={T.isoformat()} 미포착 업종 가산 {n_ind}개{tag_note}",
+                flush=True,
+            )
         day_forward = _observation_day_forward_mode(
             T,
             today=today_kst,
@@ -540,13 +550,24 @@ def _run_pipeline(
                 feedback_ctx=pipeline_feedback_ctx,
                 forward_observation=day_forward,
             )
-            # ``predict_for_trading_day`` / ML 랭커가 이미 finalize 를 끝냄 — 여기서 다시 finalize 하면
-            # 14:30 리포트와 freeze·장마감 후 재사용 예측이 어긋납니다.
-            # 리포트 슬레이트: 상위 후보를 20~30% 표시로 매핑(빈 표 금지).
+            # ML 컷에 빠진 테마 로테이션 후보를 리포트 슬레이트 풀에 보강
+            preds = prediction_ranking.inject_theme_rotation_candidates(
+                preds,
+                returns_ml,
+                target_day=T,
+                listing_codes=codes,
+                listing_names=names,
+            )
+            # inject 행에도 미포착 업종 가산 스탬프(슬레이트 점수용)
+            prediction_feedback_loop.stamp_miss_reflection_boosts(
+                preds, pipeline_feedback_ctx
+            )
+            # 리포트·freeze = 확신 슬레이트만(보강 풀 전체를 표에 올리지 않음).
             report_slate = _display_prediction_rows_for_freeze(preds)
             if config.PREDICTION_FREEZE_ENABLED:
                 freeze_payload[t_key] = _prediction_rows_to_frozen_items(report_slate)
                 freeze_changed = True
+            preds = report_slate
         scoring_ctx = predict.build_scoring_context(blob, train_events_t)
 
         kospi_r = market_index.index_daily_return_pct(ks11, T)
@@ -827,23 +848,34 @@ def _run_pipeline(
                         for r in rows_compare
                         if _compare_row_is_prediction_candidate(r)
                     ]
-            cap = int(config.PRED_FORWARD_SHOW_MAX)
-            if len(rows_compare) > cap:
-                rows_compare.sort(
-                    key=lambda r: (
-                        0 if r.get("pred_high") else (1 if r.get("pred_mid") else 2),
-                        int(r["rank_position"])
-                        if r.get("rank_position") is not None
-                        else 9999,
-                        str(r.get("code", "")).zfill(6),
-                    )
-                )
-                rows_compare = rows_compare[:cap]
             for r in rows_compare:
                 r["actual_ret"] = None
                 r["actual_big"] = False
                 r.pop("actual_ret_intraday_pct", None)
                 r.pop("actual_cell_pre_close_snapshot", None)
+        else:
+            rows_compare = [
+                r for r in rows_compare if _compare_row_is_prediction_candidate(r)
+            ]
+        cap = int(config.PRED_FORWARD_SHOW_MAX)
+        if len(rows_compare) > cap:
+            rows_compare.sort(
+                key=lambda r: (
+                    0 if r.get("pred_high") else (1 if r.get("pred_mid") else 2),
+                    int(r["rank_position"])
+                    if r.get("rank_position") is not None
+                    else 9999,
+                    str(r.get("code", "")).zfill(6),
+                )
+            )
+            rows_compare = rows_compare[:cap]
+        if not day_forward:
+            # 예측 상한과 별개로 당일 실제 20%↑는 전부 표시(미포착 확인용).
+            _merge_actual_big_movers_into_rows_compare(
+                rows_compare,
+                actual_big_movers,
+                market_by_code=market_by_code,
+            )
         rows_compare.sort(key=lambda r: (not r["actual_big"], not r["pred_high"], r["code"]))
 
         today_td = now_kst_td.date()

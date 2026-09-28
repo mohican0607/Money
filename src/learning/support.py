@@ -680,13 +680,72 @@ def _tags_for_pred_miss(
 
 
 def build_miss_rows_for_day(dr: DayReport) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """단일 ``DayReport`` 에 대한 진단 행 두 목록."""
+    """단일 ``DayReport`` 에 대한 진단 행 두 목록.
+
+    비교 표는 예측 확신 슬레이트만 담을 수 있으므로, 미포착(FN)은
+    ``actual_big_movers`` 기준으로도 잡는다(표 축소 후에도 학습이 끊기지 않게).
+    """
     thr = float(config.BIG_MOVE_THRESHOLD)
     thr_pct = thr * 100.0
     pred_by_code = {str(getattr(p, "code", "")).zfill(6): p for p in (dr.predictions or [])}
+    rows_by_code = {
+        str(r.get("code", "")).zfill(6): r
+        for r in (dr.rows_compare or [])
+        if r.get("code")
+    }
 
     missed: list[dict[str, Any]] = []
     pred_misses: list[dict[str, Any]] = []
+    seen_missed: set[str] = set()
+
+    def _append_missed(
+        *,
+        code: str,
+        name: str,
+        actual_pct: float,
+        row: dict[str, Any] | None,
+    ) -> None:
+        if code in seen_missed:
+            return
+        # 슬레이트에 들어 있으면 포착으로 본다(Hit@K와 동일).
+        if code in pred_by_code:
+            return
+        pr_obj = pred_by_code.get(code)
+        tags, hints, in_list_pct, kh = _tags_for_missed(
+            code=code,
+            pred_row=pr_obj,
+            row=row or {},
+            thr_pct=thr_pct,
+        )
+        missed.append(
+            {
+                "code": code,
+                "name": name,
+                "actual_pct": round(actual_pct, 3),
+                "tags": tags,
+                "hints_ko": hints,
+                "pred_in_list_pct": round(in_list_pct, 3) if in_list_pct is not None else None,
+                "keyword_hits_if_in_list": kh,
+            }
+        )
+        seen_missed.add(code)
+
+    for m in dr.actual_big_movers or []:
+        code = str(m.get("code", "")).zfill(6)
+        if not code:
+            continue
+        try:
+            actual_pct = float(m.get("ret_pct"))
+        except (TypeError, ValueError):
+            continue
+        if actual_pct + 1e-9 < thr_pct:
+            continue
+        _append_missed(
+            code=code,
+            name=str(m.get("name") or ""),
+            actual_pct=actual_pct,
+            row=rows_by_code.get(code),
+        )
 
     for r in dr.rows_compare or []:
         code = str(r.get("code", "")).zfill(6)
@@ -699,21 +758,12 @@ def build_miss_rows_for_day(dr: DayReport) -> tuple[list[dict[str, Any]], list[d
         pred_high = bool(r.get("pred_high"))
         actual_big = bool(r.get("actual_big")) or (ar is not None and float(ar) >= thr - 1e-12)
 
-        if actual_big and not pred_high:
-            pr_obj = pred_by_code.get(code)
-            tags, hints, in_list_pct, kh = _tags_for_missed(
-                code=code, pred_row=pr_obj, row=r, thr_pct=thr_pct
-            )
-            missed.append(
-                {
-                    "code": code,
-                    "name": str(r.get("name") or ""),
-                    "actual_pct": round(actual_pct, 3),
-                    "tags": tags,
-                    "hints_ko": hints,
-                    "pred_in_list_pct": round(in_list_pct, 3) if in_list_pct is not None else None,
-                    "keyword_hits_if_in_list": kh,
-                }
+        if actual_big and not pred_high and code not in pred_by_code:
+            _append_missed(
+                code=code,
+                name=str(r.get("name") or ""),
+                actual_pct=actual_pct,
+                row=r,
             )
         if pred_high and actual_pct + 1e-9 < thr_pct:
             tags, hints = _tags_for_pred_miss(row=r, thr_pct=thr_pct, actual_pct=actual_pct)

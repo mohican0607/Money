@@ -1661,6 +1661,8 @@ def rank_predictions_ml(
         is_rotation = c6 in rotation_code_set
         is_industry_must = c6 in must_enrich_codes
         news_bypass = not config.PRED_REQUIRE_NEWS_EVIDENCE
+        # 로테이션·업종 must_keep 는 종목명 뉴스가 없어도 풀에 남긴다(실측 20%↑ 패턴).
+        sector_keep = is_rotation or is_industry_must
         pr = predict.prediction_row_for_code(
             code,
             listing_names,
@@ -1671,18 +1673,14 @@ def rank_predictions_ml(
             feedback_ctx=feedback_ctx,
             theme_weights=tw,
             allow_momentum_only=(
-                news_bypass
-                and (
-                    (code in mom_only and code not in news_only)
-                    or is_rotation
-                    or is_industry_must
-                )
+                sector_keep
+                or (news_bypass and code in mom_only and code not in news_only)
             ),
-            allow_news_context_only=code in news_ctx_only
-            or (news_bypass and (is_rotation or is_industry_must)),
+            allow_news_context_only=(
+                code in news_ctx_only or sector_keep or news_bypass
+            ),
             allow_investor_flow_only=(
-                news_bypass
-                and (code in flow_only or is_rotation or is_industry_must)
+                sector_keep or (news_bypass and code in flow_only)
             ),
         )
         if pr is None:
