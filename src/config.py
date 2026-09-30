@@ -230,7 +230,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 3.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 67
+PREDICTION_FREEZE_SCHEMA_VERSION = 70
 
 # --- 다요인(멀티팩터) 랭킹 가중치 (합≈1): 섹터·수급·로테이션 친화 ---
 PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.20)
@@ -461,6 +461,11 @@ PRED_FORWARD_MIN_SLATE = _non_negative_int_env("PRED_FORWARD_MIN_SLATE", 0)
 PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 5)
 # none 티어라도 리포트에 넣을 최소 급등 점수(잠행·로테이션). 미달이면 제외.
 PRED_REPORT_CONVICTION_MIN = _float_env("PRED_REPORT_CONVICTION_MIN", 0.55)
+# 리포트 슬레이트를 가격·거래량+업종 흐름 모델로 선정(뉴스·ML 경로 대체). 0이면 기존 경로.
+PRED_PRICE_MODEL_ENABLED = os.getenv("PRED_PRICE_MODEL_ENABLED", "1").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+PRED_PRICE_MODEL_NEG_SAMPLE = _float_env("PRED_PRICE_MODEL_NEG_SAMPLE", 0.10)
 # 표시 매핑·레거시 하이브리드용. 전방 고확신 게이트는 상대 하한을 쓴다.
 PRED_ML_HIGH_CONFIDENCE_PROB = max(0.08, _float_env("PRED_ML_HIGH_CONFIDENCE_PROB", 0.11))
 PRED_ML_MID_CONFIDENCE_PROB = max(0.04, _float_env("PRED_ML_MID_CONFIDENCE_PROB", 0.07))

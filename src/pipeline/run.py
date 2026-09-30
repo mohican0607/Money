@@ -425,7 +425,7 @@ def _run_pipeline(
             all_train_events, T, train_start=train_start
         )
         ml_bundle = None
-        if config.PRED_USE_ML_RANKER:
+        if config.PRED_USE_ML_RANKER and not config.PRED_PRICE_MODEL_ENABLED:
             try:
                 from src import ml_move_rank
 
@@ -536,34 +536,50 @@ def _run_pipeline(
                     f"관측일 T={t_key}: 예측 고정 캐시 없음·신규 계산합니다.",
                     flush=True,
                 )
-            preds = predict.predict_for_trading_day(
-                T,
-                codes,
-                names,
-                train_events_t,
-                blob,
-                top_n=config.PRED_RANK_POOL_N,
-                min_keyword_hits=min_hits,
-                ml_bundle=ml_bundle,
-                returns_ml=returns_ml,
-                theme_weights=theme_w or None,
-                feedback_ctx=pipeline_feedback_ctx,
-                forward_observation=day_forward,
-            )
-            # ML 컷에 빠진 테마 로테이션 후보를 리포트 슬레이트 풀에 보강
-            preds = prediction_ranking.inject_theme_rotation_candidates(
-                preds,
-                returns_ml,
-                target_day=T,
-                listing_codes=codes,
-                listing_names=names,
-            )
-            # inject 행에도 미포착 업종 가산 스탬프(슬레이트 점수용)
-            prediction_feedback_loop.stamp_miss_reflection_boosts(
-                preds, pipeline_feedback_ctx
-            )
-            # 리포트·freeze = 확신 슬레이트만(보강 풀 전체를 표에 올리지 않음).
-            report_slate = _display_prediction_rows_for_freeze(preds)
+            if config.PRED_PRICE_MODEL_ENABLED:
+                from ..prediction import price_breakout_model
+
+                report_slate = price_breakout_model.predict_top(
+                    returns,
+                    T,
+                    listing_codes=codes,
+                    listing_names=names,
+                    top_n=int(config.PRED_FORWARD_SHOW_MAX),
+                )
+                print(
+                    f"관측일 T={t_key}: 가격·거래량 모델 슬레이트 "
+                    + ", ".join(f"{r.name}({r.ml_prob:.0%})" for r in report_slate),
+                    flush=True,
+                )
+            else:
+                preds = predict.predict_for_trading_day(
+                    T,
+                    codes,
+                    names,
+                    train_events_t,
+                    blob,
+                    top_n=config.PRED_RANK_POOL_N,
+                    min_keyword_hits=min_hits,
+                    ml_bundle=ml_bundle,
+                    returns_ml=returns_ml,
+                    theme_weights=theme_w or None,
+                    feedback_ctx=pipeline_feedback_ctx,
+                    forward_observation=day_forward,
+                )
+                # ML 컷에 빠진 테마 로테이션 후보를 리포트 슬레이트 풀에 보강
+                preds = prediction_ranking.inject_theme_rotation_candidates(
+                    preds,
+                    returns_ml,
+                    target_day=T,
+                    listing_codes=codes,
+                    listing_names=names,
+                )
+                # inject 행에도 미포착 업종 가산 스탬프(슬레이트 점수용)
+                prediction_feedback_loop.stamp_miss_reflection_boosts(
+                    preds, pipeline_feedback_ctx
+                )
+                # 리포트·freeze = 확신 슬레이트만(보강 풀 전체를 표에 올리지 않음).
+                report_slate = _display_prediction_rows_for_freeze(preds)
             if config.PREDICTION_FREEZE_ENABLED:
                 freeze_payload[t_key] = _prediction_rows_to_frozen_items(report_slate)
                 freeze_changed = True
@@ -730,6 +746,7 @@ def _run_pipeline(
                     "mention_score": (pr.mention_score if pr is not None else 0.0),
                     "pred_ret": pred_ret,
                     "ml_prob": (pr.ml_prob if pr is not None else None),
+                    "pred_source": (getattr(pr, "pred_source", "") if pr is not None else ""),
                     "rank_position": (
                         getattr(pr, "rank_position", None) if pr is not None else None
                     ),
@@ -764,8 +781,11 @@ def _run_pipeline(
 
         seen_row_codes = {r["code"] for r in rows_compare}
         for pr in preds:
-            # 예측 상승률 ≥ PRED_REPORT_MIN_PCT(기본 20%) 만 표에 반영.
-            if pr.predicted_return_pct + 1e-9 < row_pred_min:
+            # 예측 상승률 ≥ PRED_REPORT_MIN_PCT(기본 20%) 만 표에 반영. 가격 모델은 확률 순위로 이미 골랐다.
+            if (
+                getattr(pr, "pred_source", "") != "price_model"
+                and pr.predicted_return_pct + 1e-9 < row_pred_min
+            ):
                 continue
             if pr.code in seen_row_codes:
                 continue
@@ -785,6 +805,7 @@ def _run_pipeline(
                     "mention_score": pr.mention_score,
                     "pred_ret": pr.predicted_return_pct,
                     "ml_prob": pr.ml_prob,
+                    "pred_source": getattr(pr, "pred_source", ""),
                     "rank_position": getattr(pr, "rank_position", None),
                     "confidence_tier": getattr(pr, "confidence_tier", "none"),
                     "actual_ret": act,

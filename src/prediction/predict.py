@@ -222,6 +222,8 @@ class PredictionRow:
     confidence_tier: str = "none"
     # 최근 미포착 급등 업종 반성 가산(0~PRED_MISS_REFLECTION_INDUSTRY_BOOST_MAX)
     miss_reflection_boost: float = 0.0
+    # "price_model" 이면 predicted_return_pct 는 표시용 자리값이고 ml_prob 가 실제 출력(익일 20%↑ 확률)
+    pred_source: str = ""
 
 
 def _build_code_keyword_profile(train_events: list[BreakoutEvent]) -> dict[str, frozenset[str]]:

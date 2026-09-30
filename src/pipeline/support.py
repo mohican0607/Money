@@ -366,6 +366,7 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
                     confidence_tier=str(x.get("confidence_tier") or "none"),
                     investor_flow_score=float(x.get("investor_flow_score", 0.0) or 0.0),
                     foreign_net_vol_ratio=float(x.get("foreign_net_vol_ratio", 0.0) or 0.0),
+                    pred_source=str(x.get("pred_source") or ""),
                 )
             )
         except (TypeError, ValueError):
@@ -502,6 +503,7 @@ def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[
             "confidence_tier": str(getattr(r, "confidence_tier", "none") or "none"),
             "investor_flow_score": float(getattr(r, "investor_flow_score", 0.0) or 0.0),
             "foreign_net_vol_ratio": float(getattr(r, "foreign_net_vol_ratio", 0.0) or 0.0),
+            "pred_source": str(getattr(r, "pred_source", "") or ""),
         }
         for r in rows
     ]

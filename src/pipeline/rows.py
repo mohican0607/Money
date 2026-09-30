@@ -54,6 +54,7 @@ def _append_compare_row_from_prediction(
             "mention_score": pr.mention_score,
             "pred_ret": pr.predicted_return_pct,
             "ml_prob": pr.ml_prob,
+            "pred_source": getattr(pr, "pred_source", ""),
             "rank_position": getattr(pr, "rank_position", None),
             "confidence_tier": getattr(pr, "confidence_tier", "none"),
             "actual_ret": actual_ret,

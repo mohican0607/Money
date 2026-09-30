@@ -36,7 +36,8 @@ for p in parts:
             table_codes[cur] = set(re.findall(r'data-stock-code="(\d{6})"', body.group(1)))
         cur = None
 
-for k in ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-28"]:
+tot_hit = tot_pred = 0
+for k in sorted(table_codes):
     if k not in table_codes:
         continue
     day = date.fromisoformat(k)
@@ -47,7 +48,11 @@ for k in ["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", 
     tc = table_codes[k]
     missing = big_codes - tc
     hits = preds & big_codes
+    if big_codes:
+        tot_hit += len(hits)
+        tot_pred += len(preds)
     print(
-        f"{k}: table={len(tc)} preds={len(preds)} actual20={len(big_codes)} "
+        f"{k}: table={len(tc)} preds={len(preds)} preds_in_table={len(preds & tc)} actual20={len(big_codes)} "
         f"actual_in_table={len(big_codes & tc)} missing={sorted(missing)} hit={len(hits)}"
     )
+print(f"TOTAL hit {tot_hit}/{tot_pred}")
