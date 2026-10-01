@@ -33,6 +33,8 @@ _model_cache: dict[
     tuple[pd.DataFrame, pd.Timestamp, HistGradientBoostingClassifier, HistGradientBoostingRegressor],
 ] = {}
 _RET_SAMPLE = 0.20
+# 2026-09 검증: q=0.9 예측 ≥20% 인 103건 중 실제 20%↑ 10.7% (전체 기준율 0.46%).
+_RET_QUANTILE = 0.90
 
 
 def _industry_map() -> dict[str, str]:
@@ -111,15 +113,20 @@ def _training_pairs(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fit_return(pairs: pd.DataFrame, before: pd.Timestamp) -> HistGradientBoostingRegressor:
-    """전일 피처 → 당일 종가 수익률. 균등 표본이라 예측값이 그대로 기대 수익률이다."""
+    """전일 피처 → 당일 종가 수익률의 상위 ``_RET_QUANTILE`` 분위(상승 시나리오 상승폭).
+
+    급등일은 모두, 나머지는 ``_RET_SAMPLE`` 만 뽑고 가중치로 원래 분포를 되돌린다.
+    """
     tr = pairs[pairs["Date"] < before]
     rng = np.random.default_rng(1)
-    tr = tr[rng.random(len(tr)) < _RET_SAMPLE]
+    keep = (tr["big"] == 1) | (rng.random(len(tr)) < _RET_SAMPLE)
+    tr = tr[keep]
+    w = np.where(tr["big"] == 1, 1.0, 1.0 / _RET_SAMPLE)
     reg = HistGradientBoostingRegressor(
-        max_iter=200, learning_rate=0.05, max_leaf_nodes=31,
-        min_samples_leaf=200, l2_regularization=1.0, random_state=0,
+        loss="quantile", quantile=_RET_QUANTILE, max_iter=200, learning_rate=0.05,
+        max_leaf_nodes=31, min_samples_leaf=200, random_state=0,
     )
-    reg.fit(tr[FEATURE_COLS].to_numpy(dtype=float), tr["y_ret"].to_numpy(dtype=float))
+    reg.fit(tr[FEATURE_COLS].to_numpy(dtype=float), tr["y_ret"].to_numpy(dtype=float), sample_weight=w)
     return reg
 
 
@@ -181,7 +188,7 @@ def predict_top(
         return []
     X = cur[FEATURE_COLS].to_numpy(dtype=float)
     p = _true_prob(clf.predict_proba(X)[:, 1])
-    er = np.clip(reg.predict(X), -_LIMIT, _LIMIT)
+    er = np.clip(reg.predict(X), -0.30, 0.30)
     cur = cur.assign(prob=p, exp_ret=er).sort_values("prob", ascending=False).head(int(top_n))
 
     rows: list[PredictionRow] = []
@@ -190,7 +197,7 @@ def predict_top(
         exp_pct = float(r.exp_ret) * 100.0
         vol_x = float(np.expm1(r.vol_ratio)) if pd.notna(r.vol_ratio) else 0.0
         reason = (
-            f"가격·거래량 모델: 예측 상승률 {exp_pct:+.1f}% · 익일 20%↑ 확률 {prob:.0%} · "
+            f"가격·거래량 모델: 예측 상승률 {exp_pct:+.1f}%(상승 시나리오 상위 10%) · 익일 20%↑ 확률 {prob:.0%} · "
             f"전일 {float(r.r1) * 100:+.1f}% · "
             f"거래량 20일 평균의 {vol_x:.1f}배 · 같은 업종 전일 20%↑ {int(r.ind_big or 0)}종 "
             f"(과거 281거래일 검증 상위 5종 적중률 약 20%. 종가 기준 적중이며 시가 매수 시 평균 손실)"

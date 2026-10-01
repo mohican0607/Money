@@ -230,7 +230,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 3.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 70
+PREDICTION_FREEZE_SCHEMA_VERSION = 72
 
 # --- 다요인(멀티팩터) 랭킹 가중치 (합≈1): 섹터·수급·로테이션 친화 ---
 PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.20)

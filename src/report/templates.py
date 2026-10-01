@@ -1567,7 +1567,7 @@ __ACTUAL_RET_CELL_MACRO__
       </thead>
       <tbody>
         {% for r in d.rows_compare %}
-        <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
+        <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ 'high' if r.pred_high else r.rise_band|default('low') }}">
           <td class="col-group" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
             {% if not (d.forward_observation | default(false)) and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측≥{{ meta.threshold }}{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
@@ -2242,7 +2242,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
   </thead>
   <tbody>
     {% for r in d.rows_compare %}
-    <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
+    <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ 'high' if r.pred_high else r.rise_band|default('low') }}">
       <td class="col-group" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
         {% if not (d.forward_observation | default(false)) and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제</span>{% endif %}
         {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
@@ -2950,7 +2950,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
       </thead>
       <tbody>
         {% for r in day.rows_compare %}
-        <tr id="code-{{ row_id_prefix }}{{ r.code }}" data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ r.rise_band|default('low') }}">
+        <tr id="code-{{ row_id_prefix }}{{ r.code }}" data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ 'high' if r.pred_high else r.rise_band|default('low') }}">
           <td class="col-group" data-sort-col="group" data-sort-value="{% if (not meta.prediction_only) and r.actual_big and (r.pred_high | default(false)) %}3{% elif (not meta.prediction_only) and r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
             {% if not meta.prediction_only and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block;color:var(--warn)">예측≥{{ meta.threshold }}</span>{% endif %}
