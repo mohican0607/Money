@@ -609,7 +609,8 @@ def append_incremental_miss_from_day_report(dr: Any) -> None:
         tags = set(m.get("tags") or [])
         code = str(m.get("code") or "").zfill(6)
         if code and tags & {"not_in_top_predictions", "pred_below_threshold", "weak_keyword_hits"}:
-            pos.add((t_iso, code))
+            if "same_day_catalyst" not in tags:
+                pos.add((t_iso, code))
     for m in pred_misses:
         tags = set(m.get("tags") or [])
         code = str(m.get("code") or "").zfill(6)

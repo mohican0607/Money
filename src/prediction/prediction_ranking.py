@@ -53,6 +53,23 @@ def prior_day_exhaustion_blocks_confidence(row: PredictionRow) -> bool:
     return lag + 1e-12 >= float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
 
 
+def prior_day_exhaustion_blocks_slate(row: PredictionRow) -> bool:
+    """전일 급등·상한가를 리포트 슬레이트에서 제외(직전 세션 추격 차단)."""
+    if not config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED:
+        return False
+    if not config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE:
+        return False
+    return prior_day_exhaustion_blocks_confidence(row)
+
+
+def drop_exhausted_slate_rows(rows: list[PredictionRow]) -> list[PredictionRow]:
+    """전일 과열 종목을 빼고 순위를 다시 매깁니다."""
+    kept = [r for r in rows if not prior_day_exhaustion_blocks_slate(r)]
+    for pos, row in enumerate(kept, start=1):
+        row.rank_position = pos
+    return kept
+
+
 def blocks_high_confidence(row: PredictionRow) -> bool:
     """
     고확신 전용 차단 — 중확신보다 엄격.
@@ -1525,6 +1542,8 @@ def _rerank_carryover_industry_leaders(
         ml = float(getattr(row, "ml_prob", 0.0) or 0.0)
         if ml + 1e-12 >= 0.09 and h + 1e-12 >= 0.25:
             boost += 0.05
+        if prior_day_exhaustion_blocks_slate(row):
+            return -1.0
         exh = prior_day_exhaustion_penalty(row)
         if exh > 0:
             boost *= max(0.12, 1.0 - 0.88 * exh)
@@ -2228,6 +2247,7 @@ def finalize_ranked_predictions(
         pool = _rerank_carryover_industry_leaders(
             pool, target_day=target_day, returns_ml=returns_ml
         )
+    pool = drop_exhausted_slate_rows(pool)
     pool = sorted(pool, key=rank_score_for_row, reverse=True)
     pool_size = len(pool)
     r_scale = regime_output_scale(ks11_ret_lag1)
@@ -2462,8 +2482,15 @@ def compute_hit_at_k_metrics(
     *,
     universe_size: int,
     k_list: tuple[int, ...] | None = None,
+    same_day_codes: set[str] | None = None,
+    slate_k: int | None = None,
 ) -> dict[str, Any]:
-    """순위 리스트 대비 Hit@K·Precision@K·Recall·Lift."""
+    """순위 리스트 대비 Hit@K·Precision@K·Recall·Lift.
+
+    ``slate_k`` 는 리포트에 실제로 올린 종목 수(기본 ``PRED_FORWARD_SHOW_MAX``).
+    ``same_day_codes`` 는 N일 뉴스 근거가 없는 당일 재료 추정(학습 복제 제외·참고 표시).
+    메인 Hit@슬레이트는 전체 20%↑ 기준을 유지합니다.
+    """
     ks = tuple(k_list or config.PRED_EVAL_HIT_AT_K)
     n_actual = len(actual_big_codes)
     base_rate = (n_actual / universe_size) if universe_size > 0 else 0.0
@@ -2488,6 +2515,16 @@ def compute_hit_at_k_metrics(
         else:
             out[f"lift_at_{k}"] = None
         best_k_hit = max(best_k_hit, hit)
+    sk = int(slate_k) if slate_k is not None else min(len(codes), int(config.PRED_FORWARD_SHOW_MAX))
+    sk = max(0, sk)
+    slate = codes[:sk] if sk else []
+    slate_hit = sum(1 for c in slate if c in actual)
+    out["slate_k"] = sk
+    out["hit_at_slate"] = int(slate_hit)
+    out["precision_at_slate"] = round(slate_hit / sk, 6) if sk else 0.0
+    same = {str(c).zfill(6) for c in (same_day_codes or set()) if str(c).strip()}
+    out["same_day_catalyst_count"] = int(len(same & actual))
+    out["predictable_big_count"] = int(len(actual - same))
     if n_actual > 0:
         out["recall_at_max_k"] = round(best_k_hit / n_actual, 6)
     else:

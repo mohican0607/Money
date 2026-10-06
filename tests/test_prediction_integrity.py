@@ -279,7 +279,9 @@ def test_prior_day_exhaustion_blocks_after_limit_up() -> None:
         confidence_tier="high",
     )
     assert prk.prior_day_exhaustion_blocks_confidence(row)
+    assert prk.prior_day_exhaustion_blocks_slate(row)
     assert prk.prior_day_exhaustion_penalty(row) >= 0.99
+    assert prk.drop_exhausted_slate_rows([row]) == []
 
 
 def test_theme_rotation_prefers_moderate_lag_in_hot_sector() -> None:

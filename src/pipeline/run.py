@@ -66,8 +66,10 @@ from .support import (
     _display_prediction_rows_for_freeze,
     _filter_frozen_items_to_listed,
     _freeze_entry_usable,
+    _freeze_is_stale_long_gap,
     _ignore_freeze_for_trading_day,
     _load_prediction_freeze_payload,
+    _price_model_inputs,
     _should_reuse_prediction_freeze,
     _prediction_rows_from_frozen_items,
     _prediction_rows_to_frozen_items,
@@ -498,6 +500,7 @@ def _run_pipeline(
                 freeze_payload[t_key] = listed_frozen
                 freeze_changed = True
                 frozen_items = listed_frozen
+        now_freeze = datetime.now(trading_calendar.KST)
         ignore_freeze_for_t = _ignore_freeze_for_trading_day(
             T,
             train_snapshot_mode=train_snapshot_mode,
@@ -507,6 +510,8 @@ def _run_pipeline(
         use_frozen = _should_reuse_prediction_freeze(
             ignore_freeze_for_trading_day=ignore_freeze_for_t,
             frozen_items=frozen_items,
+            observation_day=T,
+            now_kst=now_freeze,
         )
         if use_frozen:
             preds = _prediction_rows_from_frozen_items(frozen_items)
@@ -531,6 +536,19 @@ def _run_pipeline(
                         f"{scope_note}예측 고정 캐시 없음·신규 계산합니다.",
                         flush=True,
                     )
+            elif _freeze_is_stale_long_gap(
+                T, frozen_items or [], now_kst=now_freeze
+            ) and _freeze_entry_usable(frozen_items or []):
+                try:
+                    n_gap = trading_calendar.last_trading_day_before(T)
+                except ValueError:
+                    n_gap = T
+                gap = trading_calendar.session_gap_calendar_days(T)
+                print(
+                    f"관측일 T={t_key}: 연휴 갭 freeze 무시 "
+                    f"(N={n_gap}, {gap}일) — 재랭킹합니다.",
+                    flush=True,
+                )
             elif not _freeze_entry_usable(frozen_items or []):
                 print(
                     f"관측일 T={t_key}: 예측 고정 캐시 없음·신규 계산합니다.",
@@ -539,13 +557,19 @@ def _run_pipeline(
             if config.PRED_PRICE_MODEL_ENABLED:
                 from ..prediction import price_breakout_model
 
+                pm_returns, pm_partial, pm_note = _price_model_inputs(
+                    returns, T, codes, now_kst=now_freeze
+                )
                 report_slate = price_breakout_model.predict_top(
-                    returns,
+                    pm_returns,
                     T,
                     listing_codes=codes,
                     listing_names=names,
                     top_n=int(config.PRED_FORWARD_SHOW_MAX),
+                    partial_last_day=pm_partial,
+                    basis_note=pm_note,
                 )
+                report_slate = prediction_ranking.drop_exhausted_slate_rows(report_slate)
                 print(
                     f"관측일 T={t_key}: 가격·거래량 모델 슬레이트 "
                     + ", ".join(f"{r.name}({r.ml_prob:.0%})" for r in report_slate),
@@ -581,7 +605,15 @@ def _run_pipeline(
                 # 리포트·freeze = 확신 슬레이트만(보강 풀 전체를 표에 올리지 않음).
                 report_slate = _display_prediction_rows_for_freeze(preds)
             if config.PREDICTION_FREEZE_ENABLED:
-                freeze_payload[t_key] = _prediction_rows_to_frozen_items(report_slate)
+                try:
+                    n_for_t = trading_calendar.last_trading_day_before(T)
+                except ValueError:
+                    n_for_t = None
+                freeze_payload[t_key] = _prediction_rows_to_frozen_items(
+                    report_slate,
+                    n_date=n_for_t,
+                    saved_on=now_freeze.date(),
+                )
                 freeze_changed = True
             preds = report_slate
         scoring_ctx = predict.build_scoring_context(blob, train_events_t)
@@ -1084,15 +1116,6 @@ def _run_pipeline(
             )
 
         hit_at_k_metrics: dict | None = None
-        if not day_forward and preds:
-            actual_big_codes = {
-                str(m.get("code", "")).zfill(6) for m in actual_big_movers if m.get("code")
-            }
-            hit_at_k_metrics = prediction_ranking.compute_hit_at_k_metrics(
-                [pr.code for pr in preds],
-                actual_big_codes,
-                universe_size=len(codes),
-            )
 
         day_reports.append(
             report.DayReport(
@@ -1111,6 +1134,28 @@ def _run_pipeline(
             )
         )
         if not day_forward:
+            _dr = day_reports[-1]
+            if preds:
+                from ..learning import support as miss_diag
+
+                actual_big_codes = {
+                    str(m.get("code", "")).zfill(6)
+                    for m in actual_big_movers
+                    if m.get("code")
+                }
+                missed, _ = miss_diag.build_miss_rows_for_day(_dr)
+                same_day = {
+                    str(m.get("code") or "").zfill(6)
+                    for m in missed
+                    if "same_day_catalyst" in set(m.get("tags") or [])
+                }
+                _dr.hit_at_k_metrics = prediction_ranking.compute_hit_at_k_metrics(
+                    [pr.code for pr in preds],
+                    actual_big_codes,
+                    universe_size=len(codes),
+                    same_day_codes=same_day,
+                    slate_k=len(preds),
+                )
             _dr = day_reports[-1]
             prediction_accuracy_cache.merge_from_day_reports([_dr])
             prediction_accuracy_cache.merge_hit_at_k_from_day_reports([_dr])

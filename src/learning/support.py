@@ -554,6 +554,17 @@ def _tags_for_missed(
     if pred_row is None:
         tags.append("not_in_top_predictions")
         hints.append("당일 상위 예측 후보(top_n)에 포함되지 않음 — 키워드·종목명·ML 점수가 상위에 못 미침")
+        kws = row.get("keywords") or []
+        mention_row = 0.0
+        try:
+            mention_row = float(row.get("mention_score") or 0.0)
+        except (TypeError, ValueError):
+            mention_row = 0.0
+        if (not kws) and mention_row < 0.10:
+            tags.append("same_day_catalyst")
+            hints.append(
+                "N일 early 뉴스에 종목 근거가 거의 없음 — 당일 재료일 가능성. 학습 양성 복제에서 제외"
+            )
         return tags, hints, None, None
     try:
         pred_pct = float(getattr(pred_row, "predicted_return_pct", float("nan")))
@@ -852,7 +863,8 @@ def load_ml_boost_sets_from_snapshot(path: Any | None = None) -> tuple[set[tuple
             if not code:
                 continue
             if tags & {"not_in_top_predictions", "pred_below_threshold"}:
-                pos.add((t_iso[:10], code))
+                if "same_day_catalyst" not in tags:
+                    pos.add((t_iso[:10], code))
         for m in drow.get("pred_high_misses_today") or []:
             if not isinstance(m, dict):
                 continue

@@ -1310,6 +1310,7 @@ def _reconcile_closed_day_report(
             [p.code for p in dr.predictions],
             actual_big_codes,
             universe_size=universe_size,
+            slate_k=len(dr.predictions),
         )
 
     dr.pred_accuracy_summary = _compute_day_pred_accuracy_summary(

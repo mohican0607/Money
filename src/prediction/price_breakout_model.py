@@ -152,6 +152,17 @@ def _true_prob(p: np.ndarray) -> np.ndarray:
     return odds / (1.0 + odds)
 
 
+def with_intraday_session(
+    returns: pd.DataFrame, session_day: date, snapshot: pd.DataFrame
+) -> pd.DataFrame:
+    """일봉 표에 ``session_day`` 장중 스냅샷 봉을 덧붙인 사본(``return_pct`` = 스냅샷 등락률)."""
+    snap = snapshot.copy()
+    snap["Date"] = pd.Timestamp(session_day)
+    snap["return_pct"] = pd.to_numeric(snap["Change"], errors="coerce")
+    base = returns[pd.to_datetime(returns["Date"]).dt.normalize() < pd.Timestamp(session_day)]
+    return pd.concat([base, snap[[c for c in snap.columns if c in base.columns or c == "return_pct"]]], ignore_index=True)
+
+
 def predict_top(
     returns: pd.DataFrame,
     target_day: date,
@@ -159,8 +170,13 @@ def predict_top(
     listing_codes: list[str] | set[str] | None,
     listing_names: dict[str, str],
     top_n: int,
+    partial_last_day: bool = False,
+    basis_note: str = "",
 ) -> list[PredictionRow]:
-    """관측일 ``target_day`` 의 상위 ``top_n`` 종목(직전 거래일 종가까지 정보만 사용)."""
+    """관측일 ``target_day`` 의 상위 ``top_n`` 종목(직전 거래일 종가까지 정보만 사용).
+
+    ``partial_last_day``: 마지막 날이 장중 스냅샷이면 그날 등락을 학습 라벨로 쓰지 않는다.
+    """
     raw = build_raw_features(returns)
     T = pd.Timestamp(target_day)
     hist = raw[raw["Date"] < T]
@@ -172,7 +188,7 @@ def predict_top(
         clf, reg = hit[2], hit[3]
     else:
         pairs = _training_pairs(raw)
-        before = asof + pd.Timedelta(days=1)
+        before = asof if partial_last_day else asof + pd.Timedelta(days=1)
         clf = _fit(pairs, before=before)
         if clf is None:
             return []
@@ -189,7 +205,35 @@ def predict_top(
     X = cur[FEATURE_COLS].to_numpy(dtype=float)
     p = _true_prob(clf.predict_proba(X)[:, 1])
     er = np.clip(reg.predict(X), -0.30, 0.30)
-    cur = cur.assign(prob=p, exp_ret=er).sort_values("prob", ascending=False).head(int(top_n))
+    cur = cur.assign(prob=p, exp_ret=er)
+    block = float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
+    if config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED and config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE:
+        cur = cur[(cur["r1"] + 1e-12 < block) & (cur["limit_up"] < 1)]
+    if cur.empty:
+        return []
+    rot_w = float(config.PRED_THEME_ROTATION_RANK_BOOST)
+    lag_min = float(config.PRED_THEME_ROTATION_LAG_MIN)
+    lag_max = float(config.PRED_THEME_ROTATION_LAG_MAX)
+
+    def _rank_val(r1: float, prob: float, ind_big: float, share: float) -> float:
+        bonus = 0.0
+        if lag_min - 1e-12 <= r1 < min(lag_max, block) and ind_big >= 1:
+            bonus = 0.08 * rot_w + 0.12 * min(1.0, share / 0.08)
+        return prob + bonus
+
+    cur = cur.copy()
+    cur["_rank"] = [
+        _rank_val(
+            float(r1 or 0.0),
+            float(pr or 0.0),
+            float(ib or 0.0),
+            float(sh or 0.0),
+        )
+        for r1, pr, ib, sh in zip(
+            cur["r1"], cur["prob"], cur["ind_big"], cur["ind_big_share"]
+        )
+    ]
+    cur = cur.sort_values("_rank", ascending=False).head(int(top_n))
 
     rows: list[PredictionRow] = []
     for pos, r in enumerate(cur.itertuples(), start=1):
@@ -201,6 +245,7 @@ def predict_top(
             f"전일 {float(r.r1) * 100:+.1f}% · "
             f"거래량 20일 평균의 {vol_x:.1f}배 · 같은 업종 전일 20%↑ {int(r.ind_big or 0)}종 "
             f"(과거 281거래일 검증 상위 5종 적중률 약 20%. 종가 기준 적중이며 시가 매수 시 평균 손실)"
+            + (f" · {basis_note}" if basis_note else "")
         )
         row = PredictionRow(
             code=str(r.Code).zfill(6),

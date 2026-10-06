@@ -34,6 +34,21 @@ def is_trading_day(d: date) -> bool:
     return bool(_CAL.is_session(ts))
 
 
+def session_gap_calendar_days(observation_day: date) -> int:
+    """관측일 T와 직전 거래일 N 사이 캘린더 일수(``T - N``). 금→월=3, 목→화=4."""
+    try:
+        n_day = last_trading_day_before(observation_day)
+    except ValueError:
+        return 0
+    return int((observation_day - n_day).days)
+
+
+def is_long_session_gap(observation_day: date, *, min_gap_days: int | None = None) -> bool:
+    """연휴 등으로 직전 세션과 T 사이가 주말보다 길면 True."""
+    floor = int(min_gap_days or config.PRED_FREEZE_REFRESH_MIN_GAP_DAYS)
+    return session_gap_calendar_days(observation_day) >= floor
+
+
 def last_trading_day_before(day_n: date) -> date:
     """
     캘린더 일자 ``day_n`` **시점 이전**의 마지막 거래일을 반환합니다(당일 장은 포함하지 않음).

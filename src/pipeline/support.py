@@ -232,15 +232,55 @@ def effective_train_snapshot_cal_scope(
     return (closed_days[0], closed_days[-1])
 
 
+def _freeze_saved_on_date(items: list[dict]) -> date | None:
+    """freeze 항목에 기록된 저장일. 없으면 None(구 캐시는 연휴 갭 때 재계산)."""
+    for x in items:
+        if not isinstance(x, dict) or x.get(_EMPTY_SLATE_KEY):
+            continue
+        raw = str(x.get("saved_on") or "").strip()[:10]
+        if len(raw) == 10:
+            try:
+                return date.fromisoformat(raw)
+            except ValueError:
+                return None
+        break
+    return None
+
+
+def _freeze_is_stale_long_gap(
+    observation_day: date,
+    items: list[dict] | None,
+    *,
+    now_kst: datetime | None = None,
+) -> bool:
+    """연휴 갭 freeze를 관측일 T 당일에 다시 계산할지."""
+    if not config.PRED_FREEZE_REFRESH_LONG_GAP:
+        return False
+    if not items:
+        return False
+    if not trading_calendar.is_long_session_gap(observation_day):
+        return False
+    now = now_kst or datetime.now(trading_calendar.KST)
+    if now.date() < observation_day:
+        return False
+    saved = _freeze_saved_on_date(items)
+    if saved is None:
+        return now.date() >= observation_day
+    return saved < observation_day
+
+
 def _should_reuse_prediction_freeze(
     *,
     ignore_freeze_for_trading_day: bool,
     frozen_items: list[dict] | None,
+    observation_day: date | None = None,
+    now_kst: datetime | None = None,
 ) -> bool:
     """
     14:30에 확정·저장된 예측 후보를 다시 계산하지 않고 재사용할지.
 
     장 마감 후(``day_forward=False``)에도 freeze 가 있으면 True — actual·테마만 갱신합니다.
+    연휴 갭(직전 세션과 T 사이 4일+)이고 저장일이 T 이전이면 T 당일 재랭킹합니다.
     """
     if not config.PREDICTION_FREEZE_ENABLED:
         return False
@@ -248,7 +288,13 @@ def _should_reuse_prediction_freeze(
         return False
     if not isinstance(frozen_items, list):
         return False
-    return _freeze_entry_usable(frozen_items)
+    if not _freeze_entry_usable(frozen_items):
+        return False
+    if observation_day is not None and _freeze_is_stale_long_gap(
+        observation_day, frozen_items, now_kst=now_kst
+    ):
+        return False
+    return True
 
 
 def _ignore_freeze_for_trading_day(
@@ -367,6 +413,7 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
                     investor_flow_score=float(x.get("investor_flow_score", 0.0) or 0.0),
                     foreign_net_vol_ratio=float(x.get("foreign_net_vol_ratio", 0.0) or 0.0),
                     pred_source=str(x.get("pred_source") or ""),
+                    ret_lag1=float(x.get("ret_lag1", 0.0) or 0.0),
                 )
             )
         except (TypeError, ValueError):
@@ -388,6 +435,9 @@ def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> li
         for r in rows
         if not prediction_ranking.is_report_noise_ticker(r)
     ]
+    if not pool:
+        return []
+    pool = prediction_ranking.drop_exhausted_slate_rows(pool)
     if not pool:
         return []
 
@@ -463,13 +513,20 @@ def _display_prediction_rows_for_freeze(rows: list[predict.PredictionRow]) -> li
     return selected
 
 
-def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[dict]:
+def _prediction_rows_to_frozen_items(
+    rows: list[predict.PredictionRow],
+    *,
+    n_date: date | None = None,
+    saved_on: date | None = None,
+) -> list[dict]:
     """``PredictionRow`` 리스트를 고정 캐시 JSON에 넣을 dict 목록으로 직렬화합니다.
 
     후보가 없으면 빈 목록(빈 slate 마커로 잠그지 않음 — 다음 실행이 재계산).
     """
     if not rows:
         return []
+    n_s = n_date.isoformat() if n_date is not None else None
+    s_s = (saved_on or datetime.now(trading_calendar.KST).date()).isoformat()
     return [
         {
             "code": str(r.code).zfill(6),
@@ -504,11 +561,88 @@ def _prediction_rows_to_frozen_items(rows: list[predict.PredictionRow]) -> list[
             "investor_flow_score": float(getattr(r, "investor_flow_score", 0.0) or 0.0),
             "foreign_net_vol_ratio": float(getattr(r, "foreign_net_vol_ratio", 0.0) or 0.0),
             "pred_source": str(getattr(r, "pred_source", "") or ""),
+            "ret_lag1": float(getattr(r, "ret_lag1", 0.0) or 0.0),
+            "n_date": n_s,
+            "saved_on": s_s,
         }
         for r in rows
     ]
 
 # --- scheduling (from scheduling.py) ---
+
+_INTRADAY_SNAPSHOT_MIN_COVERAGE = 0.7
+
+
+def _price_model_inputs(
+    returns: Any,
+    target_day: date,
+    codes: Sequence[str] | None,
+    *,
+    now_kst: datetime | None = None,
+    fetch_snapshot: Any = None,
+) -> tuple[Any, bool, str]:
+    """
+    가격 모델 입력 일봉 표와 (장중 스냅샷 여부, 근거 문구).
+
+    장중에는 당일(N) 일봉을 받지 않으므로 그대로 쓰면 T=N+1 예측이 N-1 종가 기준이 되어
+    전날 슬레이트를 반복한다. N 이 오늘이고 개장 후면 네이버 실시간 시세로 N 봉을 채운다.
+    """
+    import pandas as pd
+
+    from src import stocks
+    from src.prediction import price_breakout_model
+
+    n_day = trading_calendar.last_trading_day_before(target_day)
+    last = pd.to_datetime(returns["Date"]).max().date()
+    now = now_kst or datetime.now(trading_calendar.KST)
+    universe = sorted({str(c).zfill(6) for c in (codes or [])}) or sorted(
+        set(returns.loc[pd.to_datetime(returns["Date"]).dt.date == last, "Code"].astype(str).str.zfill(6))
+    )
+    fetch = fetch_snapshot or stocks.try_naver_realtime_ohlcv_by_codes
+
+    # 연휴 갭: 관측일 T 장중에 T 실시간 봉으로 재랭킹(전 세션 슬레이트 반복 방지)
+    if (
+        config.PRED_FREEZE_REFRESH_LONG_GAP
+        and trading_calendar.is_long_session_gap(target_day)
+        and now.date() == target_day
+        and not trading_calendar.is_before_krx_regular_open_kst(target_day, now_kst=now)
+        and not trading_calendar.is_krx_daily_bar_effective_closed(target_day, now_kst=now)
+        and universe
+    ):
+        snap = fetch(universe)
+        min_n = max(1, int(len(universe) * _INTRADAY_SNAPSHOT_MIN_COVERAGE))
+        if snap is not None and len(snap) >= min_n:
+            print(
+                f"가격 모델: 연휴 갭 T={target_day} {now:%H:%M} 장중 시세 {len(snap)}종으로 재랭킹합니다.",
+                flush=True,
+            )
+            return (
+                price_breakout_model.with_intraday_session(returns, target_day, snap),
+                True,
+                f"{target_day:%m/%d} {now:%H:%M} 장중 시세 기준(연휴 갭 재랭킹, 거래량은 그 시점 누적)",
+            )
+
+    if last >= n_day:
+        return returns, False, ""
+    stale_note = f"{last:%m/%d} 종가 기준(직전 거래일 {n_day:%m/%d} 시세 없음)"
+    if n_day != now.date() or trading_calendar.is_before_krx_regular_open_kst(n_day, now_kst=now):
+        print(f"가격 모델: 직전 거래일 {n_day} 일봉 없음 — {last} 종가 기준으로 예측합니다.", flush=True)
+        return returns, False, stale_note
+    snap = fetch(universe)
+    if snap is None or len(snap) < len(universe) * _INTRADAY_SNAPSHOT_MIN_COVERAGE:
+        got = 0 if snap is None else len(snap)
+        print(
+            f"가격 모델: {n_day} 장중 시세 {got}/{len(universe)}종만 조회 — {last} 종가 기준으로 예측합니다.",
+            flush=True,
+        )
+        return returns, False, stale_note
+    print(f"가격 모델: {n_day} {now:%H:%M} 장중 시세 {len(snap)}종으로 당일 봉을 채워 예측합니다.", flush=True)
+    return (
+        price_breakout_model.with_intraday_session(returns, n_day, snap),
+        True,
+        f"{n_day:%m/%d} {now:%H:%M} 장중 시세 기준(거래량은 그 시점 누적)",
+    )
+
 
 def _resolve_pipeline_ohlcv_end(
     end_date: date,

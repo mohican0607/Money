@@ -1167,6 +1167,66 @@ def try_naver_realtime_fluctuations_pct_by_codes(codes: list[str]) -> dict[str, 
     return out
 
 
+def _naver_num(v: Any) -> float:
+    try:
+        return float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def try_naver_realtime_ohlcv_by_codes(codes: list[str]) -> pd.DataFrame:
+    """
+    네이버 실시간 polling API로 당일 진행 중인 봉(시가·고가·저가·현재가·누적 거래량)을 조회합니다.
+
+    장중에는 현재가가 ``Close``, 거래량은 조회 시점까지의 누적입니다.
+    반환 컬럼: ``Code, Name, Open, High, Low, Close, Volume, Change``(소수 등락률).
+    """
+    cols = ["Code", "Name", "Open", "High", "Low", "Close", "Volume", "Change"]
+    uniq = sorted({str(c).zfill(6) for c in codes if str(c).strip()})
+    if not uniq:
+        return pd.DataFrame(columns=cols)
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+    }
+    base = "https://polling.finance.naver.com/api/realtime/domestic/stock/"
+    rows: list[dict[str, Any]] = []
+    for i in range(0, len(uniq), _NAVER_POLL_CHUNK):
+        chunk = uniq[i : i + _NAVER_POLL_CHUNK]
+        try:
+            resp = requests.get(base + ",".join(chunk), headers=headers, timeout=12)
+            resp.raise_for_status()
+            datas = resp.json().get("datas")
+        except Exception:
+            continue
+        if not isinstance(datas, list):
+            continue
+        for it in datas:
+            if not isinstance(it, dict):
+                continue
+            code = str(it.get("itemCode") or "").zfill(6)
+            if len(code) != 6:
+                continue
+            close = _naver_num(it.get("closePrice"))
+            ratio = _naver_num(it.get("fluctuationsRatioRaw", it.get("fluctuationsRatio")))
+            if not (math.isfinite(close) and close > 0 and math.isfinite(ratio)):
+                continue
+            rows.append(
+                {
+                    "Code": code,
+                    "Name": str(it.get("stockName") or ""),
+                    "Open": _naver_num(it.get("openPrice")),
+                    "High": _naver_num(it.get("highPrice")),
+                    "Low": _naver_num(it.get("lowPrice")),
+                    "Close": close,
+                    "Volume": _naver_num(it.get("accumulatedTradingVolume")),
+                    "Change": ratio / 100.0,
+                }
+            )
+    return pd.DataFrame(rows, columns=cols)
+
+
 def best_effort_intraday_pct_by_code(
     trading_day: date,
     codes: list[str],

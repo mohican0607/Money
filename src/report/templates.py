@@ -1497,9 +1497,18 @@ __ACTUAL_RET_CELL_MACRO__
 {% macro hit_at_k_panel(d, meta) -%}
 {% if d.hit_at_k_metrics and not (d.forward_observation | default(false)) %}
 <div class="hit-at-k-panel" style="margin:8px 0 14px;padding:10px 12px;background:#1a2433;border:1px solid #334;border-radius:8px;font-size:0.88rem">
-  <strong style="color:var(--ok)">순위 평가 Hit@K</strong>
-  <span class="sub" style="margin-left:8px">실제 {{ meta.threshold }} {{ d.hit_at_k_metrics.actual_big_count }}종 · 무작위 대비 lift</span>
+  <strong style="color:var(--ok)">슬레이트 평가 Hit@K</strong>
+  <span class="sub" style="margin-left:8px">실제 {{ meta.threshold }} {{ d.hit_at_k_metrics.actual_big_count }}종
+    {% if d.hit_at_k_metrics.same_day_catalyst_count | default(0) %}
+    · 당일 재료 추정 {{ d.hit_at_k_metrics.same_day_catalyst_count }}종(학습 복제 제외)
+    {% endif %}
+    · 무작위 대비 lift</span>
   <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:8px">
+    {% if d.hit_at_k_metrics.slate_k is defined %}
+    <span class="pill">표 {{ d.hit_at_k_metrics.slate_k }}종: {{ d.hit_at_k_metrics.hit_at_slate }}/{{ d.hit_at_k_metrics.slate_k }}
+      {% if d.hit_at_k_metrics.precision_at_slate is not none %} ({{ "%.0f"|format(d.hit_at_k_metrics.precision_at_slate * 100) }}%){% endif %}
+    </span>
+    {% endif %}
     {% for k in [5,10,20,40] %}
     {% if d.hit_at_k_metrics['hit_at_' ~ k] is defined %}
     <span class="pill">@{{ k }}: {{ d.hit_at_k_metrics['hit_at_' ~ k] }}/{{ k }}
@@ -2180,9 +2189,18 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 {% macro hit_at_k_panel(d, meta) -%}
 {% if d.hit_at_k_metrics and not (d.forward_observation | default(false)) %}
 <div class="hit-at-k-panel" style="margin:8px 0 14px;padding:10px 12px;background:#1a2433;border:1px solid #334;border-radius:8px;font-size:0.88rem">
-  <strong style="color:var(--ok)">순위 평가 Hit@K</strong>
-  <span class="sub" style="margin-left:8px">실제 {{ meta.threshold }} {{ d.hit_at_k_metrics.actual_big_count }}종 · 무작위 대비 lift</span>
+  <strong style="color:var(--ok)">슬레이트 평가 Hit@K</strong>
+  <span class="sub" style="margin-left:8px">실제 {{ meta.threshold }} {{ d.hit_at_k_metrics.actual_big_count }}종
+    {% if d.hit_at_k_metrics.same_day_catalyst_count | default(0) %}
+    · 당일 재료 추정 {{ d.hit_at_k_metrics.same_day_catalyst_count }}종(학습 복제 제외)
+    {% endif %}
+    · 무작위 대비 lift</span>
   <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:8px">
+    {% if d.hit_at_k_metrics.slate_k is defined %}
+    <span class="pill">표 {{ d.hit_at_k_metrics.slate_k }}종: {{ d.hit_at_k_metrics.hit_at_slate }}/{{ d.hit_at_k_metrics.slate_k }}
+      {% if d.hit_at_k_metrics.precision_at_slate is not none %} ({{ "%.0f"|format(d.hit_at_k_metrics.precision_at_slate * 100) }}%){% endif %}
+    </span>
+    {% endif %}
     {% for k in [5,10,20,40] %}
     {% if d.hit_at_k_metrics['hit_at_' ~ k] is defined %}
     <span class="pill">@{{ k }}: {{ d.hit_at_k_metrics['hit_at_' ~ k] }}/{{ k }}

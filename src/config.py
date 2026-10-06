@@ -230,7 +230,7 @@ THEME_CARRYOVER_SCORE_SCALE = _float_env("THEME_CARRYOVER_SCORE_SCALE", 3.0)
 PRED_RETURN_MIN = _float_env("PRED_RETURN_MIN", 0.20)
 PRED_RETURN_MAX = _float_env("PRED_RETURN_MAX", 0.30)
 # 예측 고정 캐시(JSON) 표시 매핑 스키마. 로직 변경 시 숫자를 올리면 재계산됩니다.
-PREDICTION_FREEZE_SCHEMA_VERSION = 72
+PREDICTION_FREEZE_SCHEMA_VERSION = 73
 
 # --- 다요인(멀티팩터) 랭킹 가중치 (합≈1): 섹터·수급·로테이션 친화 ---
 PRED_FACTOR_W_ML = _float_env("PRED_FACTOR_W_ML", 0.20)
@@ -262,7 +262,7 @@ PRED_THEME_ROTATION_ENABLED = os.getenv("PRED_THEME_ROTATION_ENABLED", "1").stri
 )
 PRED_THEME_ROTATION_LAG_MIN = _float_env("PRED_THEME_ROTATION_LAG_MIN", 0.015)
 PRED_THEME_ROTATION_LAG_MAX = _float_env("PRED_THEME_ROTATION_LAG_MAX", 0.16)
-PRED_THEME_ROTATION_RANK_BOOST = _float_env("PRED_THEME_ROTATION_RANK_BOOST", 0.32)
+PRED_THEME_ROTATION_RANK_BOOST = _float_env("PRED_THEME_ROTATION_RANK_BOOST", 0.40)
 PRED_THEME_ROTATION_TIER_MIN = _float_env("PRED_THEME_ROTATION_TIER_MIN", 0.28)
 PRED_THEME_ROTATION_ENRICH_MAX = _positive_int_env("PRED_THEME_ROTATION_ENRICH_MAX", 64)
 PRED_THEME_ROTATION_SEC_MIN = _float_env("PRED_THEME_ROTATION_SEC_MIN", 0.10)
@@ -395,6 +395,17 @@ PRED_PRIOR_DAY_EXHAUSTION_WARN_RET = _float_env("PRED_PRIOR_DAY_EXHAUSTION_WARN_
 PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET = _float_env(
     "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET", 0.18
 )
+# 전일 급등·상한가를 고확신만이 아니라 리포트 슬레이트에서 제외(추격 차단)
+PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE = os.getenv(
+    "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+# 주말만(금→월=3일)은 유지. 연휴 갭(T-N>=4, 예: 목→화)이면 T 당일 freeze 재계산
+PRED_FREEZE_REFRESH_LONG_GAP = os.getenv(
+    "PRED_FREEZE_REFRESH_LONG_GAP", "1"
+).strip().lower() in ("1", "true", "yes", "on")
+PRED_FREEZE_REFRESH_MIN_GAP_DAYS = _positive_int_env(
+    "PRED_FREEZE_REFRESH_MIN_GAP_DAYS", 4
+)
 # 전일 업종 급등 테마 캐리오버 리랭크 (연속 테마일만 켜기)
 PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED = os.getenv(
     "PRED_CARRYOVER_INDUSTRY_RERANK_ENABLED", "0"
@@ -517,7 +528,7 @@ ML_USE_NEWS_CONTEXT_FEATURES = os.getenv(
     "ML_USE_NEWS_CONTEXT_FEATURES", "0"
 ).strip().lower() in ("1", "true", "yes", "on")
 ML_MISS_BOOST_MAX_KEYS = _positive_int_env("ML_MISS_BOOST_MAX_KEYS", 320)
-ML_MISS_BOOST_DUP = _positive_int_env("ML_MISS_BOOST_DUP", 2)
+ML_MISS_BOOST_DUP = _non_negative_int_env("ML_MISS_BOOST_DUP", 1)
 ML_MISS_BOOST_MAX_KEYS_FAST = _positive_int_env("ML_MISS_BOOST_MAX_KEYS_FAST", 48)
 ML_MISS_BOOST_DUP_FAST = _positive_int_env("ML_MISS_BOOST_DUP_FAST", 0)
 # 파이프라인 기본: 전체 학습(정확도). 속도가 필요하면 환경변수로 1.
