@@ -40,7 +40,7 @@ def _monthly_report_paths_for_po(po: PipelineOut) -> list[Path]:
             months.add((y, m + 1))
     paths: list[Path] = []
     for y, m in sorted(months):
-        p = config.OUTPUT_DIR / f"report_{y}.{m:02d}.html"
+        p = config.output_essential_dir() / f"report_{y}.{m:02d}.html"
         if p.is_file():
             paths.append(p)
     return paths
@@ -138,7 +138,7 @@ def _render_monthly_batch(
     merge_existing_monthly_days: bool = True,
 ) -> list[Path]:
     """
-    ``PipelineOut.day_reports`` 를 달력 **월** 단위로 나눠 ``report_YYYY.MM.html`` 을 쓰고,
+    ``PipelineOut.day_reports`` 를 달력 **월** 단위로 나눠 ``essential/report_YYYY.MM.html`` 을 쓰고,
     ``report_index_monthly.html`` 목차를 갱신합니다.
 
     ``merge_existing_monthly_days`` 가 True이면 해당 월 HTML이 이미 있을 때
@@ -199,7 +199,7 @@ def _render_monthly_batch(
         y, m = ym
         now_kst = datetime.now(trading_calendar.KST)
         fname = f"report_{y}.{m:02d}.html"
-        out_month = config.OUTPUT_DIR / fname
+        out_month = config.output_essential_dir() / fname
         preserved_day_html: dict[date, str] = {}
         if merge_existing_monthly_days and out_month.is_file():
             existing_sections = report.extract_monthly_report_day_sections(out_month)
@@ -314,7 +314,7 @@ def _render_monthly_batch(
         print(f"완료: {out_month}")
 
         theme_fname = theme_strong_mover_report.theme_report_filename_for_month(y, m)
-        theme_path = config.OUTPUT_DIR / theme_fname
+        theme_path = config.output_essential_dir() / theme_fname
         theme_preserved: dict[date, str] = {}
         if merge_existing_monthly_days:
             update_theme_days = {

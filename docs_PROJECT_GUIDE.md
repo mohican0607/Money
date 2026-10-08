@@ -253,7 +253,8 @@ ML 재학습 시 `snapshot_miss_diagnosis` 가 이 진단을 읽어 **어려운 
 - **OHLCV**: `data/cache/ohlcv_long_full.parquet`
 - **상장**: `data/cache/krx_listing.parquet`
 - **뉴스**: `data/cache/news/.../day_YYYYMMDD.json`
-- **리포트**: `output/report_YYYY.MM.html`, `report_index_monthly.html`, `report_dated_by_n.html`
+- **리포트(삭제 금지 원본)**: `output/essential/report_YYYY.MM.html`, `output/essential/report_theme_20pct_YYYY.MM.html` — 다음 실행이 기존 일자 블록을 읽어 병합하므로 지우면 복구 불가
+- **리포트(재생성·삭제 가능)**: `output/report_index_monthly.html`, `output/report_theme_flow*.html`, `output/report_dated_by_*.html`, `output/report_YYYY.MMDD-1430|1530.html`(슬롯 스냅샷), `output/live_quotes*`
 
 ### 7.1 OHLCV란?
 

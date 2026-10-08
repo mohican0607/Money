@@ -5,7 +5,7 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
 
   python main.py
     → 오늘이 거래일 N일 때, N+1 거래일(T) 급등 후보.
-      output/report_dated_by_MMDD.html 및 report_YYYY.MM.html(해당 월) 갱신(표는 예측 후보만)
+      output/report_dated_by_MMDD.html 및 essential/report_YYYY.MM.html(해당 월) 갱신(표는 예측 후보만)
     → 거래일 14:30·15:30·16:00 자동 실행: scripts/run_daily_1430_email.ps1,
       scripts/run_daily_1530_email.ps1, scripts/run_daily_1600_append.ps1
       (등록 예: scripts/register_daily_email_tasks.ps1)
@@ -28,7 +28,7 @@ KOSPI·KOSDAQ 뉴스–급등 상관 및 익일 후보 리포트.
 
   python main.py --weekly
     → config REPORT_TEST_DAY_START~END 구간을 달력 월 단위로 묶어
-      output/report_YYYY.MM.html (주간 ISO 탭, 탭 안 일자 위→아래) 및 report_index_monthly.html
+      output/essential/report_YYYY.MM.html (주간 ISO 탭, 탭 안 일자 위→아래) 및 output/report_index_monthly.html
 
 뉴스: .env 에 NAVER_CLIENT_ID/SECRET 있으면 네이버 API, 없으면 기본 Google News RSS(키 불필요, USE_GOOGLE_NEWS_RSS_FALLBACK=0 으로 끔).
 테스트: MOCK_NEWS=1
@@ -68,7 +68,7 @@ def _guard_no_report_expand_would_shrink(test_days: list[date]) -> None:
             (f"report_theme_20pct_{y}.{m:02d}.html", "테마"),
             (f"report_theme_25pct_{y}.{m:02d}.html", "테마(구)"),
         ):
-            path = config.OUTPUT_DIR / fname
+            path = config.output_essential_dir() / fname
             if not path.is_file():
                 continue
             existing = parse_monthly_report_trading_days(path)

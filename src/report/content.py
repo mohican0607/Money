@@ -43,8 +43,8 @@ def legacy_theme_report_filename_for_month(year: int, month: int) -> str:
 def theme_report_source_paths_for_month(
     year: int, month: int, *, output_dir: Path | None = None
 ) -> list[Path]:
-    """해당 월 테마 리포트를 읽을 경로(신규 → 구 파일명 순, 존재하는 것만)."""
-    root = output_dir or config.OUTPUT_DIR
+    """해당 월 테마 리포트를 읽을 경로(``essential`` 안, 신규 → 구 파일명 순, 존재하는 것만)."""
+    root = config.output_essential_dir(output_dir)
     paths: list[Path] = []
     for fname in (
         theme_report_filename_for_month(year, month),

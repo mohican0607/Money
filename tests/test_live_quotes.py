@@ -88,6 +88,33 @@ def test_premarket_all_zero_does_not_overwrite_js(tmp_path: Path, monkeypatch) -
     assert "1.5" in js_path(out).read_text(encoding="utf-8")
 
 
+def test_live_quotes_js_mirrored_into_essential(tmp_path: Path, monkeypatch) -> None:
+    from src.report.live_quotes import (
+        collect_stock_codes_from_output_reports,
+        ensure_live_quotes_for_report,
+    )
+
+    out = tmp_path / "output"
+    essential = out / "essential"
+    essential.mkdir(parents=True)
+    (essential / "report_2026.10.html").write_text(
+        '<span data-stock-code="011080"></span>', encoding="utf-8"
+    )
+    assert collect_stock_codes_from_output_reports(out) == ["011080"]
+
+    write_live_quotes_js(out, {"005930": 2.5})
+    assert "2.5" in js_path(essential).read_text(encoding="utf-8")
+
+    js_path(essential).unlink()
+    monkeypatch.setattr(
+        "src.report.live_quotes._fetch_quotes", lambda codes: {"005930": 0.0}
+    )
+    monkeypatch.setattr("src.report.live_quotes._ensure_daemon_process", lambda *a, **k: None)
+    ensure_live_quotes_for_report(out, ["005930"])
+    assert "2.5" in js_path(out).read_text(encoding="utf-8")
+    assert js_path(essential).is_file()
+
+
 def test_run_if_needed_skips_when_healthy(monkeypatch) -> None:
     from src.report import live_quotes
 

@@ -268,7 +268,7 @@ def _expected_dated_report_path(t_day: date) -> Path:
 def _expected_monthly_report_path(t_day: date) -> Path:
     from src import config
 
-    return config.OUTPUT_DIR / f"report_{t_day.year}.{t_day.month:02d}.html"
+    return config.output_essential_dir() / f"report_{t_day.year}.{t_day.month:02d}.html"
 
 
 def _slot_report_snapshot_path(run_day: date, slot: str) -> Path | None:

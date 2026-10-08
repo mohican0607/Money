@@ -104,7 +104,9 @@ def test_ensure_env_defaults_slot_supplement_flag(monkeypatch) -> None:
     _ensure_env_defaults(slot="1630")
     assert os.environ["PIPELINE_AUTO_SUPPLEMENT_STALE_FORWARD"] == "1"
     t = date(2026, 8, 7)
-    assert _expected_monthly_report_path(t).name == "report_2026.08.html"
+    p = _expected_monthly_report_path(t)
+    assert p.name == "report_2026.08.html"
+    assert p.parent.name == "essential"
 
 
 def test_expected_dated_report_path() -> None:

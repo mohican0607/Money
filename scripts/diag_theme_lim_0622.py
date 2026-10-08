@@ -20,7 +20,7 @@ ret = stocks.daily_returns_table(ohlcv)
 day = ret[ret["Date"] == pd.Timestamp(T)]
 lim = {str(r.Code).zfill(6): str(r.Name) for _, r in day[day["return_pct"] >= _LIMIT_UP_RET_DECIMAL].iterrows()}
 
-th = (ROOT / "output/report_theme_25pct_2026.06.html").read_text(encoding="utf-8")
+th = (ROOT / "output/essential/report_theme_20pct_2026.06.html").read_text(encoding="utf-8")
 # find day section
 m = re.search(r"<section[^>]*data-trading-day=\"2026-06-22\".*?</section>", th, re.S)
 if not m:

@@ -155,6 +155,15 @@ LISTING_META_CACHE_DIR = _resolve_listing_cache_dir()
 TRAIN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 LISTING_META_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR = ROOT / "output"
+# 월간 리포트·월간 테마 리포트: 다음 실행이 기존 일자 블록을 읽어 병합하는 원본이라 지우면 복구 불가.
+OUTPUT_ESSENTIAL_DIRNAME = "essential"
+
+
+def output_essential_dir(output_dir: Path | None = None) -> Path:
+    """삭제 금지 원본 HTML 폴더 (``output/essential``)."""
+    return Path(output_dir or OUTPUT_DIR) / OUTPUT_ESSENTIAL_DIRNAME
+
+
 # ``python main.py YYYYMMDD`` / 일일 N 실행 시 기준일별 블록을 한 파일에 누적·같은 N 재실행 시 해당 블록만 갱신.
 REPORT_DATED_ROLLUP_HTML = OUTPUT_DIR / "report_dated_by_n.html"
 # 과거 급등–뉴스 ``BreakoutEvent`` 학습 스냅샷(JSON). ``main.py`` 기본이 로드·증분 병합, ``--no-train-snapshot`` 로 끔.

@@ -1,4 +1,4 @@
-"""캐시 OHLCV·뉴스만으로 ``report_theme_20pct_YYYY.MM.html`` 을 재생성(예측 생략)."""
+"""캐시 OHLCV·뉴스만으로 ``essential/report_theme_20pct_YYYY.MM.html`` 을 재생성(예측 생략)."""
 from __future__ import annotations
 
 import argparse
@@ -75,7 +75,7 @@ def main() -> int:
         f"{config.NEWS_CUTOFF_KST_HOUR:02d}:{config.NEWS_CUTOFF_KST_MINUTE:02d}"
     )
     thr = theme_report.theme_report_threshold_pct()
-    out = config.OUTPUT_DIR / theme_report.theme_report_filename_for_month(y, m)
+    out = config.output_essential_dir() / theme_report.theme_report_filename_for_month(y, m)
     path = theme_report.render_strong_mover_theme_report(
         out,
         day_reports=day_reports,

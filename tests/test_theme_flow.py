@@ -17,6 +17,17 @@ def test_theme_flow_range_filename() -> None:
     )
 
 
+def test_discover_theme_report_paths_reads_essential_only(tmp_path: Path) -> None:
+    essential = tmp_path / "essential"
+    essential.mkdir()
+    (essential / "report_theme_20pct_2026.09.html").write_text("x", encoding="utf-8")
+    (essential / "report_theme_25pct_2026.09.html").write_text("x", encoding="utf-8")
+    (essential / "report_theme_25pct_2026.08.html").write_text("x", encoding="utf-8")
+    (tmp_path / "report_theme_20pct_2026.07.html").write_text("x", encoding="utf-8")
+    names = [p.name for p in discover_theme_report_paths(tmp_path)]
+    assert names == ["report_theme_25pct_2026.08.html", "report_theme_20pct_2026.09.html"]
+
+
 def test_update_theme_flow_from_output(tmp_path: Path) -> None:
     """실제 output 테마 HTML이 있으면 흐름 파일을 쓴다(없으면 skip)."""
     out = Path("E:/Git/Money/output")

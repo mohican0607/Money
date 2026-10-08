@@ -40,7 +40,7 @@ for c, p in kl:
     print(f"  {c} {name:14s} {p:+.2f}% ohlcv_lim={in_ohlcv_lim}")
 
 # main report 6/22 block
-html = (ROOT / "output/report_2026.06.html").read_text(encoding="utf-8")
+html = (ROOT / "output/essential/report_2026.06.html").read_text(encoding="utf-8")
 m = re.search(r'id="day-2026-06-22".*?(?=id="day-|<footer)', html, re.S)
 block = m.group(0) if m else ""
 codes6 = {x.split()[-1] for x in re.findall(r'data-sort-value="([^"]+ \d{6})"', block)}

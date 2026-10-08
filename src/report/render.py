@@ -481,7 +481,10 @@ def _after_report_written(out_path: Path, days: list[DayReport]) -> None:
             )
     except OSError:
         pass
-    ensure_live_quotes_for_report(out_path.parent, sorted(codes))
+    out_dir = out_path.parent
+    if out_dir.name == config.OUTPUT_ESSENTIAL_DIRNAME:
+        out_dir = out_dir.parent
+    ensure_live_quotes_for_report(out_dir, sorted(codes))
 
 
 def render_report(
@@ -578,9 +581,10 @@ def parse_monthly_report_trading_days(source: Path | str) -> list[date]:
 
 def collect_monthly_report_index_links(output_dir: Path | None = None) -> list[tuple[str, str]]:
     """
-    ``output/report_YYYY.MM.html`` 파일을 스캔해 월간 목차용 ``(파일명, 라벨)`` 목록을 만듭니다.
+    ``output/essential/report_YYYY.MM.html`` 파일을 스캔해 월간 목차용 ``(상대 경로, 라벨)`` 목록을 만듭니다.
+    목차 HTML은 ``output`` 루트에 있으므로 링크는 ``essential/…`` 입니다.
     """
-    root = output_dir or config.OUTPUT_DIR
+    root = config.output_essential_dir(output_dir)
     links: list[tuple[str, str]] = []
     for path in sorted(root.glob("report_*.html")):
         low = path.name.lower()
@@ -608,7 +612,7 @@ def collect_monthly_report_index_links(output_dir: Path | None = None) -> list[t
             )
         else:
             label = prefix + path.name
-        links.append((path.name, label))
+        links.append((f"{config.OUTPUT_ESSENTIAL_DIRNAME}/{path.name}", label))
     return links
 
 

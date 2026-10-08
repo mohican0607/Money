@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """월간 테마 리포트(상한) → 연결·변화 흐름 HTML.
 
-``report_theme_20pct_*.html`` / ``report_theme_25pct_*.html`` 을 읽어
+``output/essential/report_theme_20pct_*.html`` / ``report_theme_25pct_*.html`` 을 읽어
 ``output/report_theme_flow.html`` (및 기간 파일명)을 갱신한다.
 테마 월간 리포트가 쓰인 직후(14:30·15:30 파이프라인)에 호출한다.
 """
@@ -115,8 +115,8 @@ def _fill_for(n: float) -> str:
 
 
 def discover_theme_report_paths(output_dir: Path | None = None) -> list[Path]:
-    """월별 테마 HTML. 같은 달이면 20pct 우선, 없으면 25pct."""
-    out = Path(output_dir or config.OUTPUT_DIR)
+    """``essential`` 안 월별 테마 HTML. 같은 달이면 20pct 우선, 없으면 25pct."""
+    out = config.output_essential_dir(output_dir)
     by_ym: dict[tuple[int, int], dict[str, Path]] = defaultdict(dict)
     for p in out.glob("report_theme_*pct_*.html"):
         m = _THEME_FILE_RE.match(p.name)

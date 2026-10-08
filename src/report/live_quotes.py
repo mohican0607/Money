@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from src import stocks
+from src import config, stocks
 
 DEFAULT_PORT = 8765
 MANIFEST_NAME = "live_quotes_manifest.json"
@@ -44,16 +44,31 @@ def write_live_quotes_manifest(output_dir: Path | str, codes: list[str]) -> None
     )
 
 
-def write_live_quotes_js(output_dir: Path | str, quotes: dict[str, float]) -> None:
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+def _report_dirs(output_dir: Path) -> list[Path]:
+    """리포트 HTML이 놓이는 폴더: output 루트 + 있으면 ``essential``."""
+    dirs = [output_dir]
+    essential = output_dir / config.OUTPUT_ESSENTIAL_DIRNAME
+    if essential.is_dir():
+        dirs.append(essential)
+    return dirs
+
+
+def _live_quotes_js_body(quotes: dict[str, float]) -> str:
     payload = {str(k).zfill(6): float(v) for k, v in quotes.items()}
-    body = (
+    return (
         "window.__MONEY_LIVE_QUOTES__="
         + json.dumps(payload, ensure_ascii=False)
         + ";\n"
     )
-    js_path(out).write_text(body, encoding="utf-8")
+
+
+def write_live_quotes_js(output_dir: Path | str, quotes: dict[str, float]) -> None:
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    body = _live_quotes_js_body(quotes)
+    # 리포트는 ``<script src="live_quotes.js">`` 상대 경로라 HTML 이 있는 폴더마다 둡니다.
+    for d in _report_dirs(out):
+        js_path(d).write_text(body, encoding="utf-8")
 
 
 def _quotes_are_usable(quotes: dict[str, float] | None) -> bool:
@@ -75,8 +90,10 @@ def _write_live_quotes_js_if_usable(
     if _quotes_are_usable(quotes):
         write_live_quotes_js(out, quotes or {})
         return
-    if not js_path(out).is_file():
-        write_live_quotes_js(out, quotes or {})
+    out.mkdir(parents=True, exist_ok=True)
+    for d in _report_dirs(out):
+        if not js_path(d).is_file():
+            js_path(d).write_text(_live_quotes_js_body(quotes or {}), encoding="utf-8")
 
 
 def collect_stock_codes_from_day_reports(day_reports: list[Any]) -> list[str]:
@@ -102,18 +119,21 @@ def collect_stock_codes_from_html(html: str) -> list[str]:
 
 
 def collect_stock_codes_from_output_reports(output_dir: Path | str) -> list[str]:
-    """output 폴더의 ``report_*.html`` 에서 종목코드를 모읍니다."""
+    """output 루트·``essential`` 의 ``report_*.html`` 에서 종목코드를 모읍니다."""
     codes: set[str] = set()
     out = Path(output_dir)
     if not out.is_dir():
         return []
-    for path in out.glob("report_*.html"):
-        if "index" in path.name.lower():
-            continue
-        try:
-            codes.update(collect_stock_codes_from_html(path.read_text(encoding="utf-8")))
-        except OSError:
-            continue
+    for d in _report_dirs(out):
+        for path in d.glob("report_*.html"):
+            if "index" in path.name.lower():
+                continue
+            try:
+                codes.update(
+                    collect_stock_codes_from_html(path.read_text(encoding="utf-8"))
+                )
+            except OSError:
+                continue
     return sorted(codes)
 
 

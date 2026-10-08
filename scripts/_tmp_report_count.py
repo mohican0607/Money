@@ -16,7 +16,7 @@ from src import config  # noqa: E402
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-html = (config.OUTPUT_DIR / "report_2026.09.html").read_text(encoding="utf-8")
+html = (config.output_essential_dir() / "report_2026.09.html").read_text(encoding="utf-8")
 freeze = json.loads(config.PREDICTION_FREEZE_PATH.read_text(encoding="utf-8"))
 ohlcv = pd.read_parquet(ROOT / "data" / "cache" / "ohlcv_long_full.parquet")
 ohlcv["Date"] = pd.to_datetime(ohlcv["Date"]).dt.normalize()

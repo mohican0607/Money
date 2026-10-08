@@ -58,6 +58,6 @@ def patch(path: Path) -> tuple[int, int]:
 
 
 if __name__ == "__main__":
-    target = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "output" / "report_theme_25pct_2026.07.html"
+    target = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "output" / "essential" / "report_theme_20pct_2026.07.html"
     t, r = patch(target)
     print(f"patched {target.name}: tables={t} rows={r}")
