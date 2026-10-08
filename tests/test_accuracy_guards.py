@@ -118,7 +118,8 @@ def test_same_day_catalyst_tag_and_skip_pos_boost(tmp_path, monkeypatch) -> None
     assert ("2026-10-06", "411080") not in pos
 
 
-def test_exhausted_name_not_in_display_slate() -> None:
+def test_exhausted_name_not_in_display_slate(monkeypatch) -> None:
+    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", True)
     rows = [
         PredictionRow(
             "263600",

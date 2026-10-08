@@ -404,9 +404,10 @@ PRED_PRIOR_DAY_EXHAUSTION_WARN_RET = _float_env("PRED_PRIOR_DAY_EXHAUSTION_WARN_
 PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET = _float_env(
     "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET", 0.18
 )
-# 전일 급등·상한가를 고확신만이 아니라 리포트 슬레이트에서 제외(추격 차단)
+# 전일 급등·상한가를 리포트 슬레이트에서 제외. 기본 끔: walk-forward(2025-10~2026-10, 246일)에서
+# 켜면 상위 5종 적중 248→33건으로 급감(상한가 연속이 익일 20%↑의 최대 신호).
 PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE = os.getenv(
-    "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", "1"
+    "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", "0"
 ).strip().lower() in ("1", "true", "yes", "on")
 # 주말만(금→월=3일)은 유지. 연휴 갭(T-N>=4, 예: 목→화)이면 T 당일 freeze 재계산
 PRED_FREEZE_REFRESH_LONG_GAP = os.getenv(

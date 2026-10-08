@@ -211,29 +211,8 @@ def predict_top(
         cur = cur[(cur["r1"] + 1e-12 < block) & (cur["limit_up"] < 1)]
     if cur.empty:
         return []
-    rot_w = float(config.PRED_THEME_ROTATION_RANK_BOOST)
-    lag_min = float(config.PRED_THEME_ROTATION_LAG_MIN)
-    lag_max = float(config.PRED_THEME_ROTATION_LAG_MAX)
-
-    def _rank_val(r1: float, prob: float, ind_big: float, share: float) -> float:
-        bonus = 0.0
-        if lag_min - 1e-12 <= r1 < min(lag_max, block) and ind_big >= 1:
-            bonus = 0.08 * rot_w + 0.12 * min(1.0, share / 0.08)
-        return prob + bonus
-
-    cur = cur.copy()
-    cur["_rank"] = [
-        _rank_val(
-            float(r1 or 0.0),
-            float(pr or 0.0),
-            float(ib or 0.0),
-            float(sh or 0.0),
-        )
-        for r1, pr, ib, sh in zip(
-            cur["r1"], cur["prob"], cur["ind_big"], cur["ind_big_share"]
-        )
-    ]
-    cur = cur.sort_values("_rank", ascending=False).head(int(top_n))
+    # 확률 순 그대로. 업종 후발주 가산은 walk-forward 에서 상위 5종 적중을 오히려 낮춰 쓰지 않는다.
+    cur = cur.sort_values("prob", ascending=False).head(int(top_n))
 
     rows: list[PredictionRow] = []
     for pos, r in enumerate(cur.itertuples(), start=1):

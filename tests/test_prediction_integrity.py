@@ -267,7 +267,8 @@ def test_freeze_does_not_pad_when_few_tiered(monkeypatch) -> None:
     assert frozen[0].confidence_tier == "mid"
 
 
-def test_prior_day_exhaustion_blocks_after_limit_up() -> None:
+def test_prior_day_exhaustion_blocks_after_limit_up(monkeypatch) -> None:
+    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", True)
     row = PredictionRow(
         "091590",
         "남화토건",

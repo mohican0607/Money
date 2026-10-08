@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -307,6 +308,27 @@ def _copy_slot_report_snapshot(
         flush=True,
     )
     return dest
+
+
+def _collect_orderbook_snapshot() -> str:
+    """급등 종목 호가 잔량을 쌓는다. 실패해도 리포트 실행은 계속한다."""
+    try:
+        from src import investor_flow, stocks, trading_calendar
+
+        listing = stocks.load_listing()
+        codes = [
+            str(c).zfill(6)
+            for c in listing["Code"]
+            if stocks.is_common_equity_code(str(c).zfill(6))
+        ]
+        now = datetime.now(trading_calendar.KST)
+        path = investor_flow.collect_hot_orderbook(codes, when=now)
+        if path is None:
+            return "호가 잔량 수집: 대상 없음"
+        n = len(json.loads(path.read_text(encoding="utf-8")).get("rows") or [])
+        return f"호가 잔량 수집: {n}종목 → {path.name}"
+    except Exception as exc:  # noqa: BLE001
+        return f"호가 잔량 수집 실패(리포트는 계속): {exc}"
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -928,6 +950,10 @@ def main(argv: list[str] | None = None) -> int:
             log_lines.append(
                 f"main.py args={n_day.strftime('%Y%m%d')} {t_day.strftime('%Y%m%d')}"
             )
+        if args.slot in _SLOT_SNAPSHOT_SLOTS:
+            ob_note = _collect_orderbook_snapshot()
+            print(ob_note, flush=True)
+            log_lines.append(ob_note)
         step_started = time.perf_counter()
         main_exit, log_text, run_status = _run_main_py(
             timeout_sec,

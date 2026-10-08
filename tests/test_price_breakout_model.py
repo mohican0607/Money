@@ -187,6 +187,24 @@ def test_predict_top_uses_intraday_session_day(monkeypatch: pytest.MonkeyPatch) 
     assert all(abs(float(r.ret_lag1) - float(by_code[r.code])) < 1e-9 for r in rows)
 
 
+def test_predict_top_keeps_prior_day_limit_up_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
+    monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
+    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", False)
+    ret = _synthetic_returns()
+    target = ret["Date"].max().date()
+    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
+    m = (ret["Date"] == asof) & ret["Code"].isin(["000001", "000002"])
+    ret.loc[m, "return_pct"] = 0.299
+    lu = ret.loc[m, "Code"]
+    pbm._raw_cache.clear()
+    pbm._model_cache.clear()
+    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
+    assert set(lu) <= {r.code for r in rows}
+    probs = [float(r.ml_prob) for r in rows]
+    assert probs == sorted(probs, reverse=True)
+
+
 def test_predict_top_excludes_prior_day_decliners(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pbm, "_industry_map", lambda: {})
     monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
