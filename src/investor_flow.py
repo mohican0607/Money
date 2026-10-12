@@ -1,5 +1,7 @@
-"""네이버 모바일 증권 API: 종목별 일별 외국인·기관·개인 순매수, 상장주식수, 호가 잔량.
+"""투자자 수급: ``stocks`` 에 병합된 파이프라인 API 재노출 + 네이버 모바일 증권 수집.
 
+- 파이프라인용(``stocks`` 구현): ``priority_codes_for_prefetch`` · ``warm_cache_for_codes`` ·
+  ``merge_flow_features`` · ``flow_features_for_day`` · ``investor_flow_candidate_codes``.
 - ``fetch_trend(code, before=T)``: T 이전 거래일들의 투자자별 순매수(주).
 - 결과는 ``data/cache/investor_trend.parquet`` 에 (Code, Date) 단위로 누적한다.
 - ``collect_hot_orderbook``: 14:30·15:30 실행 직전 급등 종목 호가 잔량을 ``data/cache/orderbook/`` 에 쌓는다.
@@ -17,6 +19,13 @@ import pandas as pd
 import requests
 
 from . import config
+from .stocks import (
+    flow_features_for_day,
+    investor_flow_candidate_codes,
+    merge_flow_features,
+    priority_codes_for_prefetch,
+    warm_cache_for_codes,
+)
 
 _HEADERS = {"User-Agent": "Mozilla/5.0", "Accept": "application/json"}
 _TREND_URL = "https://m.stock.naver.com/api/stock/{code}/trend"

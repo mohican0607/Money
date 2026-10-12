@@ -11,6 +11,17 @@ from src import config, investor_flow as inv
 from src import stocks
 
 
+def test_pipeline_flow_api_still_exported() -> None:
+    for name in (
+        "flow_features_for_day",
+        "investor_flow_candidate_codes",
+        "merge_flow_features",
+        "priority_codes_for_prefetch",
+        "warm_cache_for_codes",
+    ):
+        assert getattr(inv, name) is getattr(stocks, name)
+
+
 def test_collect_hot_orderbook_saves_only_hot_names(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(config, "CACHE_DIR", tmp_path)
     snap = pd.DataFrame(
