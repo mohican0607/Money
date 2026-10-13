@@ -10,12 +10,13 @@ from __future__ import annotations
 import html as html_mod
 import re
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from bs4 import BeautifulSoup
 
-from src import config
+from src import config, trading_calendar
 
 _THEME_FILE_RE = re.compile(
     r"^report_theme_(?:20pct|25pct)_(\d{4})\.(\d{2})\.html$",
@@ -279,6 +280,12 @@ def _build_episodes(segs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return eps
 
 
+def _span_label(e: dict[str, Any]) -> str:
+    """에피소드 기간 ``MM-DD`` 또는 ``MM-DD~MM-DD`` (진행 중 에피소드도 끝 날짜가 보이게)."""
+    a, b = e["from"][5:], e["to"][5:]
+    return a if a == b else f"{a}~{b}"
+
+
 def _render_html(
     *,
     eps: list[dict[str, Any]],
@@ -379,7 +386,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 <body>
 """,
         "<h1>상한가 테마 연결·변화 그래프</h1>",
-        f'<p class="sub">{d0} ~ {d1} · 에피소드 {len(eps)}개 · 출처: {_esc(src_note)}</p>',
+        f'<p class="sub">{d0} ~ {d1} · 에피소드 {len(eps)}개 · '
+        f"최종 갱신 {datetime.now(trading_calendar.KST):%Y-%m-%d %H:%M} KST · 출처: {_esc(src_note)}</p>",
         '<div class="callout"><strong>자동 갱신</strong> — '
         "14:30·15:30 리포트 파이프라인이 테마 HTML을 쓴 직후 이 파일도 같이 갱신됩니다. "
         "보름이 아니라 <b>1~6거래일 에피소드</b> 단위입니다.</div>",
@@ -426,7 +434,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
         )
         parts.append(
             f'<text x="{x + ep_w / 2}" y="{y + 16}" text-anchor="middle" font-size="10" '
-            f'fill="{tc}">{_esc(e["from"][5:])}</text>'
+            f'fill="{tc}">{_esc(_span_label(e))}</text>'
         )
         parts.append(
             f'<text x="{x + ep_w / 2}" y="{y + 34}" text-anchor="middle" font-size="12" '
@@ -514,7 +522,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
         parts.append(
             f'<a class="line-col" href="#ep-{e["id"]}" title="{e["id"]} {e["avgN"]}종">'
             f'<div class="stem" style="height:{h}px;background:{_fill_for(e["avgN"])}"></div>'
-            f'<div class="cap">{e["from"][5:]}</div></a>'
+            f'<div class="cap">{_span_label(e)}</div></a>'
         )
     parts.append("</div></div>")
 
@@ -530,7 +538,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
             delta = round(e["avgN"] - eps[i - 1]["avgN"], 1)
             pct = min(100, abs(delta) / dmax * 100)
             color = "#3ecf8e" if delta >= 0 else "#e07070"
-            label = f"{e['from'][5:]} {SHORT.get(e['theme'], e['theme'])}"
+            label = f"{_span_label(e)} {SHORT.get(e['theme'], e['theme'])}"
             sign = "+" if delta >= 0 else ""
             parts.append(
                 f'<div class="bar-row"><div class="bar-label">{_esc(label)}</div>'

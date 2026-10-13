@@ -4,10 +4,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.report.theme_flow import (
+    _span_label,
     discover_theme_report_paths,
     theme_flow_range_filename,
     update_theme_flow_report,
 )
+
+
+def test_episode_label_shows_end_day_of_ongoing_episode() -> None:
+    assert _span_label({"from": "2026-10-07", "to": "2026-10-13"}) == "10-07~10-13"
+    assert _span_label({"from": "2026-10-07", "to": "2026-10-07"}) == "10-07"
 
 
 def test_theme_flow_range_filename() -> None:
