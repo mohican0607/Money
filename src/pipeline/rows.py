@@ -55,6 +55,7 @@ def _append_compare_row_from_prediction(
             "pred_ret": pr.predicted_return_pct,
             "ml_prob": pr.ml_prob,
             "pred_source": getattr(pr, "pred_source", ""),
+            "prior_limit_up": bool(getattr(pr, "prior_limit_up", False)),
             "rank_position": getattr(pr, "rank_position", None),
             "confidence_tier": getattr(pr, "confidence_tier", "none"),
             "actual_ret": actual_ret,
@@ -175,6 +176,7 @@ def _sync_forward_day_rows_from_predictions(
             existing["ml_prob"] = pr.ml_prob
             existing["rank_position"] = getattr(pr, "rank_position", None)
             existing["confidence_tier"] = getattr(pr, "confidence_tier", "none")
+            existing["prior_limit_up"] = bool(getattr(pr, "prior_limit_up", False))
             existing["pred_high"] = prediction_ranking.is_high_confidence_prediction(pr)
             existing["pred_mid"] = prediction_ranking.is_mid_confidence_prediction(pr)
             if act is not None:
@@ -241,7 +243,12 @@ def _prediction_signal_html(r: dict) -> str:
     if rp is not None:
         parts.append(f'<span title="당일 예측 순위">#{int(rp)}</span>')
     ct = str(r.get("confidence_tier") or "")
-    if ct == "high":
+    if r.get("prior_limit_up"):
+        parts.append(
+            '<span class="pill" style="font-size:0.68rem;background:#3d1a1a;color:var(--bad)" '
+            'title="전일 상한가 — 시가 매수가 어려워 메인 슬레이트와 별도로 표시">전일 상한가·매수 어려움</span>'
+        )
+    elif ct == "high":
         parts.append(
             '<span class="pill" style="font-size:0.68rem;background:#3d2a1a;color:var(--warn)">고확신</span>'
         )
@@ -1307,10 +1314,10 @@ def _reconcile_closed_day_report(
             if m.get("code")
         }
         dr.hit_at_k_metrics = prediction_ranking.compute_hit_at_k_metrics(
-            [p.code for p in dr.predictions],
+            [p.code for p in dr.predictions if not getattr(p, "prior_limit_up", False)],
             actual_big_codes,
             universe_size=universe_size,
-            slate_k=len(dr.predictions),
+            slate_k=sum(1 for p in dr.predictions if not getattr(p, "prior_limit_up", False)),
         )
 
     dr.pred_accuracy_summary = _compute_day_pred_accuracy_summary(

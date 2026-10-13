@@ -48,7 +48,7 @@ def test_predict_top_ignores_target_day_data(monkeypatch: pytest.MonkeyPatch) ->
     ret = _synthetic_returns()
     target = ret["Date"].max().date()
     top_a = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=5)
-    assert len(top_a) == 5
+    assert sum(1 for r in top_a if not r.prior_limit_up) == 5
 
     tampered = ret.copy()
     m = tampered["Date"] == pd.Timestamp(target)
@@ -68,8 +68,10 @@ def test_predict_top_rows_are_high_tier_slate(monkeypatch: pytest.MonkeyPatch) -
     pbm._raw_cache.clear()
     pbm._model_cache.clear()
     rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=3)
-    assert [r.rank_position for r in rows] == [1, 2, 3]
-    assert all(r.confidence_tier == "high" for r in rows)
+    assert [r.rank_position for r in rows] == list(range(1, len(rows) + 1))
+    main = [r for r in rows if not r.prior_limit_up]
+    assert len(main) == 3 and rows[:3] == main
+    assert all(r.confidence_tier == "high" for r in main)
     assert all(-31.0 <= r.predicted_return_pct <= 31.0 for r in rows)
     assert len({round(r.predicted_return_pct, 6) for r in rows}) > 1
     assert all(r.pred_source == "price_model" for r in rows)
@@ -87,7 +89,8 @@ def test_price_model_rows_survive_freeze_roundtrip(monkeypatch: pytest.MonkeyPat
     pbm._model_cache.clear()
     rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=3)
     back = ps._prediction_rows_from_frozen_items(ps._prediction_rows_to_frozen_items(rows))
-    assert [r.pred_source for r in back] == ["price_model"] * 3
+    assert [r.pred_source for r in back] == ["price_model"] * len(rows)
+    assert [r.prior_limit_up for r in back] == [r.prior_limit_up for r in rows]
     assert [round(float(r.ml_prob), 6) for r in back] == [round(float(r.ml_prob), 6) for r in rows]
 
 
@@ -187,25 +190,46 @@ def test_predict_top_uses_intraday_session_day(monkeypatch: pytest.MonkeyPatch) 
     assert all(abs(float(r.ret_lag1) - float(by_code[r.code])) < 1e-9 for r in rows)
 
 
-def test_predict_top_keeps_prior_day_limit_up_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_prior_day_limit_up_listed_separately_after_main(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pbm, "_industry_map", lambda: {})
     monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
     monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", False)
+    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 100)
     ret = _synthetic_returns()
     target = ret["Date"].max().date()
     asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
     m = (ret["Date"] == asof) & ret["Code"].isin(["000001", "000002"])
     ret.loc[m, "return_pct"] = 0.299
-    lu = ret.loc[m, "Code"]
     pbm._raw_cache.clear()
     pbm._model_cache.clear()
     rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
-    assert set(lu) <= {r.code for r in rows}
-    probs = [float(r.ml_prob) for r in rows]
-    assert probs == sorted(probs, reverse=True)
+    main = [r for r in rows if not r.prior_limit_up]
+    extra = [r for r in rows if r.prior_limit_up]
+    assert {"000001", "000002"} <= {r.code for r in extra}
+    assert not {"000001", "000002"} & {r.code for r in main}
+    assert rows == main + extra
+    assert all(r.confidence_tier == "mid" and "전일 상한가" in r.reasons[0] for r in extra)
+    for grp in (main, extra):
+        probs = [float(r.ml_prob) for r in grp]
+        assert probs == sorted(probs, reverse=True)
 
 
-def test_predict_top_excludes_prior_day_decliners(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_limit_up_extra_only_when_in_overall_top(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
+    monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
+    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", False)
+    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 0)
+    ret = _synthetic_returns()
+    target = ret["Date"].max().date()
+    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
+    ret.loc[(ret["Date"] == asof) & ret["Code"].isin(["000001"]), "return_pct"] = 0.299
+    pbm._raw_cache.clear()
+    pbm._model_cache.clear()
+    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=5)
+    assert len(rows) == 5 and not any(r.prior_limit_up for r in rows)
+
+
+def test_main_slate_may_include_prior_day_decliners(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(pbm, "_industry_map", lambda: {})
     monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
     ret = _synthetic_returns()
@@ -213,7 +237,8 @@ def test_predict_top_excludes_prior_day_decliners(monkeypatch: pytest.MonkeyPatc
     asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
     pbm._raw_cache.clear()
     pbm._model_cache.clear()
-    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=20)
-    assert rows
+    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
     prior = ret[ret["Date"] == asof].set_index("Code")["return_pct"]
-    assert all(float(prior[r.code]) >= 0.0 for r in rows)
+    main = [r for r in rows if not r.prior_limit_up]
+    assert any(float(prior[r.code]) < 0.0 for r in main)
+    assert all(float(prior[r.code]) < 0.29 for r in main)

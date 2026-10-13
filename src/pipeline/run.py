@@ -779,6 +779,7 @@ def _run_pipeline(
                     "pred_ret": pred_ret,
                     "ml_prob": (pr.ml_prob if pr is not None else None),
                     "pred_source": (getattr(pr, "pred_source", "") if pr is not None else ""),
+                    "prior_limit_up": bool(getattr(pr, "prior_limit_up", False)),
                     "rank_position": (
                         getattr(pr, "rank_position", None) if pr is not None else None
                     ),
@@ -838,6 +839,7 @@ def _run_pipeline(
                     "pred_ret": pr.predicted_return_pct,
                     "ml_prob": pr.ml_prob,
                     "pred_source": getattr(pr, "pred_source", ""),
+                    "prior_limit_up": bool(getattr(pr, "prior_limit_up", False)),
                     "rank_position": getattr(pr, "rank_position", None),
                     "confidence_tier": getattr(pr, "confidence_tier", "none"),
                     "actual_ret": act,
@@ -910,7 +912,9 @@ def _run_pipeline(
             rows_compare = [
                 r for r in rows_compare if _compare_row_is_prediction_candidate(r)
             ]
-        cap = int(config.PRED_FORWARD_SHOW_MAX)
+        cap = int(config.PRED_FORWARD_SHOW_MAX) + sum(
+            1 for r in rows_compare if r.get("prior_limit_up")
+        )
         if len(rows_compare) > cap:
             rows_compare.sort(
                 key=lambda r: (
@@ -929,7 +933,14 @@ def _run_pipeline(
                 actual_big_movers,
                 market_by_code=market_by_code,
             )
-        rows_compare.sort(key=lambda r: (not r["actual_big"], not r["pred_high"], r["code"]))
+        rows_compare.sort(
+            key=lambda r: (
+                not r["actual_big"],
+                bool(r.get("prior_limit_up")),
+                not r["pred_high"],
+                r["code"],
+            )
+        )
 
         today_td = now_kst_td.date()
         force_intraday_snapshot = os.getenv("FORCE_INTRADAY_SNAPSHOT", "").strip().lower() in (
@@ -1150,11 +1161,11 @@ def _run_pipeline(
                     if "same_day_catalyst" in set(m.get("tags") or [])
                 }
                 _dr.hit_at_k_metrics = prediction_ranking.compute_hit_at_k_metrics(
-                    [pr.code for pr in preds],
+                    [pr.code for pr in preds if not getattr(pr, "prior_limit_up", False)],
                     actual_big_codes,
                     universe_size=len(codes),
                     same_day_codes=same_day,
-                    slate_k=len(preds),
+                    slate_k=sum(1 for pr in preds if not getattr(pr, "prior_limit_up", False)),
                 )
             _dr = day_reports[-1]
             prediction_accuracy_cache.merge_from_day_reports([_dr])

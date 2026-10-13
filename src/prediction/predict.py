@@ -224,6 +224,8 @@ class PredictionRow:
     miss_reflection_boost: float = 0.0
     # "price_model" 이면 predicted_return_pct 는 표시용 자리값이고 ml_prob 가 실제 출력(익일 20%↑ 확률)
     pred_source: str = ""
+    # 전일 상한가(시가 매수 어려움) — 메인 슬레이트와 구분 표시하고 슬레이트 적중 집계에서 뺀다.
+    prior_limit_up: bool = False
 
 
 def _build_code_keyword_profile(train_events: list[BreakoutEvent]) -> dict[str, frozenset[str]]:

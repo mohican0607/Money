@@ -414,6 +414,7 @@ def _prediction_rows_from_frozen_items(items: list[dict]) -> list[predict.Predic
                     foreign_net_vol_ratio=float(x.get("foreign_net_vol_ratio", 0.0) or 0.0),
                     pred_source=str(x.get("pred_source") or ""),
                     ret_lag1=float(x.get("ret_lag1", 0.0) or 0.0),
+                    prior_limit_up=bool(x.get("prior_limit_up", False)),
                 )
             )
         except (TypeError, ValueError):
@@ -562,6 +563,7 @@ def _prediction_rows_to_frozen_items(
             "foreign_net_vol_ratio": float(getattr(r, "foreign_net_vol_ratio", 0.0) or 0.0),
             "pred_source": str(getattr(r, "pred_source", "") or ""),
             "ret_lag1": float(getattr(r, "ret_lag1", 0.0) or 0.0),
+            "prior_limit_up": bool(getattr(r, "prior_limit_up", False)),
             "n_date": n_s,
             "saved_on": s_s,
         }

@@ -480,6 +480,8 @@ PRED_FORWARD_MIN_MID = _non_negative_int_env("PRED_FORWARD_MIN_MID", 0)
 PRED_FORWARD_MIN_SLATE = _non_negative_int_env("PRED_FORWARD_MIN_SLATE", 0)
 # 리포트 노출 상한 — 소수 정밀 후보만(회사 자존심).
 PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 5)
+# 메인 슬레이트(시가 매수 가능 종목)와 별도로, 전체 모델 상위권에 든 전일 상한가 종목을 구분 표시할 최대 수.
+PRED_LIMIT_UP_EXTRA_MAX = _non_negative_int_env("PRED_LIMIT_UP_EXTRA_MAX", 3)
 # none 티어라도 리포트에 넣을 최소 급등 점수(잠행·로테이션). 미달이면 제외.
 PRED_REPORT_CONVICTION_MIN = _float_env("PRED_REPORT_CONVICTION_MIN", 0.55)
 # 리포트 슬레이트를 가격·거래량+업종 흐름 모델로 선정(뉴스·ML 경로 대체). 0이면 기존 경로.

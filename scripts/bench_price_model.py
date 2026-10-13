@@ -145,27 +145,12 @@ def detail(day: str, k: int) -> None:
         print(f"  {r.rank}. {names.get(r.Code, r.Code)} prob={r.prob:.2%} 전일 {r.r1:+.1%}")
 
 
-EXTRA_FEATURES = ["r1_prev", "lu_streak", "n_lu20", "gap", "close_at_high", "vol_ratio_prev", "r2"]
-
-
-def add_extra_features(raw: pd.DataFrame) -> pd.DataFrame:
-    g = raw.groupby("Code", group_keys=False)
-    prev_close = g["Close"].shift(1)
-    raw["r1_prev"] = g["r1"].shift(1)
-    raw["r2"] = raw["Close"] / g["Close"].shift(2) - 1.0
-    lu = raw["limit_up"].astype(int)
-    grp = (lu != g["limit_up"].shift(1).fillna(0).astype(int)).cumsum()
-    raw["lu_streak"] = lu.groupby([raw["Code"], grp]).cumsum() * lu
-    raw["n_lu20"] = g["limit_up"].transform(lambda s: s.rolling(20, min_periods=1).sum())
-    raw["gap"] = (raw["Open"] / prev_close - 1.0).fillna(0)
-    raw["close_at_high"] = (raw["Close"] >= raw["High"] * 0.999).astype(int)
-    raw["vol_ratio_prev"] = g["vol_ratio"].shift(1)
-    return raw
+EXTRA_FEATURES = pbm.EXTRA_FEATURE_COLS
 
 
 def run_features(start: str, end: str, refit: int, k: int) -> None:
     returns, codes, _names = load_inputs()
-    raw = add_extra_features(pbm.build_raw_features(returns).copy())
+    raw = pbm.build_raw_features(returns)
     big_by_day = raw[raw["big"] == 1].groupby("Date")["Code"].apply(set).to_dict()
     days = sorted(d for d in raw["Date"].unique() if pd.Timestamp(start) <= d <= pd.Timestamp(end))
     base = list(pbm.FEATURE_COLS)
@@ -283,7 +268,7 @@ def model_configs(base: list[str]) -> dict[str, dict]:
 
 def run_models(start: str, end: str, refit: int, k: int, out_path: str) -> None:
     returns, codes, _names = load_inputs()
-    raw = add_extra_features(pbm.build_raw_features(returns).copy())
+    raw = pbm.build_raw_features(returns)
     base = list(pbm.FEATURE_COLS)
     pbm.FEATURE_COLS[:] = base + EXTRA_FEATURES
     pairs = pbm._training_pairs(raw)
@@ -323,6 +308,70 @@ def run_models(start: str, end: str, refit: int, k: int, out_path: str) -> None:
     print("\n".join(lines), flush=True)
 
 
+def buyable_configs(base: list[str]) -> dict[str, tuple[dict, bool]]:
+    """이름 → (``_fit_hgb`` 인자, 상한가 제외 표본만 학습 여부)."""
+    full = base + EXTRA_FEATURES
+    return {
+        "전체 학습(운영)": ({"feats": base}, False),
+        "매수가능만 학습": ({"feats": base}, True),
+        "매수가능만+추가피처": ({"feats": full}, True),
+        "매수가능만+추가피처+최근가중": ({"feats": full, "half_life": 180.0}, True),
+        "매수가능만+추가피처 500회": ({"feats": full, "max_iter": 500, "lr": 0.03}, True),
+    }
+
+
+def run_buyable(start: str, end: str, refit: int, k: int, out_path: str, *, allow_neg: bool) -> None:
+    """전일 상한가(매수 불가) 종목을 뺀 후보 안에서 상위 k종 적중 비교."""
+    returns, codes, _names = load_inputs()
+    raw = pbm.build_raw_features(returns)
+    base = list(pbm.FEATURE_COLS)
+    pbm.FEATURE_COLS[:] = base + EXTRA_FEATURES
+    pairs = pbm._training_pairs(raw)
+    pbm.FEATURE_COLS[:] = base
+    big_by_day = raw[raw["big"] == 1].groupby("Date")["Code"].apply(set).to_dict()
+    days = [pd.Timestamp(d) for d in sorted(raw["Date"].unique())
+            if pd.Timestamp(start) <= d <= pd.Timestamp(end)]
+    cfgs = buyable_configs(base)
+    neg = 0.10
+    stats = {n: {"hits": 0, "any": 0} for n in cfgs}
+    scorers: dict[str, object] = {}
+    n_big_total = n_big_buyable = 0
+    for i, T in enumerate(days):
+        if i % refit == 0:
+            tr = pairs[pairs["Date"] < T]
+            tr_buy = tr[tr["limit_up"] < 1]
+            scorers = {}
+            for n, (kw, only_buy) in cfgs.items():
+                kw = dict(kw)
+                feats = kw.pop("feats")
+                clf = _fit_hgb(tr_buy if only_buy else tr, feats, neg=neg, before=T, **kw)
+                scorers[n] = (clf, feats)
+            print(f"{T.date()} 재학습 ({i + 1}/{len(days)})", flush=True)
+        asof = raw.loc[raw["Date"] < T, "Date"].max()
+        cur = raw[(raw["Date"] == asof) & raw["valid"] & raw["Code"].isin(codes) & (raw["limit_up"] < 1)]
+        if not allow_neg:
+            cur = cur[cur["r1"] >= 0]
+        actual = big_by_day.get(T, set()) & codes
+        n_big_total += len(actual)
+        n_big_buyable += len(actual & set(cur["Code"]))
+        for n, (clf, feats) in scorers.items():
+            top = cur.assign(_p=_prob(clf, cur[feats].to_numpy(dtype=float), neg)).nlargest(k, "_p")
+            h = len(set(top["Code"]) & actual)
+            stats[n]["hits"] += h
+            stats[n]["any"] += int(h > 0)
+    lines = [
+        f"[{start}~{end}] {len(days)}거래일 · 전체 20%↑ {n_big_total}건 중 매수가능 후보에서 나온 {n_big_buyable}건 · "
+        f"상위 {k}종 · 전일 하락 {'포함' if allow_neg else '제외'} · 재학습 {refit}일마다"
+    ]
+    for n, s in stats.items():
+        lines.append(
+            f"  {n:<26} 적중 {s['hits']:>3}건  정밀도 {s['hits'] / max(1, len(days) * k):6.1%}  "
+            f"1종 이상 맞힌 날 {s['any'] / max(1, len(days)):6.1%}"
+        )
+    Path(out_path).write_text("\n".join(lines), encoding="utf-8")
+    print("\n".join(lines), flush=True)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--start", default="2026-01-02")
@@ -332,7 +381,12 @@ def main() -> int:
     ap.add_argument("--day", default="")
     ap.add_argument("--features", action="store_true", help="추가 피처 비교")
     ap.add_argument("--models", default="", metavar="OUT_TXT", help="학습 방식 비교 결과를 UTF-8 로 저장")
+    ap.add_argument("--buyable", default="", metavar="OUT_TXT", help="전일 상한가 제외 후보 비교 결과 저장")
+    ap.add_argument("--allow-neg", action="store_true", help="--buyable 에서 전일 하락 종목도 후보에 포함")
     args = ap.parse_args()
+    if args.buyable:
+        run_buyable(args.start, args.end, args.refit, args.k, args.buyable, allow_neg=args.allow_neg)
+        return 0
     if args.models:
         run_models(args.start, args.end, args.refit, args.k, args.models)
         return 0

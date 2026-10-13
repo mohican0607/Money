@@ -23,6 +23,10 @@ FEATURE_COLS = [
     "ind_big", "ind_big_share", "ind_ret", "ind_big5", "ind_ret5", "ind_ret_rank",
     "mkt_ret", "mkt_big", "rel_ind",
 ]
+# 매수 가능(전일 상한가 아님) 전용 모델 추가 피처. 상한가 제외 후보 walk-forward(2025-10~2026-10, 246일)
+# 상위 5종 적중: 기본 피처·전체 학습 72건 → 상한가 제외 학습+추가 피처 84건.
+EXTRA_FEATURE_COLS = ["r1_prev", "lu_streak", "n_lu20", "gap", "close_at_high", "vol_ratio_prev", "r2"]
+BUYABLE_FEATURE_COLS = FEATURE_COLS + EXTRA_FEATURE_COLS
 _LIMIT = 0.31
 _MIN_POSITIVES = 200
 
@@ -30,7 +34,13 @@ _MIN_POSITIVES = 200
 _raw_cache: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
 _model_cache: dict[
     str,
-    tuple[pd.DataFrame, pd.Timestamp, HistGradientBoostingClassifier, HistGradientBoostingRegressor],
+    tuple[
+        pd.DataFrame,
+        pd.Timestamp,
+        HistGradientBoostingClassifier,
+        HistGradientBoostingClassifier,
+        HistGradientBoostingRegressor,
+    ],
 ] = {}
 _RET_SAMPLE = 0.20
 # 2026-09 검증: q=0.9 예측 ≥20% 인 103건 중 실제 20%↑ 10.7% (전체 기준율 0.46%).
@@ -80,6 +90,15 @@ def build_raw_features(returns: pd.DataFrame) -> pd.DataFrame:
     df["volat20"] = g["return_pct"].transform(lambda s: s.rolling(20, min_periods=5).std())
     df["logp"] = np.log(df["Close"].clip(lower=1))
     df["limit_up"] = (df["return_pct"] >= 0.29).astype(int)
+    df["r1_prev"] = g["r1"].shift(1)
+    df["r2"] = df["Close"] / g["Close"].shift(2) - 1.0
+    lu = df["limit_up"]
+    run_id = (lu != g["limit_up"].shift(1).fillna(0).astype(int)).cumsum()
+    df["lu_streak"] = lu.groupby([df["Code"], run_id]).cumsum() * lu
+    df["n_lu20"] = g["limit_up"].transform(lambda s: s.rolling(20, min_periods=1).sum())
+    df["gap"] = (df["Open"] / g["Close"].shift(1) - 1.0).fillna(0)
+    df["close_at_high"] = (df["Close"] >= df["High"] * 0.999).astype(int)
+    df["vol_ratio_prev"] = g["vol_ratio"].shift(1)
 
     day_ind = df.groupby(["Date", "ind"]).agg(
         ind_n=("Code", "size"), ind_big=("big", "sum"), ind_ret=("return_pct", "mean")
@@ -106,7 +125,7 @@ def build_raw_features(returns: pd.DataFrame) -> pd.DataFrame:
 def _training_pairs(raw: pd.DataFrame) -> pd.DataFrame:
     """전일 피처(X) → 당일 20%↑(y). 라벨일(``Date``) 기준."""
     g = raw.groupby("Code", group_keys=False)
-    x = g[FEATURE_COLS].shift(1)
+    x = g[list(dict.fromkeys(FEATURE_COLS + EXTRA_FEATURE_COLS))].shift(1)
     prev_valid = g["valid"].shift(1, fill_value=False).astype(bool)
     out = pd.concat([raw[["Date", "Code", "big", "valid"]], raw["return_pct"].rename("y_ret"), x], axis=1)
     return out[out["valid"] & prev_valid & out["r1"].notna()]
@@ -130,8 +149,18 @@ def _fit_return(pairs: pd.DataFrame, before: pd.Timestamp) -> HistGradientBoosti
     return reg
 
 
-def _fit(pairs: pd.DataFrame, before: pd.Timestamp) -> HistGradientBoostingClassifier | None:
+def _fit(
+    pairs: pd.DataFrame,
+    before: pd.Timestamp,
+    *,
+    feats: list[str] | None = None,
+    buyable_only: bool = False,
+) -> HistGradientBoostingClassifier | None:
+    """``buyable_only``: 전일 상한가가 아닌 표본만 학습(``limit_up`` 은 전일 피처)."""
+    feats = feats or FEATURE_COLS
     tr = pairs[pairs["Date"] < before]
+    if buyable_only:
+        tr = tr[tr["limit_up"] < 1]
     if tr["big"].sum() < _MIN_POSITIVES:
         return None
     rng = np.random.default_rng(0)
@@ -141,7 +170,7 @@ def _fit(pairs: pd.DataFrame, before: pd.Timestamp) -> HistGradientBoostingClass
         max_iter=250, learning_rate=0.06, max_leaf_nodes=31,
         min_samples_leaf=80, l2_regularization=1.0, random_state=0,
     )
-    clf.fit(tr[FEATURE_COLS].to_numpy(dtype=float), tr["big"].to_numpy())
+    clf.fit(tr[feats].to_numpy(dtype=float), tr["big"].to_numpy())
     return clf
 
 
@@ -173,7 +202,11 @@ def predict_top(
     partial_last_day: bool = False,
     basis_note: str = "",
 ) -> list[PredictionRow]:
-    """관측일 ``target_day`` 의 상위 ``top_n`` 종목(직전 거래일 종가까지 정보만 사용).
+    """관측일 ``target_day`` 예측(직전 거래일 종가까지 정보만 사용).
+
+    메인 ``top_n`` 종은 전일 상한가가 아닌(시가 매수 가능) 종목만 매수 가능 전용 모델로 고른다.
+    전일 상한가 종목은 전체 모델 상위 ``top_n`` 에 들 때만 ``prior_limit_up`` 으로 구분해 뒤에 붙인다
+    (최대 ``PRED_LIMIT_UP_EXTRA_MAX``).
 
     ``partial_last_day``: 마지막 날이 장중 스냅샷이면 그날 등락을 학습 라벨로 쓰지 않는다.
     """
@@ -185,45 +218,64 @@ def predict_top(
     asof = hist["Date"].max()
     hit = _model_cache.get("model")
     if hit is not None and hit[0] is returns and hit[1] == asof:
-        clf, reg = hit[2], hit[3]
+        clf, clf_buy, reg = hit[2], hit[3], hit[4]
     else:
         pairs = _training_pairs(raw)
         before = asof if partial_last_day else asof + pd.Timedelta(days=1)
         clf = _fit(pairs, before=before)
         if clf is None:
             return []
+        clf_buy = _fit(pairs, before=before, feats=BUYABLE_FEATURE_COLS, buyable_only=True)
         reg = _fit_return(pairs, before=before)
-        _model_cache["model"] = (returns, asof, clf, reg)
+        _model_cache["model"] = (returns, asof, clf, clf_buy, reg)
 
-    # 전일 하락 종목은 제외: walk-forward 에서 적중 기여 거의 0, 정리매매·급락주가 섞여 익일 평균 -9%.
-    cur = hist[(hist["Date"] == asof) & hist["valid"] & (hist["r1"] >= 0)]
+    cur = hist[(hist["Date"] == asof) & hist["valid"]]
     if listing_codes:
         allowed = {str(c).zfill(6) for c in listing_codes}
         cur = cur[cur["Code"].isin(allowed)]
     if cur.empty:
         return []
     X = cur[FEATURE_COLS].to_numpy(dtype=float)
-    p = _true_prob(clf.predict_proba(X)[:, 1])
-    er = np.clip(reg.predict(X), -0.30, 0.30)
-    cur = cur.assign(prob=p, exp_ret=er)
-    block = float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)
-    if config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED and config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE:
-        cur = cur[(cur["r1"] + 1e-12 < block) & (cur["limit_up"] < 1)]
-    if cur.empty:
-        return []
-    # 확률 순 그대로. 업종 후발주 가산은 walk-forward 에서 상위 5종 적중을 오히려 낮춰 쓰지 않는다.
-    cur = cur.sort_values("prob", ascending=False).head(int(top_n))
+    cur = cur.assign(
+        prob=_true_prob(clf.predict_proba(X)[:, 1]),
+        exp_ret=np.clip(reg.predict(X), -0.30, 0.30),
+    )
+    is_lu = cur["limit_up"] >= 1
+
+    # 매수 가능 후보는 전일 하락도 포함: 상한가 제외 walk-forward 에서 하락 제외 시 57건 → 포함 84건.
+    buy = cur[~is_lu]
+    if clf_buy is not None and not buy.empty:
+        buy = buy.assign(prob=_true_prob(clf_buy.predict_proba(buy[BUYABLE_FEATURE_COLS].to_numpy(dtype=float))[:, 1]))
+    else:
+        buy = buy[buy["r1"] >= 0]
+    block_hot = config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED and config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE
+    if block_hot:
+        buy = buy[buy["r1"] + 1e-12 < float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)]
+    main = buy.sort_values("prob", ascending=False).head(int(top_n))
+
+    lu_rows = cur.iloc[0:0]
+    if not block_hot:
+        overall = cur[cur["r1"] >= 0].sort_values("prob", ascending=False).head(int(top_n))
+        lu_rows = overall[overall["limit_up"] >= 1].head(max(0, int(config.PRED_LIMIT_UP_EXTRA_MAX)))
 
     rows: list[PredictionRow] = []
-    for pos, r in enumerate(cur.itertuples(), start=1):
+    for pos, (r, prior_lu) in enumerate(
+        [(r, False) for r in main.itertuples()] + [(r, True) for r in lu_rows.itertuples()], start=1
+    ):
         prob = float(r.prob)
         exp_pct = float(r.exp_ret) * 100.0
         vol_x = float(np.expm1(r.vol_ratio)) if pd.notna(r.vol_ratio) else 0.0
+        if prior_lu:
+            head = "전일 상한가(별도 구분 · 시가 매수 어려움): "
+            verify = "전일 상한가 종목 익일 20%↑ 기준율 약 18%"
+        else:
+            head = ""
+            verify = "전일 상한가 제외 후보 246거래일 검증 상위 5종 적중률 약 7%, 1종 이상 맞힌 날 약 26%"
         reason = (
-            f"가격·거래량 모델: 예측 상승률 {exp_pct:+.1f}%(상승 시나리오 상위 10%) · 익일 20%↑ 확률 {prob:.0%} · "
+            f"{head}가격·거래량 모델: 예측 상승률 {exp_pct:+.1f}%(상승 시나리오 상위 10%) · 익일 20%↑ 확률 {prob:.0%} · "
             f"전일 {float(r.r1) * 100:+.1f}% · "
             f"거래량 20일 평균의 {vol_x:.1f}배 · 같은 업종 전일 20%↑ {int(r.ind_big or 0)}종 "
-            f"(과거 281거래일 검증 상위 5종 적중률 약 20%. 종가 기준 적중이며 시가 매수 시 평균 손실)"
+            f"({verify}. 종가 기준 적중)"
             + (f" · {basis_note}" if basis_note else "")
         )
         row = PredictionRow(
@@ -240,8 +292,9 @@ def predict_top(
             industry_limit_up_heat=float(r.ind_big_share or 0.0),
             rank_score=prob,
             rank_position=pos,
-            confidence_tier="high",
+            confidence_tier="mid" if prior_lu else "high",
             pred_source="price_model",
+            prior_limit_up=prior_lu,
         )
         rows.append(row)
     return rows
