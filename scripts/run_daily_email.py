@@ -272,6 +272,18 @@ def _expected_monthly_report_path(t_day: date) -> Path:
     return config.output_essential_dir() / f"report_{t_day.year}.{t_day.month:02d}.html"
 
 
+def _theme_report_paths(n_day: date) -> list[Path]:
+    """15:30 첨부용: N이 속한 달의 테마 월간 HTML + 테마 흐름 HTML (존재하는 것만)."""
+    from src import config
+    from src.report.content import theme_report_filename_for_month
+
+    paths = [
+        config.output_essential_dir() / theme_report_filename_for_month(n_day.year, n_day.month),
+        config.OUTPUT_DIR / "report_theme_flow.html",
+    ]
+    return [p for p in paths if p.is_file()]
+
+
 def _slot_report_snapshot_path(run_day: date, slot: str) -> Path | None:
     """14:30 → report_YYYY.MMDD-1430.html, 15:30 → report_YYYY.MMDD-1530.html. 그 외 슬롯은 None."""
     if slot not in _SLOT_SNAPSHOT_SLOTS:
@@ -581,12 +593,14 @@ def _email_attachment_paths(
     slot: str,
     dated_path: Path | None,
     monthly_path: Path | None,
+    theme_paths: list[Path] | None = None,
 ) -> list[Path]:
-    """이메일 첨부: 일별·월간만. 슬롯 스냅샷(-1430/-1530)과 16:00·16:30 은 제외."""
+    """이메일 첨부: 일별·월간 (+15:30은 테마 월간·테마 흐름). 슬롯 스냅샷과 16:00·16:30 은 제외."""
     if slot in ("1600", "1630"):
         return []
+    extra = list(theme_paths or []) if slot == "1530" else []
     attachments: list[Path] = []
-    for path in (dated_path, monthly_path):
+    for path in (dated_path, monthly_path, *extra):
         if path is None or not path.is_file():
             continue
         if _is_slot_report_snapshot(path):
@@ -638,6 +652,7 @@ def _build_email_body(
     extra_notes: list[str] | None = None,
     command_line: str | None = None,
     main_n_day: date | None = None,
+    theme_paths: list[Path] | None = None,
 ) -> str:
     label = SLOT_LABELS.get(slot, slot)
     if run_status == _RUN_STATUS_TIMEOUT:
@@ -680,6 +695,9 @@ def _build_email_body(
                 _format_report_note(monthly_path, label="월간 리포트"),
             ]
         )
+        for path in theme_paths or []:
+            label_t = "테마 흐름" if path.name.startswith("report_theme_flow") else "테마 리포트"
+            lines.append(_format_report_note(path, label=label_t))
     if extra_notes:
         lines.extend(extra_notes)
     lines.extend(["", "--- main.py 출력 ---", ""])
@@ -723,6 +741,7 @@ def _send_run_email(
         run_status=run_status,
         main_exit=main_exit,
     )
+    theme_paths = _theme_report_paths(n_day) if slot == "1530" else []
     body = _build_email_body(
         slot=slot,
         n_day=n_day,
@@ -735,9 +754,10 @@ def _send_run_email(
         extra_notes=extra_notes,
         command_line=command_line,
         main_n_day=main_n_day,
+        theme_paths=theme_paths,
     )
     attachments = _email_attachment_paths(
-        slot=slot, dated_path=dated_path, monthly_path=monthly_path
+        slot=slot, dated_path=dated_path, monthly_path=monthly_path, theme_paths=theme_paths
     )
 
     try:

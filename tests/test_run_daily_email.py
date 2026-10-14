@@ -332,6 +332,52 @@ def test_send_run_email_1430_skips_slot_snapshots(monkeypatch, tmp_path: Path) -
     assert "발송 완료" in msg
 
 
+def test_send_run_email_1530_attaches_theme_reports(monkeypatch, tmp_path: Path) -> None:
+    essential = tmp_path / "essential"
+    essential.mkdir()
+    dated = tmp_path / "report_dated_by_1015.html"
+    monthly = essential / "report_2026.10.html"
+    theme = essential / "report_theme_20pct_2026.10.html"
+    flow = tmp_path / "report_theme_flow.html"
+    for p in (dated, monthly, theme, flow):
+        p.write_text("x", encoding="utf-8")
+    captured: dict = {}
+
+    monkeypatch.setattr("src.config.OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr("src.config.output_essential_dir", lambda: essential)
+    monkeypatch.setattr("src.notify.email_report.email_configured", lambda: True)
+    monkeypatch.setattr("src.notify.email_report.parse_recipients", lambda: ["a@b.com"])
+    monkeypatch.setattr("src.config.EMAIL_SUBJECT_PREFIX", "[Money]")
+
+    def _fake_send(*, subject, body_text, attachment_paths):
+        captured.setdefault("attachments", []).append([p.name for p in attachment_paths])
+        captured.setdefault("body", []).append(body_text)
+
+    monkeypatch.setattr("src.notify.email_report.send_report_email", _fake_send)
+
+    for slot in ("1530", "1430"):
+        ok, _ = _send_run_email(
+            slot=slot,
+            n_day=date(2026, 10, 14),
+            t_day=date(2026, 10, 15),
+            main_exit=0,
+            run_status=_RUN_STATUS_OK,
+            log_text="ok",
+            dated_path=dated,
+            monthly_path=monthly,
+        )
+        assert ok
+    att_1530, att_1430 = captured["attachments"]
+    assert att_1530 == [
+        "report_dated_by_1015.html",
+        "report_2026.10.html",
+        "report_theme_20pct_2026.10.html",
+        "report_theme_flow.html",
+    ]
+    assert att_1430 == ["report_dated_by_1015.html", "report_2026.10.html"]
+    assert "테마 흐름: report_theme_flow.html" in captured["body"][0]
+
+
 def test_send_run_email_1600_no_attachments(monkeypatch, tmp_path: Path) -> None:
     dated = tmp_path / "report_dated_by_0820.html"
     monthly = tmp_path / "report_2026.08.html"
