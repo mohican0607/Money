@@ -51,6 +51,21 @@ REPORT_MOBILE_CSS = r"""
       overflow-wrap: anywhere; word-break: break-word;
     }
     .pred-reason-tip-compact { display: none; }
+    @media (max-width: 1100px) {
+      table.rows-compare {
+        table-layout: auto !important; width: max-content !important; min-width: 100% !important;
+      }
+      table.rows-compare th { white-space: normal; min-width: 4rem; }
+      table.rows-compare td.stock-ret-chain-col,
+      table.rows-compare td.cumulative-accuracy-td,
+      table.rows-compare td[data-sort-col="stock"],
+      table.rows-compare td[data-sort-col="actual"] { white-space: nowrap; }
+      table.rows-compare td.pred-reason-forward,
+      table.rows-compare td.pred-reason {
+        width: 13rem !important; min-width: 13rem !important; max-width: 13rem !important;
+        white-space: normal;
+      }
+    }
     .gap-tip.tip-open > .gap-tip-popup { display: block !important; }
     .gap-tip.integrate-tip.tip-open .integrate-tip-popup { display: block !important; }
     @media (max-width: 760px) {
@@ -75,8 +90,8 @@ REPORT_MOBILE_CSS = r"""
         display: none !important;
       }
       .pred-reason-tip-compact { display: inline-block !important; }
-      td.pred-reason-forward:has(.pred-reason-tip-compact) {
-        width: 4.5rem; max-width: 4.5rem; min-width: 4.5rem;
+      table.rows-compare td.pred-reason-forward:has(.pred-reason-tip-compact) {
+        width: 4.5rem !important; max-width: 4.5rem !important; min-width: 4.5rem !important;
         white-space: nowrap;
       }
       .gap-tip-popup, .combo-tip-popup, .disclosure-tip-popup, .kw-list-popup,
