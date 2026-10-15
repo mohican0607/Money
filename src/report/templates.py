@@ -51,20 +51,21 @@ REPORT_MOBILE_CSS = r"""
       overflow-wrap: anywhere; word-break: break-word;
     }
     .pred-reason-tip-compact { display: none; }
-    @media (max-width: 1100px) {
-      table.rows-compare {
-        table-layout: auto !important; width: max-content !important; min-width: 100% !important;
-      }
-      table.rows-compare th { white-space: normal; min-width: 4rem; }
-      table.rows-compare td.stock-ret-chain-col,
-      table.rows-compare td.cumulative-accuracy-td,
-      table.rows-compare td[data-sort-col="stock"],
-      table.rows-compare td[data-sort-col="actual"] { white-space: nowrap; }
-      table.rows-compare td.pred-reason-forward,
-      table.rows-compare td.pred-reason {
-        width: 13rem !important; min-width: 13rem !important; max-width: 13rem !important;
-        white-space: normal;
-      }
+    table.rows-compare {
+      table-layout: auto !important;
+      width: auto !important; width: max-content !important;
+      min-width: 100% !important;
+    }
+    table.rows-compare th { white-space: normal; min-width: 4rem; }
+    table.rows-compare td.stock-ret-chain-col,
+    table.rows-compare td.cumulative-accuracy-td,
+    table.rows-compare td[data-sort-col="group"],
+    table.rows-compare td[data-sort-col="stock"],
+    table.rows-compare td[data-sort-col="actual"] { white-space: nowrap; }
+    table.rows-compare td.pred-reason-forward,
+    table.rows-compare td.pred-reason {
+      width: 13rem !important; min-width: 13rem !important; max-width: 13rem !important;
+      white-space: normal;
     }
     .gap-tip.tip-open > .gap-tip-popup { display: block !important; }
     .gap-tip.integrate-tip.tip-open .integrate-tip-popup { display: block !important; }
@@ -86,11 +87,11 @@ REPORT_MOBILE_CSS = r"""
       .market-filter-radios, .rise-filter-radios { gap: 6px 10px; font-size: 0.78rem; }
       .market-filter-label, .rise-filter-label { min-height: 36px; }
       .live-intraday-toggle { padding: 8px 10px; min-height: 36px; }
-      td.pred-reason-forward:has(.pred-reason-tip-compact) .pred-reason-inline {
+      table.rows-compare:not(.cardify) td.pred-reason-forward:has(.pred-reason-tip-compact) .pred-reason-inline {
         display: none !important;
       }
-      .pred-reason-tip-compact { display: inline-block !important; }
-      table.rows-compare td.pred-reason-forward:has(.pred-reason-tip-compact) {
+      table.rows-compare:not(.cardify) .pred-reason-tip-compact { display: inline-block !important; }
+      table.rows-compare:not(.cardify) td.pred-reason-forward:has(.pred-reason-tip-compact) {
         width: 4.5rem !important; max-width: 4.5rem !important; min-width: 4.5rem !important;
         white-space: nowrap;
       }
@@ -112,6 +113,37 @@ REPORT_MOBILE_CSS = r"""
       .banner { padding: 10px 12px; font-size: 0.86rem; }
       .movers-data-note { padding: 10px 12px; font-size: 0.82rem; }
     }
+    /* 휴대폰 카드 보기: 일부 뷰어는 뷰포트를 데스크톱 폭으로 잡아 @media 가 안 맞으므로 JS가 html.phone-cards 를 붙인다. */
+    html.phone-cards table.rows-compare.cardify {
+      min-width: 0 !important; width: 100% !important; table-layout: auto !important;
+    }
+    html.phone-cards .table-wrap { overflow-x: visible; }
+    html.phone-cards table.rows-compare.cardify > thead { display: none; }
+    html.phone-cards table.rows-compare.cardify > tbody { display: block; }
+    html.phone-cards table.rows-compare.cardify > tbody > tr {
+      display: block; margin: 0 0 10px; padding: 2px 10px;
+      border: 1px solid #2a3548; border-radius: 10px; background: #131b28;
+    }
+    html.phone-cards table.rows-compare.cardify > tbody > tr[hidden] { display: none; }
+    html.phone-cards table.rows-compare.cardify > tbody > tr > td {
+      display: block; position: relative; box-sizing: border-box;
+      width: auto !important; min-width: 0 !important; max-width: none !important;
+      padding: 7px 0 7px 7.2rem !important; min-height: 2.4rem;
+      border-bottom: 1px dashed #243044;
+      white-space: normal !important; overflow-wrap: anywhere; text-align: left;
+    }
+    html.phone-cards table.rows-compare.cardify > tbody > tr > td:last-child { border-bottom: none; }
+    html.phone-cards table.rows-compare.cardify > tbody > tr > td::before {
+      content: attr(data-label);
+      position: absolute; left: 0; top: 7px; width: 6.8rem;
+      color: var(--muted); font-size: 0.74rem; font-weight: 600; line-height: 1.45;
+      white-space: normal;
+    }
+    html.phone-cards table.rows-compare.cardify > tbody > tr > td[data-label=""] { padding-left: 0 !important; }
+    html.phone-cards table.rows-compare.cardify > tbody > tr > td[data-label=""]::before { content: none; }
+    html.phone-cards table.rows-compare.cardify .stock-ret-col-lines { min-width: 0; }
+    html.phone-cards table.rows-compare.cardify .pred-reason-inline { display: block !important; max-width: 100% !important; }
+    html.phone-cards table.rows-compare.cardify .pred-reason-tip-compact { display: none !important; }
 """
 
 REPORT_TABLE_INTERACTION_MARKER = "money-report-table-interaction"
@@ -942,9 +974,44 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
       });
     });
   }
+  // 휴대폰 카드 보기(@media 760px)용: 각 칸에 헤더 이름을 data-label 로 붙인다.
+  function labelCompareCells(root) {
+    (root || document).querySelectorAll("table.rows-compare").forEach(function (t) {
+      var head = t.tHead && t.tHead.rows.length ? t.tHead.rows[t.tHead.rows.length - 1] : null;
+      if (!head) return;
+      var labels = [];
+      Array.prototype.forEach.call(head.cells, function (c) {
+        var txt = (c.textContent || "").replace(/\s+/g, " ").replace(/\s*\(%\)/g, "").trim();
+        var m = txt.match(/^(.+?)\s*\(([^)]*)\)/);
+        if (m && m[2].length > 8) txt = m[1];
+        for (var s = 0; s < (c.colSpan || 1); s++) labels.push(txt);
+      });
+      Array.prototype.forEach.call(t.tBodies, function (tb) {
+        Array.prototype.forEach.call(tb.rows, function (tr) {
+          var col = 0;
+          Array.prototype.forEach.call(tr.cells, function (td) {
+            td.setAttribute("data-label", labels[col] || "");
+            col += td.colSpan || 1;
+          });
+        });
+      });
+      t.classList.add("cardify");
+    });
+  }
+  function syncPhoneCards() {
+    var shortSide = Math.min(screen.width || 9999, screen.height || 9999);
+    var coarse = !!(window.matchMedia && window.matchMedia("(pointer: coarse)").matches);
+    var phone = window.innerWidth <= 760 || (coarse && shortSide <= 820);
+    document.documentElement.classList.toggle("phone-cards", phone);
+  }
   function _safeBind(fn) {
     try { fn(); } catch (err) {}
   }
+  _safeBind(function () {
+    labelCompareCells(document);
+    syncPhoneCards();
+    window.addEventListener("resize", syncPhoneCards);
+  });
   _safeBind(function () {
     document.querySelectorAll("table.rows-compare").forEach(bindSortTable);
   });
