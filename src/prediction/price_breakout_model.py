@@ -45,6 +45,12 @@ _model_cache: dict[
 _RET_SAMPLE = 0.20
 # 2026-09 검증: q=0.9 예측 ≥20% 인 103건 중 실제 20%↑ 10.7% (전체 기준율 0.46%).
 _RET_QUANTILE = 0.90
+# 전일 상한가 별도표시: 연속 상한·2일 과열은 익일 급락이 잦아 제외.
+# (2026-10-16 하이퍼코퍼레이션: 상한 연속 후 예측 +25.3% · 실제 -24.7%)
+_LU_EXTRA_MAX_STREAK = 1
+_LU_EXTRA_MAX_R2 = 0.40
+# 단일 상한가라도 q=0.9 낙관 상승률을 그대로 매수 신호처럼 보이지 않게 보수 상한(%).
+_LU_EXTRA_DISPLAY_PCT_CAP = 12.0
 
 
 def _industry_map() -> dict[str, str]:
@@ -251,12 +257,22 @@ def predict_top(
     block_hot = config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED and config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE
     if block_hot:
         buy = buy[buy["r1"] + 1e-12 < float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)]
+    # 2일 누적 급등 추격도 메인에서 제외(상한가 직전 단계의 과열).
+    if "r2" in buy.columns and not buy.empty:
+        buy = buy[buy["r2"].fillna(0) + 1e-12 < _LU_EXTRA_MAX_R2]
     main = buy.sort_values("prob", ascending=False).head(int(top_n))
 
     lu_rows = cur.iloc[0:0]
     if not block_hot:
         overall = cur[cur["r1"] >= 0].sort_values("prob", ascending=False).head(int(top_n))
-        lu_rows = overall[overall["limit_up"] >= 1].head(max(0, int(config.PRED_LIMIT_UP_EXTRA_MAX)))
+        cand = overall[overall["limit_up"] >= 1].copy()
+        # 연속 상한가·2일 누적 급등은 익일 반락이 잦아 별도 표시에서도 뺀다.
+        streak = cand["lu_streak"] if "lu_streak" in cand.columns else 0
+        r2 = cand["r2"] if "r2" in cand.columns else 0.0
+        overheated = (streak.fillna(0) > _LU_EXTRA_MAX_STREAK) | (
+            r2.fillna(0) + 1e-12 >= _LU_EXTRA_MAX_R2
+        )
+        lu_rows = cand[~overheated].head(max(0, int(config.PRED_LIMIT_UP_EXTRA_MAX)))
 
     rows: list[PredictionRow] = []
     for pos, (r, prior_lu) in enumerate(
@@ -266,8 +282,14 @@ def predict_top(
         exp_pct = float(r.exp_ret) * 100.0
         vol_x = float(np.expm1(r.vol_ratio)) if pd.notna(r.vol_ratio) else 0.0
         if prior_lu:
-            head = "전일 상한가(별도 구분 · 시가 매수 어려움): "
-            verify = "전일 상한가 종목 익일 20%↑ 기준율 약 18%"
+            # 낙관 분위(q=0.9) 그대로면 상한가 다음날 +20%대처럼 보여 매수 오인됨 → 보수 상한.
+            raw_exp = exp_pct
+            exp_pct = min(exp_pct, _LU_EXTRA_DISPLAY_PCT_CAP)
+            head = "전일 상한가(별도 구분 · 시가 매수 어려움 · 익일 반락 위험): "
+            verify = (
+                "전일 상한가 익일 20%↑ 기준율 약 18% · 연속 상한·2일 +40% 이상은 표시 제외 · "
+                f"표시 상승률은 낙관치 {raw_exp:+.1f}%를 {_LU_EXTRA_DISPLAY_PCT_CAP:.0f}%로 상한"
+            )
         else:
             head = ""
             verify = "전일 상한가 제외 후보 246거래일 검증 상위 5종 적중률 약 7%, 1종 이상 맞힌 날 약 26%"

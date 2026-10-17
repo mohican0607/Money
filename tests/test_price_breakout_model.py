@@ -94,6 +94,25 @@ def test_price_model_rows_survive_freeze_roundtrip(monkeypatch: pytest.MonkeyPat
     assert [round(float(r.ml_prob), 6) for r in back] == [round(float(r.ml_prob), 6) for r in rows]
 
 
+def _set_day_return(ret: pd.DataFrame, day: pd.Timestamp, codes: list[str], r: float) -> None:
+    """해당일 ``return_pct`` 와 OHLC를 직전 종가 기준으로 맞춘다(``r2``·연속 상한 필터용)."""
+    for code in codes:
+        m = (ret["Date"] == day) & (ret["Code"] == code)
+        if not m.any():
+            continue
+        idx = ret.index[m][0]
+        prev = ret[(ret["Code"] == code) & (ret["Date"] < day)]
+        if prev.empty:
+            continue
+        prev_close = float(prev.iloc[-1]["Close"])
+        new_close = max(10.0, prev_close * (1.0 + r))
+        ret.loc[idx, "return_pct"] = float(r)
+        ret.loc[idx, "Open"] = prev_close
+        ret.loc[idx, "Close"] = new_close
+        ret.loc[idx, "High"] = max(prev_close, new_close) * 1.01
+        ret.loc[idx, "Low"] = min(prev_close, new_close) * 0.99
+
+
 def _snapshot_for(ret: pd.DataFrame, day: pd.Timestamp, change: float = 0.0) -> pd.DataFrame:
     last = ret[ret["Date"] == ret["Date"].max()]
     return pd.DataFrame(
@@ -198,8 +217,10 @@ def test_prior_day_limit_up_listed_separately_after_main(monkeypatch: pytest.Mon
     ret = _synthetic_returns()
     target = ret["Date"].max().date()
     asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
-    m = (ret["Date"] == asof) & ret["Code"].isin(["000001", "000002"])
-    ret.loc[m, "return_pct"] = 0.299
+    prev = ret.loc[ret["Date"] < asof, "Date"].max()
+    # 단일 상한가만 남도록 직전일은 소폭, asof만 상한가.
+    _set_day_return(ret, prev, ["000001", "000002"], 0.01)
+    _set_day_return(ret, asof, ["000001", "000002"], 0.299)
     pbm._raw_cache.clear()
     pbm._model_cache.clear()
     rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
@@ -209,9 +230,33 @@ def test_prior_day_limit_up_listed_separately_after_main(monkeypatch: pytest.Mon
     assert not {"000001", "000002"} & {r.code for r in main}
     assert rows == main + extra
     assert all(r.confidence_tier == "mid" and "전일 상한가" in r.reasons[0] for r in extra)
+    assert all(r.predicted_return_pct <= pbm._LU_EXTRA_DISPLAY_PCT_CAP + 1e-9 for r in extra)
+    assert all("반락 위험" in r.reasons[0] for r in extra)
     for grp in (main, extra):
         probs = [float(r.ml_prob) for r in grp]
         assert probs == sorted(probs, reverse=True)
+
+
+def test_consecutive_limit_up_excluded_from_extras(monkeypatch: pytest.MonkeyPatch) -> None:
+    """연속 상한가(하이퍼코퍼레이션형)는 별도 표시에도 올리지 않는다."""
+    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
+    monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
+    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", False)
+    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 100)
+    ret = _synthetic_returns()
+    target = ret["Date"].max().date()
+    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
+    prev = ret.loc[ret["Date"] < asof, "Date"].max()
+    _set_day_return(ret, prev, ["000001"], 0.299)
+    _set_day_return(ret, asof, ["000001"], 0.299)
+    _set_day_return(ret, prev, ["000002"], 0.01)
+    _set_day_return(ret, asof, ["000002"], 0.299)
+    pbm._raw_cache.clear()
+    pbm._model_cache.clear()
+    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
+    extra_codes = {r.code for r in rows if r.prior_limit_up}
+    assert "000001" not in extra_codes
+    assert "000002" in extra_codes
 
 
 def test_limit_up_extra_only_when_in_overall_top(monkeypatch: pytest.MonkeyPatch) -> None:
