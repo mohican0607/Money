@@ -11,6 +11,25 @@ from src import config
 from src.prediction import price_breakout_model as pbm
 
 
+@pytest.fixture(autouse=True)
+def _stub_regime_and_news(monkeypatch: pytest.MonkeyPatch) -> None:
+    """테스트는 FDR·뉴스 캐시 없이 추세 피처만 검증(레짐·뉴스는 0)."""
+    monkeypatch.setattr(
+        pbm,
+        "_index_ret_frame",
+        lambda *_a, **_k: pd.DataFrame(columns=["Date", "idx_ret", "idx_vol5"]),
+    )
+    monkeypatch.setattr(
+        pbm,
+        "_load_news_counts",
+        lambda: pd.DataFrame(columns=["Code", "NewsDay", "news_n"]),
+    )
+    pbm._raw_cache.clear()
+    pbm._model_cache.clear()
+    pbm._news_cache.clear()
+    pbm._index_cache.clear()
+
+
 def _synthetic_returns(n_codes: int = 60, n_days: int = 160) -> pd.DataFrame:
     rng = np.random.default_rng(1)
     days = pd.bdate_range("2026-01-02", periods=n_days)
@@ -38,6 +57,17 @@ def _synthetic_returns(n_codes: int = 60, n_days: int = 160) -> pd.DataFrame:
                 }
             )
     return pd.DataFrame(rows)
+
+
+def test_build_raw_features_has_trend_and_regime_cols(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
+    ret = _synthetic_returns(n_codes=10, n_days=80)
+    raw = pbm.build_raw_features(ret)
+    for col in ("r10", "r60", "ret_cum3", "close_ma20_ratio", "ks11_ret", "ixic_ret"):
+        assert col in raw.columns
+    pairs = pbm._training_pairs(raw)
+    for col in pbm.CONTEXT_FEATURE_COLS:
+        assert col in pairs.columns
 
 
 def test_predict_top_ignores_target_day_data(monkeypatch: pytest.MonkeyPatch) -> None:
