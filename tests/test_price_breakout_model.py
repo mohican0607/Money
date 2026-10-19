@@ -71,11 +71,37 @@ def test_predict_top_rows_are_high_tier_slate(monkeypatch: pytest.MonkeyPatch) -
     assert [r.rank_position for r in rows] == list(range(1, len(rows) + 1))
     main = [r for r in rows if not r.prior_limit_up]
     assert len(main) == 3 and rows[:3] == main
-    assert all(r.confidence_tier == "high" for r in main)
+    # 확률 절대값이 낮으면 mid, 충분하면 high.
+    for r in main:
+        if float(r.ml_prob) + 1e-12 >= pbm._HIGH_TIER_MIN_PROB:
+            assert r.confidence_tier == "high"
+        else:
+            assert r.confidence_tier == "mid"
     assert all(-31.0 <= r.predicted_return_pct <= 31.0 for r in rows)
     assert len({round(r.predicted_return_pct, 6) for r in rows}) > 1
     assert all(r.pred_source == "price_model" for r in rows)
     assert all(0.0 <= float(r.ml_prob) <= 1.0 for r in rows)
+
+
+def test_main_slate_excludes_prior_day_exhaustion(monkeypatch: pytest.MonkeyPatch) -> None:
+    """전일 +12% 이상(에이엔피형)은 메인 슬레이트에 올리지 않는다."""
+    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
+    monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
+    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_ENABLED", True)
+    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", False)
+    monkeypatch.setattr(config, "PRED_HIGH_EXHAUSTION_BLOCK_RET", 0.12)
+    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 0)
+    ret = _synthetic_returns()
+    target = ret["Date"].max().date()
+    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
+    prev = ret.loc[ret["Date"] < asof, "Date"].max()
+    _set_day_return(ret, prev, ["000001"], 0.01)
+    _set_day_return(ret, asof, ["000001"], 0.158)
+    pbm._raw_cache.clear()
+    pbm._model_cache.clear()
+    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
+    main_codes = {r.code for r in rows if not r.prior_limit_up}
+    assert "000001" not in main_codes
 
 
 def test_price_model_rows_survive_freeze_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:

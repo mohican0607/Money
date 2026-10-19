@@ -51,6 +51,8 @@ _LU_EXTRA_MAX_STREAK = 1
 _LU_EXTRA_MAX_R2 = 0.40
 # 단일 상한가라도 q=0.9 낙관 상승률을 그대로 매수 신호처럼 보이지 않게 보수 상한(%).
 _LU_EXTRA_DISPLAY_PCT_CAP = 12.0
+# 메인 고확신: 절대 확률이 이보다 낮으면 mid 로만 표기 (10/19: 7~10%를 고확신으로 달아 오인).
+_HIGH_TIER_MIN_PROB = 0.15
 
 
 def _industry_map() -> dict[str, str]:
@@ -257,6 +259,14 @@ def predict_top(
     block_hot = config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED and config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE
     if block_hot:
         buy = buy[buy["r1"] + 1e-12 < float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)]
+    # 고확신 과열 차단은 BLOCK_SLATE 와 무관하게 메인에 항상 적용.
+    # (10/19 에이엔피: 전일 +15.8% 인데 메인 고확신 → 실제 -29.9%)
+    if config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED and not buy.empty:
+        hi_ex = float(config.PRED_HIGH_EXHAUSTION_BLOCK_RET)
+        buy = buy[buy["r1"].fillna(0) + 1e-12 < hi_ex]
+    # 전일 상한가 직후 추격도 메인에서 제외(상한 다음날 +α 후 급락 패턴).
+    if "r1_prev" in buy.columns and not buy.empty:
+        buy = buy[buy["r1_prev"].fillna(0) + 1e-12 < 0.29]
     # 2일 누적 급등 추격도 메인에서 제외(상한가 직전 단계의 과열).
     if "r2" in buy.columns and not buy.empty:
         buy = buy[buy["r2"].fillna(0) + 1e-12 < _LU_EXTRA_MAX_R2]
@@ -300,6 +310,13 @@ def predict_top(
             f"({verify}. 종가 기준 적중)"
             + (f" · {basis_note}" if basis_note else "")
         )
+        if prior_lu:
+            tier = "mid"
+        elif prob + 1e-12 >= _HIGH_TIER_MIN_PROB:
+            tier = "high"
+        else:
+            # 확률 절대값이 낮은데 고확신 라벨을 달면 매수 오인 (10/19 메인 7~10%).
+            tier = "mid"
         row = PredictionRow(
             code=str(r.Code).zfill(6),
             name=str(listing_names.get(str(r.Code).zfill(6)) or r.Name),
@@ -314,7 +331,7 @@ def predict_top(
             industry_limit_up_heat=float(r.ind_big_share or 0.0),
             rank_score=prob,
             rank_position=pos,
-            confidence_tier="mid" if prior_lu else "high",
+            confidence_tier=tier,
             pred_source="price_model",
             prior_limit_up=prior_lu,
         )
