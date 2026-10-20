@@ -250,6 +250,9 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
         for (var j = 0; j < riseRadios.length; j++) {
           if (riseRadios[j].checked) riseSel = riseRadios[j].value;
         }
+        // 예측 전용(실제 20%↑ 없음): '20%이상' 필터가 중확신 행을 전부 숨기면 표가 비어 보임.
+        var forwardObs = block.classList.contains("day-forward-obs")
+          || !!(block.closest && block.closest(".day-forward-obs"));
         tbody.querySelectorAll("tr").forEach(function (tr) {
           var m = tr.getAttribute("data-market") || "other";
           var rb = tr.getAttribute("data-rise-band") || "low";
@@ -262,10 +265,12 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
             }
           }
           var riseVisible = true;
-          if (riseSel === "high") {
-            riseVisible = rb === "high";
-          } else if (riseSel === "mid") {
-            riseVisible = rb === "mid";
+          if (!forwardObs) {
+            if (riseSel === "high") {
+              riseVisible = rb === "high";
+            } else if (riseSel === "mid") {
+              riseVisible = rb === "mid";
+            }
           }
           if (marketVisible && riseVisible) {
             tr.style.removeProperty("display");
@@ -1488,7 +1493,12 @@ __ACTUAL_RET_CELL_MACRO__
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
+  {% if forward_day %}
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 전체</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
+  {% else %}
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
+  {% endif %}
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
@@ -1616,7 +1626,7 @@ __ACTUAL_RET_CELL_MACRO__
 {% endif %}
 {%- endmacro %}
 {% macro day_panel(d, meta) -%}
-  <section id="day-{{ d.trading_day.isoformat() }}" class="day-market-block">
+  <section id="day-{{ d.trading_day.isoformat() }}" class="day-market-block{% if d.forward_observation | default(false) %} day-forward-obs{% endif %}">
     <div class="day-heading-row">
       <h2>{{ d.trading_day.isoformat() }} (거래일)</h2>
       {{ market_filter_radios(d.trading_day.isoformat(), d.forward_observation | default(false)) }}
@@ -1658,7 +1668,7 @@ __ACTUAL_RET_CELL_MACRO__
       </thead>
       <tbody>
         {% for r in d.rows_compare %}
-        <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ 'high' if r.pred_high else r.rise_band|default('low') }}">
+        <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ 'high' if (r.pred_high or ((d.forward_observation | default(false)) and r.pred_ret is not none)) else r.rise_band|default('low') }}">
           <td class="col-group" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
             {% if not (d.forward_observation | default(false)) and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측≥{{ meta.threshold }}{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
@@ -2180,7 +2190,12 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
+  {% if forward_day %}
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 전체</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
+  {% else %}
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
+  {% endif %}
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
@@ -2342,7 +2357,7 @@ __ACTUAL_RET_CELL_MACRO_MONTHLY__
   </thead>
   <tbody>
     {% for r in d.rows_compare %}
-    <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ 'high' if r.pred_high else r.rise_band|default('low') }}">
+    <tr data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ 'high' if (r.pred_high or ((d.forward_observation | default(false)) and r.pred_ret is not none)) else r.rise_band|default('low') }}">
       <td class="col-group" data-sort-col="group" data-sort-value="{% if r.actual_big and (r.pred_high | default(false)) %}3{% elif r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
         {% if not (d.forward_observation | default(false)) and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제</span>{% endif %}
         {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block">{% if meta.ranking_mode | default(false) %}고확신{% else %}예측{% endif %}</span>{% elif (r.confidence_tier | default('')) == 'mid' %}<span class="pill" style="margin-top:4px;display:inline-block">중확신</span>{% endif %}
@@ -2859,7 +2874,12 @@ _DATED_N_TEMPLATE = r"""
 </div>
 <div class="rise-filter-radios" role="radiogroup" aria-label="상승률 구간">
   <span class="rise-filter-title">상승률 -</span>
+  {% if forward_day %}
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="all" checked="checked"/> 전체</label>
+  <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high"/> 20%이상</label>
+  {% else %}
   <label class="rise-filter-label"><input type="radio" name="rise-scope-{{ suffix }}" value="high" checked="checked"/> 20%이상</label>
+  {% endif %}
 </div>
 {%- endmacro %}
 {% macro prediction_signal_cell(r) -%}
@@ -3050,7 +3070,7 @@ __ACTUAL_RET_CELL_MACRO_DATED__
       </thead>
       <tbody>
         {% for r in day.rows_compare %}
-        <tr id="code-{{ row_id_prefix }}{{ r.code }}" data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ 'high' if r.pred_high else r.rise_band|default('low') }}">
+        <tr id="code-{{ row_id_prefix }}{{ r.code }}" data-market="{{ r.market_segment|default('other') }}" data-rise-band="{{ 'high' if (r.pred_high or ((day.forward_observation | default(false)) and r.pred_ret is not none)) else r.rise_band|default('low') }}">
           <td class="col-group" data-sort-col="group" data-sort-value="{% if (not meta.prediction_only) and r.actual_big and (r.pred_high | default(false)) %}3{% elif (not meta.prediction_only) and r.actual_big %}2{% elif r.pred_high | default(false) %}1{% else %}0{% endif %}">
             {% if not meta.prediction_only and r.actual_big %}<span class="pill" style="background:#1e3d2f;color:var(--ok)">실제≥{{ meta.threshold }}</span>{% endif %}
             {% if r.pred_high | default(false) %}<span class="pill" style="margin-top:4px;display:inline-block;color:var(--warn)">예측≥{{ meta.threshold }}</span>{% endif %}

@@ -41,6 +41,13 @@ def test_touch_tip_toggle_bound_in_interaction_snippet() -> None:
     assert "(hover: none), (pointer: coarse)" in REPORT_TABLE_INTERACTION_SNIPPET
 
 
+def test_forward_observation_skips_rise_band_filter() -> None:
+    """예측 전용 일자에서 20% 필터가 중확신 슬레이트를 숨기지 않아야 한다."""
+    assert "day-forward-obs" in REPORT_TABLE_INTERACTION_SNIPPET
+    assert "forwardObs" in REPORT_TABLE_INTERACTION_SNIPPET
+    assert "day-forward-obs" in _COMPACT_TEMPLATE
+
+
 def test_inject_report_mobile_css_idempotent() -> None:
     sample = "<html><head><style>\nbody{color:red}\n</style></head></html>"
     once = _inject_report_mobile_css(sample)
