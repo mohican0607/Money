@@ -451,19 +451,89 @@ from .templates import (
 )
 
 _LIVE_QUOTES_SCRIPT = '<script src="live_quotes.js" id="money-live-quotes-js"></script>'
+_LIVE_QUOTES_INLINE_RE = re.compile(
+    r'<script\b[^>]*\bid=["\']money-live-quotes-inline["\'][^>]*>.*?</script>',
+    re.DOTALL | re.IGNORECASE,
+)
 
 
-def _inject_live_quotes_script(html: str) -> str:
-    """``<head>`` 에 live_quotes.js 를 넣습니다.
+def _read_live_quotes_js_body(*, prefer_dir: Path | None = None) -> str:
+    """이메일 첨부 HTML에 넣을 ``window.__MONEY_LIVE_QUOTES__`` 스냅샷."""
+    from .live_quotes import _live_quotes_js_body, js_path
 
+    dirs: list[Path] = []
+    if prefer_dir is not None:
+        dirs.append(Path(prefer_dir))
+    dirs.append(config.OUTPUT_DIR)
+    ess = config.output_essential_dir()
+    if ess not in dirs:
+        dirs.append(ess)
+    seen: set[str] = set()
+    for d in dirs:
+        key = str(d)
+        if key in seen:
+            continue
+        seen.add(key)
+        path = js_path(d)
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if "window.__MONEY_LIVE_QUOTES__" in text:
+            return text.replace("</", "<\\/")
+    return _live_quotes_js_body({})
+
+
+def _inject_live_quotes_script(html: str, *, html_dir: Path | None = None) -> str:
+    """``<head>`` 에 시세 스냅샷(인라인)과 live_quotes.js 를 넣습니다.
+
+    이메일 첨부·휴대폰 파일 뷰는 상대경로 ``live_quotes.js`` 와 127.0.0.1 API에
+    닿지 않으므로, 발송 시점 등락률을 HTML 안에 같이 넣습니다.
     본문 인터랙션 스크립트가 ``live_quotes.js`` 문자열을 포함하므로, 파일명 부분
     일치가 아니라 script id 로 중복 삽입을 막습니다.
     """
-    if 'id="money-live-quotes-js"' in html or "id='money-live-quotes-js'" in html:
-        return html
     if "</head>" not in html:
         return html
-    return html.replace("</head>", f"  {_LIVE_QUOTES_SCRIPT}\n</head>", 1)
+    inline = (
+        f'<script id="money-live-quotes-inline">'
+        f"{_read_live_quotes_js_body(prefer_dir=html_dir)}</script>"
+    )
+    if _LIVE_QUOTES_INLINE_RE.search(html):
+        html = _LIVE_QUOTES_INLINE_RE.sub(inline, html, count=1)
+    else:
+        html = html.replace("</head>", f"  {inline}\n</head>", 1)
+    if 'id="money-live-quotes-js"' not in html and "id='money-live-quotes-js'" not in html:
+        html = html.replace("</head>", f"  {_LIVE_QUOTES_SCRIPT}\n</head>", 1)
+    return html
+
+
+def stamp_live_quotes_into_email_html(paths: list[Path]) -> None:
+    """첨부 HTML에 최신 시세 스냅샷·인터랙션 스크립트를 다시 넣습니다."""
+    from .live_quotes import collect_stock_codes_from_html, ensure_live_quotes_for_report
+
+    html_paths: list[Path] = []
+    codes: set[str] = set()
+    for path in paths:
+        p = Path(path)
+        if not p.is_file() or p.suffix.lower() != ".html":
+            continue
+        html_paths.append(p)
+        try:
+            codes.update(collect_stock_codes_from_html(p.read_text(encoding="utf-8")))
+        except OSError:
+            continue
+    if codes:
+        ensure_live_quotes_for_report(config.OUTPUT_DIR, sorted(codes))
+    for p in html_paths:
+        try:
+            html = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        updated = _ensure_report_interaction_script(html, html_dir=p.parent)
+        if updated != html:
+            p.write_text(updated, encoding="utf-8")
 
 
 def _after_report_written(out_path: Path, days: list[DayReport]) -> None:
@@ -485,6 +555,14 @@ def _after_report_written(out_path: Path, days: list[DayReport]) -> None:
     if out_dir.name == config.OUTPUT_ESSENTIAL_DIRNAME:
         out_dir = out_dir.parent
     ensure_live_quotes_for_report(out_dir, sorted(codes))
+    try:
+        if out_path.is_file():
+            html = out_path.read_text(encoding="utf-8")
+            updated = _inject_live_quotes_script(html, html_dir=out_path.parent)
+            if updated != html:
+                out_path.write_text(updated, encoding="utf-8")
+    except OSError:
+        pass
 
 
 def render_report(
@@ -966,10 +1044,10 @@ def _ensure_latest_day_focus_script(html: str) -> str:
     return html
 
 
-def _ensure_report_interaction_script(html: str) -> str:
+def _ensure_report_interaction_script(html: str, *, html_dir: Path | None = None) -> str:
     """인터랙션 스크립트를 보강·교체(구버전 누적 HTML의 stale JS 갱신)."""
     html = _inject_report_mobile_css(html)
-    html = _inject_live_quotes_script(html)
+    html = _inject_live_quotes_script(html, html_dir=html_dir)
     html = _ensure_latest_day_focus_script(html)
     if _INTERACTION_BLOCK_RE.search(html):
         snippet = REPORT_TABLE_INTERACTION_SNIPPET.strip()

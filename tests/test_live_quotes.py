@@ -168,7 +168,26 @@ def test_inject_live_quotes_script_despite_js_filename_in_body() -> None:
     )
     out = _ensure_report_interaction_script(html)
     assert 'id="money-live-quotes-js"' in out
+    assert 'id="money-live-quotes-inline"' in out
+    assert out.index('id="money-live-quotes-inline"') < out.lower().index("</head>")
     assert out.index('id="money-live-quotes-js"') < out.lower().index("</head>")
+    assert "window.__MONEY_LIVE_QUOTES__" in out.split("</head>", 1)[0]
+
+
+def test_inject_inlines_live_quotes_snapshot(tmp_path: Path, monkeypatch) -> None:
+    from src.report import render as render_mod
+    from src.report.live_quotes import write_live_quotes_js
+
+    out_dir = tmp_path / "output"
+    write_live_quotes_js(out_dir, {"005930": 1.25})
+    monkeypatch.setattr(render_mod.config, "OUTPUT_DIR", out_dir)
+    html = "<!DOCTYPE html><html><head></head><body></body></html>"
+    got = render_mod._inject_live_quotes_script(html, html_dir=out_dir)
+    assert 'id="money-live-quotes-inline"' in got
+    assert '"005930": 1.25' in got
+    twice = render_mod._inject_live_quotes_script(got, html_dir=out_dir)
+    assert twice.count('id="money-live-quotes-inline"') == 1
+    assert twice.count('id="money-live-quotes-js"') == 1
 
 
 def test_interaction_snippet_hydrates_today_n_line() -> None:

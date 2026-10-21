@@ -759,6 +759,10 @@ def _send_run_email(
     attachments = _email_attachment_paths(
         slot=slot, dated_path=dated_path, monthly_path=monthly_path, theme_paths=theme_paths
     )
+    if attachments:
+        from src.report.render import stamp_live_quotes_into_email_html
+
+        stamp_live_quotes_into_email_html(attachments)
 
     try:
         send_report_email(subject=subject, body_text=body, attachment_paths=attachments)

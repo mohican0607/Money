@@ -418,6 +418,11 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     var base = html && html.getAttribute("data-live-quotes-base");
     return (base && String(base).trim()) || "http://127.0.0.1:8765";
   }
+  // 이메일 첨부·휴대폰 파일 뷰는 이 PC의 8765에 닿지 않음. localhost 가 아니면 로컬 API를 건너뛴다.
+  function canUseLocalQuotesApi() {
+    var h = String(location.hostname || "");
+    return h === "127.0.0.1" || h === "localhost";
+  }
   // KST 연·월·일·시·분 (리포트 생성 시점과 무관하게 열람 시각 기준).
   function kstClock() {
     var parts = {};
@@ -748,28 +753,105 @@ REPORT_TABLE_INTERACTION_SNIPPET = r"""<!-- money-report-table-interaction -->
     window.addEventListener("scroll", refreshOpenStockChartTips, true);
   }
   // --- 표 내 실시간 상승률(예측 옆·N일봉 열) ---
+  function quotesFromInlineCache(codes) {
+    var q = window.__MONEY_LIVE_QUOTES__ || {};
+    var out = {};
+    codes.forEach(function (c) { if (q[c] != null) out[c] = q[c]; });
+    return out;
+  }
+  function mergeQuoteMaps(dst, src) {
+    if (!src) return dst;
+    Object.keys(src).forEach(function (k) {
+      var v = parseFloat(src[k]);
+      if (!isNaN(v)) dst[k] = v;
+    });
+    return dst;
+  }
+  function parseNaverRealtime(obj, dst) {
+    var datas = obj && obj.datas;
+    if (!datas || !datas.length) return dst;
+    datas.forEach(function (it) {
+      if (!it) return;
+      var code = String(it.itemCode || it.symbolCode || "").replace(/\D/g, "");
+      if (code.length > 6) code = code.slice(-6);
+      while (code.length < 6) code = "0" + code;
+      var raw = it.fluctuationsRatioRaw != null ? it.fluctuationsRatioRaw : it.fluctuationsRatio;
+      var v = parseFloat(raw);
+      if (code.length === 6 && !isNaN(v)) dst[code] = v;
+    });
+    return dst;
+  }
+  // 이메일 첨부 HTML(휴대폰)에서도 동작: 네이버 실시간 polling 을 브라우저에서 직접 조회.
+  function fetchNaverQuotesMap(codes, cb) {
+    var left = codes.slice();
+    var out = {};
+    function next() {
+      if (!left.length) { cb(out); return; }
+      var chunk = left.splice(0, 20);
+      var url = "https://polling.finance.naver.com/api/realtime/domestic/stock/" + chunk.join(",");
+      var ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+      var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, 4000);
+      var opts = { credentials: "omit", cache: "no-store", mode: "cors" };
+      if (ctrl) opts.signal = ctrl.signal;
+      fetch(url, opts)
+        .then(function (res) { return res.ok ? res.json() : null; })
+        .then(function (obj) {
+          clearTimeout(timer);
+          parseNaverRealtime(obj, out);
+          next();
+        })
+        .catch(function () {
+          clearTimeout(timer);
+          next();
+        });
+    }
+    next();
+  }
+  function finishQuotesWithFallback(codes, got, cb) {
+    var out = mergeQuoteMaps({}, got);
+    var missing = codes.filter(function (c) { return out[c] == null; });
+    if (!missing.length) { cb(out); return; }
+    fetchNaverQuotesMap(missing, function (nv) {
+      mergeQuoteMaps(out, nv);
+      missing = codes.filter(function (c) { return out[c] == null; });
+      if (!missing.length || !canUseLocalQuotesApi()) {
+        mergeQuoteMaps(out, quotesFromInlineCache(codes));
+        cb(out);
+        return;
+      }
+      reloadLiveQuotesJs(function () {
+        mergeQuoteMaps(out, quotesFromInlineCache(codes));
+        cb(out);
+      });
+    });
+  }
   function fetchLiveQuotesMap(codes, cb) {
     if (!codes.length) { cb({}); return; }
+    var seeded = quotesFromInlineCache(codes);
+    if (Object.keys(seeded).length) cb(seeded);
+    if (!canUseLocalQuotesApi()) {
+      finishQuotesWithFallback(codes, seeded, cb);
+      return;
+    }
     var url = liveQuotesBase().replace(/\/$/, "")
       + "/api/quotes?codes=" + encodeURIComponent(codes.join(","));
+    var timedOut = false;
+    var timer = setTimeout(function () {
+      timedOut = true;
+      finishQuotesWithFallback(codes, seeded, cb);
+    }, 2500);
     fetch(url, { credentials: "omit", cache: "no-store" })
       .then(function (res) { return res.ok ? res.json() : null; })
       .then(function (obj) {
+        if (timedOut) return;
+        clearTimeout(timer);
         if (obj && obj.quotes) { cb(obj.quotes); return; }
-        reloadLiveQuotesJs(function () {
-          var q = window.__MONEY_LIVE_QUOTES__ || {};
-          var out = {};
-          codes.forEach(function (c) { if (q[c] != null) out[c] = q[c]; });
-          cb(out);
-        });
+        finishQuotesWithFallback(codes, seeded, cb);
       })
       .catch(function () {
-        reloadLiveQuotesJs(function () {
-          var q = window.__MONEY_LIVE_QUOTES__ || {};
-          var out = {};
-          codes.forEach(function (c) { if (q[c] != null) out[c] = q[c]; });
-          cb(out);
-        });
+        if (timedOut) return;
+        clearTimeout(timer);
+        finishQuotesWithFallback(codes, seeded, cb);
       });
   }
   // N일봉 열 표시용 등락률 문자열(숫자와 % 사이 공백).

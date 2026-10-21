@@ -48,6 +48,14 @@ def test_forward_observation_skips_rise_band_filter() -> None:
     assert "day-forward-obs" in _COMPACT_TEMPLATE
 
 
+def test_live_quotes_phone_email_fallback() -> None:
+    """휴대폰 이메일 첨부에서는 localhost API를 건너뛰고 네이버·인라인 스냅샷을 쓴다."""
+    snippet = REPORT_TABLE_INTERACTION_SNIPPET
+    assert "canUseLocalQuotesApi" in snippet
+    assert "polling.finance.naver.com" in snippet
+    assert "quotesFromInlineCache" in snippet
+
+
 def test_inject_report_mobile_css_idempotent() -> None:
     sample = "<html><head><style>\nbody{color:red}\n</style></head></html>"
     once = _inject_report_mobile_css(sample)
