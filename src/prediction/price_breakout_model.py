@@ -35,7 +35,10 @@ FEATURE_COLS = [
 CONTEXT_FEATURE_COLS = ["news_n", "news_5d", "news_surge", "ind_news"]
 # 매수 가능(전일 상한가 아님) 전용 모델 추가 피처. 상한가 제외 후보 walk-forward(2025-10~2026-10, 246일)
 # 상위 5종 적중: 기본 피처·전체 학습 72건 → 상한가 제외 학습+추가 피처 84건.
-EXTRA_FEATURE_COLS = ["r1_prev", "lu_streak", "n_lu20", "gap", "close_at_high", "vol_ratio_prev", "r2"]
+EXTRA_FEATURE_COLS = [
+    "r1_prev", "lu_streak", "n_lu20", "gap", "close_at_high", "vol_ratio_prev", "r2",
+    "ret_max4_prev",
+]
 BUYABLE_FEATURE_COLS = FEATURE_COLS + EXTRA_FEATURE_COLS + CONTEXT_FEATURE_COLS
 MODEL_FEATURE_COLS = FEATURE_COLS + CONTEXT_FEATURE_COLS
 _LIMIT = 0.31
@@ -64,6 +67,10 @@ _LU_EXTRA_MAX_R2 = 0.40
 _LU_EXTRA_DISPLAY_PCT_CAP = 12.0
 # 메인 고확신: 절대 확률이 이보다 낮으면 mid 로만 표기 (10/19: 7~10%를 고확신으로 달아 오인).
 _HIGH_TIER_MIN_PROB = 0.15
+# 전일 급락 반등 추격 제외 (10/21 에이엔피 -15%·하이퍼 -16%·푸드나무 -30% → 추가 하락/미달).
+_CRASH_REBOUND_RET = -0.12
+# 최근 5거래일 20%↑ 잔열 제외 (10/20 대양금속·엔젠바이오, 10/21 HT로보틱스).
+_RECENT_SPIKE_MAX = 0.20
 
 
 def _industry_map() -> dict[str, str]:
@@ -105,6 +112,9 @@ def build_raw_features(returns: pd.DataFrame) -> pd.DataFrame:
     ) - 1.0
     df["ret_roll_mean5"] = g["return_pct"].transform(lambda s: s.rolling(5, min_periods=3).mean())
     df["ret_max5"] = g["return_pct"].transform(lambda s: s.rolling(5, min_periods=3).max())
+    df["ret_max4_prev"] = g["r1"].transform(
+        lambda s: s.shift(1).rolling(4, min_periods=1).max()
+    )
     ma20 = g["Close"].transform(lambda s: s.rolling(20, min_periods=5).mean())
     df["close_ma20_ratio"] = df["Close"] / ma20 - 1.0
     # 20일 종가 기울기(로그 회귀 근사): 최근 구간 상대 위치
@@ -446,17 +456,26 @@ def predict_top(
     # 2일 누적 급등 추격도 메인에서 제외(상한가 직전 단계의 과열).
     if "r2" in buy.columns and not buy.empty:
         buy = buy[buy["r2"].fillna(0) + 1e-12 < _LU_EXTRA_MAX_R2]
+    # 급락 직후 반등 추격 제외. 형지글로벌(-7% 후 +30%)은 남기고, -12% 이하는 뺀다.
+    if not buy.empty:
+        buy = buy[buy["r1"].fillna(0) > _CRASH_REBOUND_RET]
+    # 최근 5일 20%↑ 잔열은 익일 추가 급등이 드묾 (대양금속 N-2 상한 후 -13%).
+    if "ret_max5" in buy.columns and not buy.empty:
+        buy = buy[buy["ret_max5"].fillna(0) + 1e-12 < _RECENT_SPIKE_MAX]
     main = buy.sort_values("prob", ascending=False).head(int(top_n))
 
     lu_rows = cur.iloc[0:0]
     if not block_hot:
         overall = cur[cur["r1"] >= 0].sort_values("prob", ascending=False).head(int(top_n))
         cand = overall[overall["limit_up"] >= 1].copy()
-        # 연속 상한가·2일 누적 급등은 익일 반락이 잦아 별도 표시에서도 뺀다.
+        # 연속 상한가·2일 누적 급등·직전 4일 20%↑ 잔열은 익일 반락이 잦아 별도 표시에서도 뺀다.
         streak = cand["lu_streak"] if "lu_streak" in cand.columns else 0
         r2 = cand["r2"] if "r2" in cand.columns else 0.0
-        overheated = (streak.fillna(0) > _LU_EXTRA_MAX_STREAK) | (
-            r2.fillna(0) + 1e-12 >= _LU_EXTRA_MAX_R2
+        prev_spike = cand["ret_max4_prev"] if "ret_max4_prev" in cand.columns else 0.0
+        overheated = (
+            (streak.fillna(0) > _LU_EXTRA_MAX_STREAK)
+            | (r2.fillna(0) + 1e-12 >= _LU_EXTRA_MAX_R2)
+            | (prev_spike.fillna(0) + 1e-12 >= _RECENT_SPIKE_MAX)
         )
         lu_rows = cand[~overheated].head(max(0, int(config.PRED_LIMIT_UP_EXTRA_MAX)))
 
@@ -478,7 +497,10 @@ def predict_top(
             )
         else:
             head = ""
-            verify = "추세·레짐·뉴스 강도 학습 모델 · 전일 상한가 제외 후보 검증 상위 5종 적중률 약 7%"
+            verify = (
+                "추세·레짐·뉴스 강도 학습 모델 · 전일 상한가 제외 후보 검증 상위 5종 적중률 약 7% · "
+                "전일 -12% 이하·최근 5일 20%↑ 잔열은 메인 제외"
+            )
         r10 = float(getattr(r, "r10", 0.0) or 0.0)
         r60 = float(getattr(r, "r60", 0.0) or 0.0)
         ks = float(getattr(r, "ks11_ret", 0.0) or 0.0)

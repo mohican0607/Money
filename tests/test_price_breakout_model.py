@@ -63,7 +63,7 @@ def test_build_raw_features_has_trend_and_regime_cols(monkeypatch: pytest.Monkey
     monkeypatch.setattr(pbm, "_industry_map", lambda: {})
     ret = _synthetic_returns(n_codes=10, n_days=80)
     raw = pbm.build_raw_features(ret)
-    for col in ("r10", "r60", "ret_cum3", "close_ma20_ratio", "ks11_ret", "ixic_ret"):
+    for col in ("r10", "r60", "ret_cum3", "close_ma20_ratio", "ks11_ret", "ixic_ret", "ret_max4_prev"):
         assert col in raw.columns
     pairs = pbm._training_pairs(raw)
     for col in pbm.CONTEXT_FEATURE_COLS:
@@ -134,6 +134,44 @@ def test_main_slate_excludes_prior_day_exhaustion(monkeypatch: pytest.MonkeyPatc
     assert "000001" not in main_codes
 
 
+def test_main_slate_excludes_crash_rebound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """전일 -12% 이하 급락 반등 추격(10/21 에이엔피·하이퍼형)은 메인에서 뺀다."""
+    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
+    monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
+    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 0)
+    ret = _synthetic_returns()
+    target = ret["Date"].max().date()
+    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
+    _quiet_recent(ret, asof, ["000001"])
+    _set_day_return(ret, asof, ["000001"], -0.16)
+    pbm._raw_cache.clear()
+    pbm._model_cache.clear()
+    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
+    main_codes = {r.code for r in rows if not r.prior_limit_up}
+    assert "000001" not in main_codes
+
+
+def test_main_slate_excludes_recent_five_day_spike(monkeypatch: pytest.MonkeyPatch) -> None:
+    """최근 5일 20%↑ 잔열(10/20 대양금속형)은 전일이 조용해도 메인에서 뺀다."""
+    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
+    monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
+    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 0)
+    ret = _synthetic_returns()
+    target = ret["Date"].max().date()
+    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
+    prev = ret.loc[ret["Date"] < asof, "Date"].max()
+    prev2 = ret.loc[ret["Date"] < prev, "Date"].max()
+    _quiet_recent(ret, asof, ["000001"])
+    _set_day_return(ret, prev2, ["000001"], 0.25)
+    _set_day_return(ret, prev, ["000001"], -0.04)
+    _set_day_return(ret, asof, ["000001"], -0.05)
+    pbm._raw_cache.clear()
+    pbm._model_cache.clear()
+    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
+    main_codes = {r.code for r in rows if not r.prior_limit_up}
+    assert "000001" not in main_codes
+
+
 def test_price_model_rows_survive_freeze_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.pipeline import support as ps
 
@@ -148,6 +186,13 @@ def test_price_model_rows_survive_freeze_roundtrip(monkeypatch: pytest.MonkeyPat
     assert [r.pred_source for r in back] == ["price_model"] * len(rows)
     assert [r.prior_limit_up for r in back] == [r.prior_limit_up for r in rows]
     assert [round(float(r.ml_prob), 6) for r in back] == [round(float(r.ml_prob), 6) for r in rows]
+
+
+def _quiet_recent(ret: pd.DataFrame, asof: pd.Timestamp, codes: list[str], n: int = 6) -> None:
+    """합성 데이터의 무작위 상한가가 잔열 필터에 걸리지 않게 직전 n일을 조용히 둔다."""
+    days = sorted(ret.loc[ret["Date"] < asof, "Date"].unique())[-n:]
+    for d in days:
+        _set_day_return(ret, d, codes, 0.01)
 
 
 def _set_day_return(ret: pd.DataFrame, day: pd.Timestamp, codes: list[str], r: float) -> None:
@@ -274,7 +319,8 @@ def test_prior_day_limit_up_listed_separately_after_main(monkeypatch: pytest.Mon
     target = ret["Date"].max().date()
     asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
     prev = ret.loc[ret["Date"] < asof, "Date"].max()
-    # 단일 상한가만 남도록 직전일은 소폭, asof만 상한가.
+    # 단일 상한가만 남도록 직전 구간은 소폭, asof만 상한가.
+    _quiet_recent(ret, asof, ["000001", "000002"])
     _set_day_return(ret, prev, ["000001", "000002"], 0.01)
     _set_day_return(ret, asof, ["000001", "000002"], 0.299)
     pbm._raw_cache.clear()
@@ -303,7 +349,33 @@ def test_consecutive_limit_up_excluded_from_extras(monkeypatch: pytest.MonkeyPat
     target = ret["Date"].max().date()
     asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
     prev = ret.loc[ret["Date"] < asof, "Date"].max()
+    _quiet_recent(ret, asof, ["000001", "000002"])
     _set_day_return(ret, prev, ["000001"], 0.299)
+    _set_day_return(ret, asof, ["000001"], 0.299)
+    _set_day_return(ret, prev, ["000002"], 0.01)
+    _set_day_return(ret, asof, ["000002"], 0.299)
+    pbm._raw_cache.clear()
+    pbm._model_cache.clear()
+    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
+    extra_codes = {r.code for r in rows if r.prior_limit_up}
+    assert "000001" not in extra_codes
+    assert "000002" in extra_codes
+
+
+def test_limit_up_extra_excludes_prior_four_day_spike(monkeypatch: pytest.MonkeyPatch) -> None:
+    """상한가 직전 4일에 이미 20%↑가 있으면 별도 표시도 하지 않는다 (10/20 뉴인텍·에스엠벡셀)."""
+    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
+    monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
+    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", False)
+    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 100)
+    ret = _synthetic_returns()
+    target = ret["Date"].max().date()
+    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
+    prev = ret.loc[ret["Date"] < asof, "Date"].max()
+    prev2 = ret.loc[ret["Date"] < prev, "Date"].max()
+    _quiet_recent(ret, asof, ["000001", "000002"])
+    _set_day_return(ret, prev2, ["000001"], 0.22)
+    _set_day_return(ret, prev, ["000001"], 0.01)
     _set_day_return(ret, asof, ["000001"], 0.299)
     _set_day_return(ret, prev, ["000002"], 0.01)
     _set_day_return(ret, asof, ["000002"], 0.299)
