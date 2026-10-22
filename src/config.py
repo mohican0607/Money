@@ -295,7 +295,7 @@ PRED_PRECISION_MIN_PILLARS = _positive_int_env("PRED_PRECISION_MIN_PILLARS", 1)
 PRED_PRECISION_MAX_RANK = _positive_int_env("PRED_PRECISION_MAX_RANK", 15)
 PRED_PRECISION_ML_FLOOR = _float_env("PRED_PRECISION_ML_FLOOR", 0.06)
 # 고확신 전용: 전일 수익률 ≥ 이 값이면 high 제외(일반 과열 차단보다 엄격)
-PRED_HIGH_EXHAUSTION_BLOCK_RET = _float_env("PRED_HIGH_EXHAUSTION_BLOCK_RET", 0.10)
+PRED_HIGH_EXHAUSTION_BLOCK_RET = _float_env("PRED_HIGH_EXHAUSTION_BLOCK_RET", 0.12)
 # 비과열 후보 풀 최고 ML 대비 상대 하한(raw 하이브리드 경로)
 PRED_HIGH_RELATIVE_ML = _float_env("PRED_HIGH_RELATIVE_ML", 0.48)
 PRED_HIGH_ABS_ML_FLOOR = _float_env("PRED_HIGH_ABS_ML_FLOOR", 0.28)
@@ -481,7 +481,7 @@ PRED_FORWARD_MIN_SLATE = _non_negative_int_env("PRED_FORWARD_MIN_SLATE", 0)
 # 리포트 노출 상한 — 소수 정밀 후보만(회사 자존심).
 PRED_FORWARD_SHOW_MAX = _positive_int_env("PRED_FORWARD_SHOW_MAX", 5)
 # 메인 슬레이트(시가 매수 가능 종목)와 별도로, 전체 모델 상위권에 든 전일 상한가 종목을 구분 표시할 최대 수.
-# 전일 상한가 별도표시 최대 수. 10/19 단일 상한가 3종 전부 익일 음수 → 기본 1로 축소.
+# 전일 상한가 별도표시 최대 수. 학습이 점수를 낮추고, 연속 상한만 표시에서 제외.
 PRED_LIMIT_UP_EXTRA_MAX = _non_negative_int_env("PRED_LIMIT_UP_EXTRA_MAX", 1)
 # none 티어라도 리포트에 넣을 최소 급등 점수(잠행·로테이션). 미달이면 제외.
 PRED_REPORT_CONVICTION_MIN = _float_env("PRED_REPORT_CONVICTION_MIN", 0.55)

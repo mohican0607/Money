@@ -63,7 +63,10 @@ def test_build_raw_features_has_trend_and_regime_cols(monkeypatch: pytest.Monkey
     monkeypatch.setattr(pbm, "_industry_map", lambda: {})
     ret = _synthetic_returns(n_codes=10, n_days=80)
     raw = pbm.build_raw_features(ret)
-    for col in ("r10", "r60", "ret_cum3", "close_ma20_ratio", "ks11_ret", "ixic_ret", "ret_max4_prev"):
+    for col in (
+        "r10", "r60", "ret_cum3", "close_ma20_ratio", "ks11_ret", "ixic_ret",
+        "ret_max4_prev", "ret_min5", "n_crash5",
+    ):
         assert col in raw.columns
     pairs = pbm._training_pairs(raw)
     for col in pbm.CONTEXT_FEATURE_COLS:
@@ -113,63 +116,90 @@ def test_predict_top_rows_are_high_tier_slate(monkeypatch: pytest.MonkeyPatch) -
     assert all(0.0 <= float(r.ml_prob) <= 1.0 for r in rows)
 
 
-def test_main_slate_excludes_prior_day_exhaustion(monkeypatch: pytest.MonkeyPatch) -> None:
-    """전일 +12% 이상(에이엔피형)은 메인 슬레이트에 올리지 않는다."""
+def test_sample_weights_upweight_hard_negatives_and_quiet_hits() -> None:
+    before = pd.Timestamp("2026-10-22")
+    tr = pd.DataFrame(
+        {
+            "Date": [before - pd.Timedelta(days=5)] * 4,
+            "big": [0, 0, 1, 1],
+            "r1": [-0.16, 0.01, 0.01, 0.18],
+            "ret_max5": [0.05, 0.05, 0.05, 0.22],
+            "ret_min5": [-0.16, -0.02, -0.02, -0.01],
+        }
+    )
+    w = pbm._sample_weights(tr, before)
+    # 급락 오탐 > 평범한 음수, 잔잔한 급등 적중 > 잔열 급등 적중.
+    assert w[0] > w[1]
+    assert w[2] > w[3]
+
+
+def test_fit_return_predicts_expected_return_not_optimistic_quantile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(pbm, "_industry_map", lambda: {})
     monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
-    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_ENABLED", True)
-    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", False)
-    monkeypatch.setattr(config, "PRED_HIGH_EXHAUSTION_BLOCK_RET", 0.12)
-    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 0)
-    ret = _synthetic_returns()
-    target = ret["Date"].max().date()
-    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
-    prev = ret.loc[ret["Date"] < asof, "Date"].max()
-    _set_day_return(ret, prev, ["000001"], 0.01)
-    _set_day_return(ret, asof, ["000001"], 0.158)
-    pbm._raw_cache.clear()
-    pbm._model_cache.clear()
-    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
-    main_codes = {r.code for r in rows if not r.prior_limit_up}
-    assert "000001" not in main_codes
+    ret = _synthetic_returns(n_codes=20, n_days=80)
+    raw = pbm.build_raw_features(ret)
+    pairs = pbm._training_pairs(raw)
+    before = pd.to_datetime(pairs["Date"]).max()
+    reg = pbm._fit_return(pairs, before=before)
+    assert reg.get_params()["loss"] == "squared_error"
 
 
-def test_main_slate_excludes_crash_rebound(monkeypatch: pytest.MonkeyPatch) -> None:
-    """전일 -12% 이하 급락 반등 추격(10/21 에이엔피·하이퍼형)은 메인에서 뺀다."""
-    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
-    monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
-    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 0)
-    ret = _synthetic_returns()
-    target = ret["Date"].max().date()
-    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
-    _quiet_recent(ret, asof, ["000001"])
-    _set_day_return(ret, asof, ["000001"], -0.16)
-    pbm._raw_cache.clear()
-    pbm._model_cache.clear()
-    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
-    main_codes = {r.code for r in rows if not r.prior_limit_up}
-    assert "000001" not in main_codes
-
-
-def test_main_slate_excludes_recent_five_day_spike(monkeypatch: pytest.MonkeyPatch) -> None:
-    """최근 5일 20%↑ 잔열(10/20 대양금속형)은 전일이 조용해도 메인에서 뺀다."""
+def test_model_ranks_quiet_breakout_above_crash_rebound(monkeypatch: pytest.MonkeyPatch) -> None:
+    """급락 다음날은 거의 실패, 잔잔한 다음날은 20%↑가 반복되면 모델이 잔잔한 쪽을 위로 올린다."""
     monkeypatch.setattr(pbm, "_industry_map", lambda: {})
     monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
     monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 0)
-    ret = _synthetic_returns()
-    target = ret["Date"].max().date()
-    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
-    prev = ret.loc[ret["Date"] < asof, "Date"].max()
-    prev2 = ret.loc[ret["Date"] < prev, "Date"].max()
-    _quiet_recent(ret, asof, ["000001"])
-    _set_day_return(ret, prev2, ["000001"], 0.25)
-    _set_day_return(ret, prev, ["000001"], -0.04)
-    _set_day_return(ret, asof, ["000001"], -0.05)
+    days = pd.bdate_range("2025-06-02", periods=162)
+    rng = np.random.default_rng(7)
+    rows = []
+    for i in range(40):
+        close = 4000.0
+        crash = i < 20
+        for di, d in enumerate(days):
+            r = float(rng.normal(0.0, 0.012))
+            if crash and di % 9 == 3:
+                r = -0.18
+            elif crash and di % 9 == 4:
+                r = -0.05
+            elif (not crash) and di % 9 == 5:
+                r = 0.01
+            elif (not crash) and di % 9 == 6:
+                r = 0.22
+            prev = close
+            close = max(50.0, close * (1.0 + r))
+            rows.append(
+                {
+                    "Date": d,
+                    "Code": f"{i:06d}",
+                    "Name": f"N{i}",
+                    "Open": prev,
+                    "High": max(prev, close) * 1.01,
+                    "Low": min(prev, close) * 0.99,
+                    "Close": close,
+                    "Volume": 20000.0,
+                    "return_pct": float(r),
+                }
+            )
+    ret = pd.DataFrame(rows)
+    asof = days[-1]
+    for i in range(20):
+        _set_day_return(ret, asof, [f"{i:06d}"], -0.18)
+    for i in range(20, 40):
+        _set_day_return(ret, asof, [f"{i:06d}"], 0.01)
+    target = (asof + pd.Timedelta(days=1)).date()
     pbm._raw_cache.clear()
     pbm._model_cache.clear()
-    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
-    main_codes = {r.code for r in rows if not r.prior_limit_up}
-    assert "000001" not in main_codes
+    ranked = pbm.predict_top(
+        ret, target, listing_codes=None, listing_names={}, top_n=40
+    )
+    main = [r for r in ranked if not r.prior_limit_up]
+    by = {r.code: float(r.ml_prob) for r in main}
+    crash_p = [by[f"{i:06d}"] for i in range(20) if f"{i:06d}" in by]
+    quiet_p = [by[f"{i:06d}"] for i in range(20, 40) if f"{i:06d}" in by]
+    assert crash_p and quiet_p
+    assert float(np.mean(quiet_p)) > float(np.mean(crash_p))
 
 
 def test_price_model_rows_survive_freeze_roundtrip(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -351,31 +381,6 @@ def test_consecutive_limit_up_excluded_from_extras(monkeypatch: pytest.MonkeyPat
     prev = ret.loc[ret["Date"] < asof, "Date"].max()
     _quiet_recent(ret, asof, ["000001", "000002"])
     _set_day_return(ret, prev, ["000001"], 0.299)
-    _set_day_return(ret, asof, ["000001"], 0.299)
-    _set_day_return(ret, prev, ["000002"], 0.01)
-    _set_day_return(ret, asof, ["000002"], 0.299)
-    pbm._raw_cache.clear()
-    pbm._model_cache.clear()
-    rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
-    extra_codes = {r.code for r in rows if r.prior_limit_up}
-    assert "000001" not in extra_codes
-    assert "000002" in extra_codes
-
-
-def test_limit_up_extra_excludes_prior_four_day_spike(monkeypatch: pytest.MonkeyPatch) -> None:
-    """상한가 직전 4일에 이미 20%↑가 있으면 별도 표시도 하지 않는다 (10/20 뉴인텍·에스엠벡셀)."""
-    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
-    monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
-    monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", False)
-    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 100)
-    ret = _synthetic_returns()
-    target = ret["Date"].max().date()
-    asof = ret.loc[ret["Date"] < pd.Timestamp(target), "Date"].max()
-    prev = ret.loc[ret["Date"] < asof, "Date"].max()
-    prev2 = ret.loc[ret["Date"] < prev, "Date"].max()
-    _quiet_recent(ret, asof, ["000001", "000002"])
-    _set_day_return(ret, prev2, ["000001"], 0.22)
-    _set_day_return(ret, prev, ["000001"], 0.01)
     _set_day_return(ret, asof, ["000001"], 0.299)
     _set_day_return(ret, prev, ["000002"], 0.01)
     _set_day_return(ret, asof, ["000002"], 0.299)

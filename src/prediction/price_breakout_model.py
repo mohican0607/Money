@@ -22,7 +22,7 @@ from .predict import PredictionRow
 FEATURE_COLS = [
     # 단기·중장기 추세
     "r1", "r5", "r10", "r20", "r60", "ret_cum3", "ret_roll_mean5", "ret_max5",
-    "close_ma20_ratio", "trend_slope20",
+    "ret_min5", "n_crash5", "close_ma20_ratio", "trend_slope20",
     "vol_ratio", "turnover", "close_pos", "upper_wick", "dist_hi20",
     "dist_hi120", "n_big60", "volat20", "logp", "limit_up",
     # 업종·시장 횡단면
@@ -57,20 +57,17 @@ _model_cache: dict[
     ],
 ] = {}
 _RET_SAMPLE = 0.20
-# 2026-09 검증: q=0.9 예측 ≥20% 인 103건 중 실제 20%↑ 10.7% (전체 기준율 0.46%).
-_RET_QUANTILE = 0.90
-# 전일 상한가 별도표시: 연속 상한·2일 과열은 익일 급락이 잦아 제외.
-# (2026-10-16 하이퍼코퍼레이션: 상한 연속 후 예측 +25.3% · 실제 -24.7%)
+# 전일 상한가 별도표시: 연속 상한은 익일 급락이 잦아 제외.
 _LU_EXTRA_MAX_STREAK = 1
-_LU_EXTRA_MAX_R2 = 0.40
-# 단일 상한가라도 q=0.9 낙관 상승률을 그대로 매수 신호처럼 보이지 않게 보수 상한(%).
+# 단일 상한가라도 기대수익률을 상한가처럼 보이지 않게 보수 상한(%).
 _LU_EXTRA_DISPLAY_PCT_CAP = 12.0
 # 메인 고확신: 절대 확률이 이보다 낮으면 mid 로만 표기 (10/19: 7~10%를 고확신으로 달아 오인).
 _HIGH_TIER_MIN_PROB = 0.15
-# 전일 급락 반등 추격 제외 (10/21 에이엔피 -15%·하이퍼 -16%·푸드나무 -30% → 추가 하락/미달).
-_CRASH_REBOUND_RET = -0.12
-# 최근 5거래일 20%↑ 잔열 제외 (10/20 대양금속·엔젠바이오, 10/21 HT로보틱스).
-_RECENT_SPIKE_MAX = 0.20
+# 최근 표본을 더 세게 학습(반감기, 달력일).
+_RECENCY_HALF_LIFE_DAYS = 60.0
+# 급락·잔열 오탐 / 잔잔한 급등 적중을 가중.
+_HARD_NEG_WEIGHT = 4.0
+_QUIET_POS_WEIGHT = 4.0
 
 
 def _industry_map() -> dict[str, str]:
@@ -112,6 +109,10 @@ def build_raw_features(returns: pd.DataFrame) -> pd.DataFrame:
     ) - 1.0
     df["ret_roll_mean5"] = g["return_pct"].transform(lambda s: s.rolling(5, min_periods=3).mean())
     df["ret_max5"] = g["return_pct"].transform(lambda s: s.rolling(5, min_periods=3).max())
+    df["ret_min5"] = g["return_pct"].transform(lambda s: s.rolling(5, min_periods=3).min())
+    df["n_crash5"] = g["r1"].transform(
+        lambda s: (s <= -0.15).rolling(5, min_periods=1).sum()
+    )
     df["ret_max4_prev"] = g["r1"].transform(
         lambda s: s.shift(1).rolling(4, min_periods=1).max()
     )
@@ -313,8 +314,46 @@ def _training_pairs(raw: pd.DataFrame) -> pd.DataFrame:
     return _attach_news_context(out, date_col="Date")
 
 
-def _fit_return(pairs: pd.DataFrame, before: pd.Timestamp) -> HistGradientBoostingRegressor:
-    """전일 피처 → 당일 종가 수익률의 상위 ``_RET_QUANTILE`` 분위(상승 시나리오 상승폭).
+def _sample_weights(tr: pd.DataFrame, before: pd.Timestamp) -> np.ndarray:
+    """최근성 + 급락/잔열 오탐 + 잔잔한 급등 적중 가중.
+
+    10/22처럼 급락 직후·잔열 종목을 고른 오탐, 서한·에이전트AI처럼 전일이 잔잔한
+    적중을 같은 규칙으로 지우지 않고 학습 신호로 넣는다.
+    """
+    age = (pd.Timestamp(before) - pd.to_datetime(tr["Date"])).dt.days.to_numpy(dtype=float)
+    w = np.power(0.5, np.clip(age, 0.0, None) / _RECENCY_HALF_LIFE_DAYS)
+    big = pd.to_numeric(tr["big"], errors="coerce").fillna(0).to_numpy(dtype=float)
+    r1 = (
+        pd.to_numeric(tr["r1"], errors="coerce").fillna(0).to_numpy(dtype=float)
+        if "r1" in tr.columns
+        else np.zeros(len(tr), dtype=float)
+    )
+    rmax = (
+        pd.to_numeric(tr["ret_max5"], errors="coerce").fillna(0).to_numpy(dtype=float)
+        if "ret_max5" in tr.columns
+        else np.zeros(len(tr), dtype=float)
+    )
+    rmin = (
+        pd.to_numeric(tr["ret_min5"], errors="coerce").fillna(0).to_numpy(dtype=float)
+        if "ret_min5" in tr.columns
+        else np.zeros(len(tr), dtype=float)
+    )
+    hard_neg = (big < 0.5) & (
+        (r1 <= -0.08) | (rmin <= -0.20) | (rmax >= 0.20) | (r1 >= 0.10)
+    )
+    quiet_pos = (big >= 0.5) & (np.abs(r1) < 0.08) & (rmax < 0.20) & (rmin > -0.20)
+    w = np.where(hard_neg, w * _HARD_NEG_WEIGHT, w)
+    w = np.where(quiet_pos, w * _QUIET_POS_WEIGHT, w)
+    return np.clip(w, 1e-6, None)
+
+
+def _fit_return(
+    pairs: pd.DataFrame,
+    before: pd.Timestamp,
+    *,
+    feats: list[str] | None = None,
+) -> HistGradientBoostingRegressor:
+    """전일 피처 → 당일 종가 기대수익률(제곱오차). 낙관 분위가 아니라 평균을 맞춘다.
 
     급등일은 모두, 나머지는 ``_RET_SAMPLE`` 만 뽑고 가중치로 원래 분포를 되돌린다.
     """
@@ -322,13 +361,13 @@ def _fit_return(pairs: pd.DataFrame, before: pd.Timestamp) -> HistGradientBoosti
     rng = np.random.default_rng(1)
     keep = (tr["big"] == 1) | (rng.random(len(tr)) < _RET_SAMPLE)
     tr = tr[keep]
-    w = np.where(tr["big"] == 1, 1.0, 1.0 / _RET_SAMPLE)
-    feats = [c for c in MODEL_FEATURE_COLS if c in tr.columns]
+    w = np.where(tr["big"] == 1, 1.0, 1.0 / _RET_SAMPLE) * _sample_weights(tr, before)
+    use = [c for c in (feats or BUYABLE_FEATURE_COLS) if c in tr.columns]
     reg = HistGradientBoostingRegressor(
-        loss="quantile", quantile=_RET_QUANTILE, max_iter=200, learning_rate=0.05,
-        max_leaf_nodes=31, min_samples_leaf=200, random_state=0,
+        loss="squared_error", max_iter=200, learning_rate=0.05,
+        max_leaf_nodes=31, min_samples_leaf=80, random_state=0,
     )
-    reg.fit(tr[feats].to_numpy(dtype=float), tr["y_ret"].to_numpy(dtype=float), sample_weight=w)
+    reg.fit(tr[use].to_numpy(dtype=float), tr["y_ret"].to_numpy(dtype=float), sample_weight=w)
     return reg
 
 
@@ -349,11 +388,12 @@ def _fit(
     rng = np.random.default_rng(0)
     keep = (tr["big"] == 1) | (rng.random(len(tr)) < float(config.PRED_PRICE_MODEL_NEG_SAMPLE))
     tr = tr[keep]
+    w = _sample_weights(tr, before)
     clf = HistGradientBoostingClassifier(
         max_iter=250, learning_rate=0.06, max_leaf_nodes=31,
         min_samples_leaf=80, l2_regularization=1.0, random_state=0,
     )
-    clf.fit(tr[feats].to_numpy(dtype=float), tr["big"].to_numpy())
+    clf.fit(tr[feats].to_numpy(dtype=float), tr["big"].to_numpy(), sample_weight=w)
     return clf
 
 
@@ -409,7 +449,7 @@ def predict_top(
         if clf is None:
             return []
         clf_buy = _fit(pairs, before=before, feats=BUYABLE_FEATURE_COLS, buyable_only=True)
-        reg = _fit_return(pairs, before=before)
+        reg = _fit_return(pairs, before=before, feats=BUYABLE_FEATURE_COLS)
         _model_cache["model"] = (returns, asof, clf, clf_buy, reg)
 
     cur = hist[(hist["Date"] == asof) & hist["valid"]].copy()
@@ -428,13 +468,14 @@ def predict_top(
     model_feats = [c for c in MODEL_FEATURE_COLS if c in cur.columns]
     buy_feats = [c for c in BUYABLE_FEATURE_COLS if c in cur.columns]
     X = cur[model_feats].to_numpy(dtype=float)
+    exp_X = cur[buy_feats].to_numpy(dtype=float) if buy_feats else X
     cur = cur.assign(
         prob=_true_prob(clf.predict_proba(X)[:, 1]),
-        exp_ret=np.clip(reg.predict(X), -0.30, 0.30),
+        exp_ret=np.clip(reg.predict(exp_X), -0.30, 0.30),
     )
     is_lu = cur["limit_up"] >= 1
 
-    # 매수 가능 후보는 전일 하락도 포함: 상한가 제외 walk-forward 에서 하락 제외 시 57건 → 포함 84건.
+    # 매수 가능 후보는 전일 하락도 포함. 급락·잔열은 규칙으로 지우지 않고 학습 확률이 낮추게 한다.
     buy = cur[~is_lu]
     if clf_buy is not None and not buy.empty:
         buy = buy.assign(
@@ -442,42 +483,19 @@ def predict_top(
         )
     else:
         buy = buy[buy["r1"] >= 0]
-    block_hot = config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED and config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE
-    if block_hot:
-        buy = buy[buy["r1"] + 1e-12 < float(config.PRED_PRIOR_DAY_EXHAUSTION_BLOCK_RET)]
-    # 고확신 과열 차단은 BLOCK_SLATE 와 무관하게 메인에 항상 적용.
-    # (10/19 에이엔피: 전일 +15.8% 인데 메인 고확신 → 실제 -29.9%)
-    if config.PRED_PRIOR_DAY_EXHAUSTION_ENABLED and not buy.empty:
-        hi_ex = float(config.PRED_HIGH_EXHAUSTION_BLOCK_RET)
-        buy = buy[buy["r1"].fillna(0) + 1e-12 < hi_ex]
-    # 전일 상한가 직후 추격도 메인에서 제외(상한 다음날 +α 후 급락 패턴).
-    if "r1_prev" in buy.columns and not buy.empty:
-        buy = buy[buy["r1_prev"].fillna(0) + 1e-12 < 0.29]
-    # 2일 누적 급등 추격도 메인에서 제외(상한가 직전 단계의 과열).
-    if "r2" in buy.columns and not buy.empty:
-        buy = buy[buy["r2"].fillna(0) + 1e-12 < _LU_EXTRA_MAX_R2]
-    # 급락 직후 반등 추격 제외. 형지글로벌(-7% 후 +30%)은 남기고, -12% 이하는 뺀다.
-    if not buy.empty:
-        buy = buy[buy["r1"].fillna(0) > _CRASH_REBOUND_RET]
-    # 최근 5일 20%↑ 잔열은 익일 추가 급등이 드묾 (대양금속 N-2 상한 후 -13%).
-    if "ret_max5" in buy.columns and not buy.empty:
-        buy = buy[buy["ret_max5"].fillna(0) + 1e-12 < _RECENT_SPIKE_MAX]
     main = buy.sort_values("prob", ascending=False).head(int(top_n))
 
     lu_rows = cur.iloc[0:0]
-    if not block_hot:
+    extra_max = max(0, int(config.PRED_LIMIT_UP_EXTRA_MAX))
+    if extra_max:
         overall = cur[cur["r1"] >= 0].sort_values("prob", ascending=False).head(int(top_n))
         cand = overall[overall["limit_up"] >= 1].copy()
-        # 연속 상한가·2일 누적 급등·직전 4일 20%↑ 잔열은 익일 반락이 잦아 별도 표시에서도 뺀다.
-        streak = cand["lu_streak"] if "lu_streak" in cand.columns else 0
-        r2 = cand["r2"] if "r2" in cand.columns else 0.0
-        prev_spike = cand["ret_max4_prev"] if "ret_max4_prev" in cand.columns else 0.0
-        overheated = (
-            (streak.fillna(0) > _LU_EXTRA_MAX_STREAK)
-            | (r2.fillna(0) + 1e-12 >= _LU_EXTRA_MAX_R2)
-            | (prev_spike.fillna(0) + 1e-12 >= _RECENT_SPIKE_MAX)
+        streak = (
+            cand["lu_streak"]
+            if "lu_streak" in cand.columns
+            else pd.Series(0, index=cand.index)
         )
-        lu_rows = cand[~overheated].head(max(0, int(config.PRED_LIMIT_UP_EXTRA_MAX)))
+        lu_rows = cand[streak.fillna(0) <= _LU_EXTRA_MAX_STREAK].head(extra_max)
 
     rows: list[PredictionRow] = []
     for pos, (r, prior_lu) in enumerate(
@@ -492,14 +510,14 @@ def predict_top(
             exp_pct = min(exp_pct, _LU_EXTRA_DISPLAY_PCT_CAP)
             head = "전일 상한가(별도 구분 · 시가 매수 어려움 · 익일 반락 위험): "
             verify = (
-                "전일 상한가 익일 20%↑ 기준율 약 18% · 연속 상한·2일 +40% 이상은 표시 제외 · "
-                f"표시 상승률은 낙관치 {raw_exp:+.1f}%를 {_LU_EXTRA_DISPLAY_PCT_CAP:.0f}%로 상한"
+                "전일 상한가 익일 20%↑ 기준율 약 18% · 연속 상한은 표시 제외 · "
+                f"표시 상승률은 기대값 {raw_exp:+.1f}%를 {_LU_EXTRA_DISPLAY_PCT_CAP:.0f}%로 상한"
             )
         else:
             head = ""
             verify = (
-                "추세·레짐·뉴스 강도 학습 모델 · 전일 상한가 제외 후보 검증 상위 5종 적중률 약 7% · "
-                "전일 -12% 이하·최근 5일 20%↑ 잔열은 메인 제외"
+                "추세·레짐·뉴스 강도 학습 모델 · 최근 표본·급락/잔열 오탐·잔잔한 급등 적중을 가중 · "
+                "표시 상승률은 기대수익률(평균) · 전일 상한가 제외 후보"
             )
         r10 = float(getattr(r, "r10", 0.0) or 0.0)
         r60 = float(getattr(r, "r60", 0.0) or 0.0)
@@ -513,7 +531,7 @@ def predict_top(
             f" · 장전뉴스 {nn:.0f}건(급증 {ns:.1f}x)"
         )
         reason = (
-            f"{head}가격·추세·레짐·뉴스 모델: 예측 상승률 {exp_pct:+.1f}%(상승 시나리오 상위 10%) · "
+            f"{head}가격·추세·레짐·뉴스 모델: 예측 상승률 {exp_pct:+.1f}%(기대수익률) · "
             f"익일 20%↑ 확률 {prob:.0%} · 전일 {float(r.r1) * 100:+.1f}% · "
             f"거래량 20일 평균의 {vol_x:.1f}배 · 같은 업종 전일 20%↑ {int(r.ind_big or 0)}종"
             f"{ctx} ({verify}. 종가 기준 적중)"
