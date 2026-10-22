@@ -48,6 +48,14 @@ def test_forward_observation_skips_rise_band_filter() -> None:
     assert "day-forward-obs" in _COMPACT_TEMPLATE
 
 
+def test_predicted_rows_stay_visible_under_rise_filter() -> None:
+    """장 마감 후에도 예측 종목은 20% 필터에 가려지지 않아야 한다."""
+    assert "hasPred" in REPORT_TABLE_INTERACTION_SNIPPET
+    assert "data-sort-col=\"pred\"" in REPORT_TABLE_INTERACTION_SNIPPET
+    assert "r.pred_ret is not none" in _COMPACT_TEMPLATE
+    assert "forward_observation | default(false)) and r.pred_ret" not in _COMPACT_TEMPLATE
+
+
 def test_live_quotes_phone_email_fallback() -> None:
     """휴대폰 이메일 첨부에서는 localhost API를 건너뛰고 네이버·인라인 스냅샷을 쓴다."""
     snippet = REPORT_TABLE_INTERACTION_SNIPPET
