@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from datetime import date
 from email.utils import parsedate_to_datetime
@@ -28,11 +29,15 @@ FEATURE_COLS = [
     # 업종·시장 횡단면
     "ind_big", "ind_big_share", "ind_ret", "ind_big5", "ind_ret5", "ind_ret_rank",
     "mkt_ret", "mkt_big", "rel_ind",
+    # 동일 상호(진양산업·폴리·화학) 전일 동반
+    "prefix_n", "prefix_ret", "prefix_big", "prefix_lu",
     # 국내·국제 레짐 (일별, 전일 종가 기준 — training 시 shift(1))
     "ks11_ret", "ks11_vol5", "ks11_risk_off", "ixic_ret", "ixic_vol5",
 ]
 # 장전 뉴스 맥락 — 라벨일/관측일 T 기준(shift 하지 않음). 캐시만 사용.
-CONTEXT_FEATURE_COLS = ["news_n", "news_5d", "news_surge", "ind_news"]
+CONTEXT_FEATURE_COLS = [
+    "news_n", "news_5d", "news_surge", "ind_news", "prefix_news", "ind_theme",
+]
 # 매수 가능(전일 상한가 아님) 전용 모델 추가 피처. 상한가 제외 후보 walk-forward(2025-10~2026-10, 246일)
 # 상위 5종 적중: 기본 피처·전체 학습 72건 → 상한가 제외 학습+추가 피처 84건.
 EXTRA_FEATURE_COLS = [
@@ -43,6 +48,8 @@ BUYABLE_FEATURE_COLS = FEATURE_COLS + EXTRA_FEATURE_COLS + CONTEXT_FEATURE_COLS
 MODEL_FEATURE_COLS = FEATURE_COLS + CONTEXT_FEATURE_COLS
 _LIMIT = 0.31
 _MIN_POSITIVES = 200
+_PREF_SUF = re.compile(r"(?:\d우|우B|우C|우)$")
+_NEWS_LOOKBACK_CAL_DAYS = 8
 
 # 원본 DataFrame 참조를 같이 보관해 id 재사용으로 캐시가 엇갈리지 않게 한다.
 _raw_cache: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
@@ -57,17 +64,16 @@ _model_cache: dict[
     ],
 ] = {}
 _RET_SAMPLE = 0.20
-# 전일 상한가 별도표시: 연속 상한은 익일 급락이 잦아 제외.
-_LU_EXTRA_MAX_STREAK = 1
 # 단일 상한가라도 기대수익률을 상한가처럼 보이지 않게 보수 상한(%).
 _LU_EXTRA_DISPLAY_PCT_CAP = 12.0
 # 메인 고확신: 절대 확률이 이보다 낮으면 mid 로만 표기 (10/19: 7~10%를 고확신으로 달아 오인).
 _HIGH_TIER_MIN_PROB = 0.15
 # 최근 표본을 더 세게 학습(반감기, 달력일).
 _RECENCY_HALF_LIFE_DAYS = 60.0
-# 급락·잔열 오탐 / 잔잔한 급등 적중을 가중.
+# 급락·잔열 오탐 / 잔잔한 급등 적중 / 동일 그룹·업종 동반 급등을 가중.
 _HARD_NEG_WEIGHT = 4.0
 _QUIET_POS_WEIGHT = 4.0
+_CLUSTER_POS_WEIGHT = 3.0
 
 
 def _industry_map() -> dict[str, str]:
@@ -76,6 +82,26 @@ def _industry_map() -> dict[str, str]:
         return {str(k).zfill(6): str(v or "na") for k, v in json.loads(p.read_text(encoding="utf-8")).items()}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _industry_name_map() -> dict[str, str]:
+    p = config.LISTING_META_CACHE_DIR / "industry_name_by_code.json"
+    try:
+        raw = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {str(k): str(v or "").strip() for k, v in raw.items() if str(v or "").strip()}
+
+
+def _issuer_prefix(name: str) -> str:
+    """종목명에서 우선주 접미를 빼고 한글 상호 2자(진양산업→진양)."""
+    s = str(name or "").strip()
+    s = _PREF_SUF.sub("", s)
+    hangul = "".join(ch for ch in s if "가" <= ch <= "힣")
+    core = hangul or s
+    if len(core) >= 2:
+        return core[:2]
+    return core or "_"
 
 
 def build_raw_features(returns: pd.DataFrame) -> pd.DataFrame:
@@ -157,6 +183,26 @@ def build_raw_features(returns: pd.DataFrame) -> pd.DataFrame:
         how="left",
     )
     df["rel_ind"] = df["r1"] - df["ind_ret"]
+    df["prefix"] = df["Name"].map(_issuer_prefix)
+    day_pref = df.groupby(["Date", "prefix"]).agg(
+        prefix_n=("Code", "size"),
+        prefix_ret=("return_pct", "mean"),
+        prefix_big=("big", "sum"),
+        prefix_lu=("limit_up", "sum"),
+    ).reset_index()
+    df = df.merge(day_pref, on=["Date", "prefix"], how="left")
+    for c in ("prefix_n", "prefix_ret", "prefix_big", "prefix_lu"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    # 자기 자신을 뺀 동일 상호 동반(진양화학 급등이 진양산업 피처가 되게).
+    peer_n = (df["prefix_n"] - 1.0).clip(lower=0.0)
+    df["prefix_big"] = (df["prefix_big"] - df["big"]).clip(lower=0.0)
+    df["prefix_lu"] = (df["prefix_lu"] - df["limit_up"]).clip(lower=0.0)
+    df["prefix_ret"] = np.where(
+        peer_n > 0,
+        (df["prefix_ret"] * df["prefix_n"] - df["r1"]) / peer_n,
+        0.0,
+    )
+    df["prefix_n"] = peer_n
     mkt = df.groupby("Date").agg(mkt_ret=("return_pct", "mean"), mkt_big=("big", "sum")).reset_index()
     df = df.merge(mkt, on="Date", how="left")
     df = _attach_index_regime(df)
@@ -216,52 +262,219 @@ def _attach_index_regime(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _listing_name_pairs() -> tuple[tuple[str, str], ...]:
+    """긴 종목명 우선 (아이패밀리에스씨 vs 증권사 오태그 보정)."""
+    hit = _news_cache.get("name_pairs")
+    if hit is not None:
+        return hit
+    pairs: list[tuple[str, str]] = []
+    try:
+        from .. import stocks as stocks_mod
+
+        listing = stocks_mod.load_listing()
+    except Exception:
+        listing = pd.DataFrame()
+    if listing is not None and not listing.empty:
+        seen: set[tuple[str, str]] = set()
+        for _, r in listing.iterrows():
+            code = str(r.get("Code", "")).zfill(6)
+            name = str(r.get("Name", "")).strip()
+            if not code.strip("0") or len(name) < 2:
+                continue
+            key = (name, code)
+            if key in seen:
+                continue
+            seen.add(key)
+            pairs.append(key)
+        pairs.sort(key=lambda x: len(x[0]), reverse=True)
+    out = tuple(pairs)
+    _news_cache["name_pairs"] = out
+    return out
+
+
+def _article_codes(row: dict) -> list[str]:
+    """태그 코드 + 제목·본문에 나온 종목명. 000000·빈 코드는 버린다."""
+    codes: list[str] = []
+    seen: set[str] = set()
+
+    def add(raw: object) -> None:
+        code = str(raw or "").zfill(6)
+        if not code.strip("0") or code in seen:
+            return
+        seen.add(code)
+        codes.append(code)
+
+    add(row.get("stock_code"))
+    extra = row.get("stock_codes") or []
+    if isinstance(extra, str):
+        extra = [extra]
+    if isinstance(extra, (list, tuple)):
+        for c in extra:
+            add(c)
+    blob = f"{row.get('title') or ''} {row.get('description') or ''}"
+    if blob.strip():
+        for name, code in _listing_name_pairs():
+            if name in blob:
+                add(code)
+            if len(codes) >= 8:
+                break
+    return codes
+
+
+def _article_news_day(row: dict) -> pd.Timestamp | None:
+    try:
+        pub = parsedate_to_datetime(str(row.get("pub")))
+    except (TypeError, ValueError, IndexError):
+        return None
+    if pub is None:
+        return None
+    pub = pub.replace(tzinfo=None)
+    day = pd.Timestamp(pub.date())
+    if pub.hour >= 9:
+        day = day + pd.Timedelta(days=1)
+    return day
+
+
+def _iter_news_rows():
+    from .. import news as news_mod
+
+    base = news_mod._CACHE_NEWS / "naver_both"
+    if not base.is_dir():
+        return
+    for f in sorted(base.rglob("day_*.json")):
+        try:
+            rows = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(rows, list):
+            continue
+        for r in rows:
+            if isinstance(r, dict):
+                yield r
+
+
+def _industry_name_tokens() -> list[tuple[str, str]]:
+    names = _industry_name_map()
+    tokens: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for ic, nm in names.items():
+        parts = [p.strip() for p in re.split(r"[,/·및]", str(nm)) if len(p.strip()) >= 2]
+        if not parts:
+            parts = [str(nm).strip()]
+        for tok in parts:
+            key = (ic, tok)
+            if len(tok) < 2 or key in seen:
+                continue
+            seen.add(key)
+            tokens.append((ic, tok))
+    tokens.sort(key=lambda x: len(x[1]), reverse=True)
+    return tokens
+
+
+def _fill_news_caches() -> None:
+    """뉴스 JSON 을 한 번만 읽어 종목 건수·업종 테마 건수를 채운다."""
+    if "counts" in _news_cache and "ind_theme" in _news_cache:
+        return
+    counts: dict[tuple[str, pd.Timestamp], int] = defaultdict(int)
+    theme: dict[tuple[pd.Timestamp, str], int] = defaultdict(int)
+    tokens = _industry_name_tokens()
+    for r in _iter_news_rows() or []:
+        day = _article_news_day(r)
+        if day is None:
+            continue
+        for code in _article_codes(r):
+            counts[(code, day)] += 1
+        blob = f"{r.get('title') or ''} {r.get('description') or ''}"
+        if blob.strip() and tokens:
+            hit_ind: set[str] = set()
+            for ic, tok in tokens:
+                if ic in hit_ind:
+                    continue
+                if tok in blob:
+                    hit_ind.add(ic)
+                    theme[(day, ic)] += 1
+    _news_cache["counts"] = pd.DataFrame(
+        [(c, d, n) for (c, d), n in counts.items()],
+        columns=["Code", "NewsDay", "news_n"],
+    )
+    _news_cache["ind_theme"] = pd.DataFrame(
+        [(d, i, n) for (d, i), n in theme.items()],
+        columns=["NewsDay", "ind", "ind_theme"],
+    )
+
+
 def _load_news_counts() -> pd.DataFrame:
     """캐시 뉴스 → (Code, NewsDay) 건수. NewsDay = 장전 뉴스가 귀속되는 예측일."""
     hit = _news_cache.get("counts")
     if hit is not None:
         return hit
-    from .. import news as news_mod
+    _fill_news_caches()
+    return _news_cache["counts"]
 
-    counts: dict[tuple[str, pd.Timestamp], int] = defaultdict(int)
-    base = news_mod._CACHE_NEWS / "naver_both"
-    if base.is_dir():
-        for f in sorted(base.rglob("day_*.json")):
-            try:
-                rows = json.loads(f.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError, TypeError):
-                continue
-            if not isinstance(rows, list):
-                continue
-            for r in rows:
-                code = str(r.get("stock_code") or "").zfill(6)
-                if not code.strip("0"):
-                    continue
-                try:
-                    pub = parsedate_to_datetime(str(r.get("pub")))
-                except (TypeError, ValueError, IndexError):
-                    continue
-                if pub is None:
-                    continue
-                pub = pub.replace(tzinfo=None)
-                day = pd.Timestamp(pub.date())
-                if pub.hour >= 9:
-                    day = day + pd.Timedelta(days=1)
-                counts[(code, day)] += 1
-    out = pd.DataFrame(
-        [(c, d, n) for (c, d), n in counts.items()],
-        columns=["Code", "NewsDay", "news_n"],
+
+def _load_ind_theme_counts() -> pd.DataFrame:
+    """업종명이 제목·본문에 나온 장전 뉴스 건수 (종목 태그 없이도 화학·제약 테마를 봄)."""
+    hit = _news_cache.get("ind_theme")
+    if hit is not None:
+        return hit
+    _fill_news_caches()
+    return _news_cache["ind_theme"]
+
+
+def _news_lookback_sum(news: pd.DataFrame, keys: pd.DataFrame, date_col: str) -> pd.Series:
+    """(Code, D)마다 NewsDay ∈ [D-8, D) 뉴스 합. 예측 한 줄짜리 프레임에서도 과거가 붙는다."""
+    if news.empty or keys.empty:
+        return pd.Series(0.0, index=keys.index)
+    src = news.copy()
+    src["NewsDay"] = pd.to_datetime(src["NewsDay"]).dt.normalize()
+    src["Code"] = src["Code"].astype(str).str.zfill(6)
+    src["news_n"] = pd.to_numeric(src["news_n"], errors="coerce").fillna(0.0)
+    src = src.sort_values(["Code", "NewsDay"])
+    src["csum"] = src.groupby("Code", sort=False)["news_n"].cumsum()
+    left = pd.DataFrame(
+        {
+            "_i": np.arange(len(keys)),
+            "Code": keys["Code"].astype(str).str.zfill(6).to_numpy(),
+            "NewsDay": pd.to_datetime(keys[date_col]).dt.normalize() - pd.Timedelta(days=1),
+        }
     )
-    _news_cache["counts"] = out
-    return out
+    end = pd.merge_asof(
+        left.sort_values(["Code", "NewsDay"]),
+        src[["Code", "NewsDay", "csum"]],
+        on="NewsDay",
+        by="Code",
+        direction="backward",
+    )
+    left_lo = left.copy()
+    left_lo["NewsDay"] = pd.to_datetime(keys[date_col]).dt.normalize() - pd.Timedelta(
+        days=_NEWS_LOOKBACK_CAL_DAYS + 1
+    )
+    start = pd.merge_asof(
+        left_lo.sort_values(["Code", "NewsDay"]),
+        src[["Code", "NewsDay", "csum"]],
+        on="NewsDay",
+        by="Code",
+        direction="backward",
+    )
+    end = end.sort_values("_i")
+    start = start.sort_values("_i")
+    return (
+        pd.to_numeric(end["csum"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        - pd.to_numeric(start["csum"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+    )
 
 
 def _attach_news_context(df: pd.DataFrame, *, date_col: str = "Date") -> pd.DataFrame:
-    """라벨일/관측일 행에 장전 뉴스 강도·업종 뉴스 열기를 붙인다."""
+    """라벨일/관측일 행에 장전 뉴스 강도·업종·동일상호 뉴스 열기를 붙인다."""
     out = df.copy()
     if "ind" not in out.columns and "Code" in out.columns:
         ind_map = _industry_map()
         out["ind"] = out["Code"].map(lambda c: ind_map.get(str(c).zfill(6), "na"))
+    if "prefix" not in out.columns:
+        if "Name" in out.columns:
+            out["prefix"] = out["Name"].map(_issuer_prefix)
+        else:
+            out["prefix"] = "_"
     news = _load_news_counts()
     if news.empty:
         for c in CONTEXT_FEATURE_COLS:
@@ -270,30 +483,32 @@ def _attach_news_context(df: pd.DataFrame, *, date_col: str = "Date") -> pd.Data
     tmp = out[[date_col, "Code"]].copy()
     tmp["Code"] = tmp["Code"].astype(str).str.zfill(6)
     tmp["_i"] = np.arange(len(tmp))
-    merged = tmp.merge(
-        news.rename(columns={"NewsDay": date_col}),
-        on=["Code", date_col],
-        how="left",
-    )
+    tmp[date_col] = pd.to_datetime(tmp[date_col]).dt.normalize()
+    nmap = news.rename(columns={"NewsDay": date_col}).copy()
+    nmap[date_col] = pd.to_datetime(nmap[date_col]).dt.normalize()
+    merged = tmp.merge(nmap, on=["Code", date_col], how="left")
     merged["news_n"] = merged["news_n"].fillna(0.0)
-    merged = merged.sort_values(["Code", date_col])
-    merged["news_5d"] = (
-        merged.groupby("Code")["news_n"]
-        .transform(lambda s: s.shift(1).rolling(5, min_periods=1).sum())
-        .fillna(0.0)
-    )
+    merged["news_5d"] = _news_lookback_sum(news, tmp, date_col)
     merged["news_surge"] = merged["news_n"] / (merged["news_5d"] / 5.0 + 0.5)
-    if "ind" in out.columns:
-        ind = out[["ind"]].copy()
-        ind["_i"] = np.arange(len(ind))
-        merged = merged.merge(ind, on="_i", how="left")
-        ind_news = (
-            merged.groupby([date_col, "ind"], dropna=False)["news_n"].sum().rename("ind_news").reset_index()
-        )
-        merged = merged.merge(ind_news, on=[date_col, "ind"], how="left")
+    merged = merged.merge(out[["ind", "prefix"]].assign(_i=np.arange(len(out))), on="_i", how="left")
+    ind_news = (
+        merged.groupby([date_col, "ind"], dropna=False)["news_n"].sum().rename("ind_news").reset_index()
+    )
+    merged = merged.merge(ind_news, on=[date_col, "ind"], how="left")
+    pref_news = (
+        merged.groupby([date_col, "prefix"], dropna=False)["news_n"].sum().rename("prefix_news").reset_index()
+    )
+    merged = merged.merge(pref_news, on=[date_col, "prefix"], how="left")
+    theme = _load_ind_theme_counts()
+    if theme.empty:
+        merged["ind_theme"] = 0.0
     else:
-        merged["ind_news"] = 0.0
+        tmap = theme.rename(columns={"NewsDay": date_col}).copy()
+        tmap[date_col] = pd.to_datetime(tmap[date_col]).dt.normalize()
+        merged = merged.merge(tmap, on=[date_col, "ind"], how="left")
+        merged["ind_theme"] = merged["ind_theme"].fillna(0.0)
     merged["ind_news"] = merged["ind_news"].fillna(0.0)
+    merged["prefix_news"] = merged["prefix_news"].fillna(0.0)
     merged = merged.sort_values("_i")
     for c in CONTEXT_FEATURE_COLS:
         out[c] = merged[c].to_numpy(dtype=float)
@@ -306,8 +521,10 @@ def _training_pairs(raw: pd.DataFrame) -> pd.DataFrame:
     price_cols = list(dict.fromkeys(FEATURE_COLS + EXTRA_FEATURE_COLS))
     x = g[price_cols].shift(1)
     prev_valid = g["valid"].shift(1, fill_value=False).astype(bool)
+    keep = ["Date", "Code", "Name", "ind", "prefix", "big", "valid"]
+    keep = [c for c in keep if c in raw.columns]
     out = pd.concat(
-        [raw[["Date", "Code", "ind", "big", "valid"]], raw["return_pct"].rename("y_ret"), x],
+        [raw[keep], raw["return_pct"].rename("y_ret"), x],
         axis=1,
     )
     out = out[out["valid"] & prev_valid & out["r1"].notna()]
@@ -338,12 +555,23 @@ def _sample_weights(tr: pd.DataFrame, before: pd.Timestamp) -> np.ndarray:
         if "ret_min5" in tr.columns
         else np.zeros(len(tr), dtype=float)
     )
-    hard_neg = (big < 0.5) & (
-        (r1 <= -0.08) | (rmin <= -0.20) | (rmax >= 0.20) | (r1 >= 0.10)
-    )
+    hard_neg = (big < 0.5) & ((r1 <= -0.08) | (rmin <= -0.20) | (rmax >= 0.20))
     quiet_pos = (big >= 0.5) & (np.abs(r1) < 0.08) & (rmax < 0.20) & (rmin > -0.20)
     w = np.where(hard_neg, w * _HARD_NEG_WEIGHT, w)
     w = np.where(quiet_pos, w * _QUIET_POS_WEIGHT, w)
+    # 10/23 진양산업·폴리·화학처럼 같은 날 같은 상호·업종이 같이 20%↑면 가중.
+    ind_n = (
+        tr.groupby(["Date", "ind"])["big"].transform("sum").to_numpy(dtype=float)
+        if "ind" in tr.columns
+        else np.zeros(len(tr), dtype=float)
+    )
+    pref_n = (
+        tr.groupby(["Date", "prefix"])["big"].transform("sum").to_numpy(dtype=float)
+        if "prefix" in tr.columns
+        else np.zeros(len(tr), dtype=float)
+    )
+    cluster_pos = (big >= 0.5) & ((pref_n >= 2.0) | (ind_n >= 3.0))
+    w = np.where(cluster_pos, w * _CLUSTER_POS_WEIGHT, w)
     return np.clip(w, 1e-6, None)
 
 
@@ -459,8 +687,9 @@ def predict_top(
     if cur.empty:
         return []
     # 장전 뉴스 맥락은 관측일 T 기준(가격 피처는 asof=T-1).
+    news_cols = [c for c in ("Date", "Code", "Name", "ind", "prefix") if c in cur.columns]
     news_bits = _attach_news_context(
-        cur.assign(Date=T)[["Date", "Code", "ind"]],
+        cur.assign(Date=T)[news_cols],
         date_col="Date",
     )
     for c in CONTEXT_FEATURE_COLS:
@@ -488,14 +717,9 @@ def predict_top(
     lu_rows = cur.iloc[0:0]
     extra_max = max(0, int(config.PRED_LIMIT_UP_EXTRA_MAX))
     if extra_max:
+        # 연속 상한 여부는 lu_streak 피처로 학습. 규칙으로 지우지 않는다.
         overall = cur[cur["r1"] >= 0].sort_values("prob", ascending=False).head(int(top_n))
-        cand = overall[overall["limit_up"] >= 1].copy()
-        streak = (
-            cand["lu_streak"]
-            if "lu_streak" in cand.columns
-            else pd.Series(0, index=cand.index)
-        )
-        lu_rows = cand[streak.fillna(0) <= _LU_EXTRA_MAX_STREAK].head(extra_max)
+        lu_rows = overall[overall["limit_up"] >= 1].head(extra_max)
 
     rows: list[PredictionRow] = []
     for pos, (r, prior_lu) in enumerate(
@@ -510,13 +734,13 @@ def predict_top(
             exp_pct = min(exp_pct, _LU_EXTRA_DISPLAY_PCT_CAP)
             head = "전일 상한가(별도 구분 · 시가 매수 어려움 · 익일 반락 위험): "
             verify = (
-                "전일 상한가 익일 20%↑ 기준율 약 18% · 연속 상한은 표시 제외 · "
+                "전일 상한가 익일 20%↑ 기준율 약 18% · 연속 상한은 lu_streak으로 학습 · "
                 f"표시 상승률은 기대값 {raw_exp:+.1f}%를 {_LU_EXTRA_DISPLAY_PCT_CAP:.0f}%로 상한"
             )
         else:
             head = ""
             verify = (
-                "추세·레짐·뉴스 강도 학습 모델 · 최근 표본·급락/잔열 오탐·잔잔한 급등 적중을 가중 · "
+                "추세·레짐·그룹·뉴스 학습 모델 · 최근 표본·급락/잔열 오탐·잔잔한 급등·동반 급등 적중을 가중 · "
                 "표시 상승률은 기대수익률(평균) · 전일 상한가 제외 후보"
             )
         r10 = float(getattr(r, "r10", 0.0) or 0.0)
@@ -525,10 +749,13 @@ def predict_top(
         ix = float(getattr(r, "ixic_ret", 0.0) or 0.0)
         nn = float(getattr(r, "news_n", 0.0) or 0.0)
         ns = float(getattr(r, "news_surge", 0.0) or 0.0)
+        pbig = float(getattr(r, "prefix_big", 0.0) or 0.0)
+        ith = float(getattr(r, "ind_theme", 0.0) or 0.0)
         ctx = (
             f" · 추세 10일 {r10 * 100:+.1f}%/60일 {r60 * 100:+.1f}%"
             f" · KOSPI {ks * 100:+.2f}% · 나스닥 {ix * 100:+.2f}%"
-            f" · 장전뉴스 {nn:.0f}건(급증 {ns:.1f}x)"
+            f" · 장전뉴스 {nn:.0f}건(급증 {ns:.1f}x) · 동일상호 전일 20%↑ {int(pbig)}종"
+            f" · 업종테마뉴스 {ith:.0f}건"
         )
         reason = (
             f"{head}가격·추세·레짐·뉴스 모델: 예측 상승률 {exp_pct:+.1f}%(기대수익률) · "

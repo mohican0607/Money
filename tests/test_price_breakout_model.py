@@ -24,6 +24,11 @@ def _stub_regime_and_news(monkeypatch: pytest.MonkeyPatch) -> None:
         "_load_news_counts",
         lambda: pd.DataFrame(columns=["Code", "NewsDay", "news_n"]),
     )
+    monkeypatch.setattr(
+        pbm,
+        "_load_ind_theme_counts",
+        lambda: pd.DataFrame(columns=["NewsDay", "ind", "ind_theme"]),
+    )
     pbm._raw_cache.clear()
     pbm._model_cache.clear()
     pbm._news_cache.clear()
@@ -65,7 +70,7 @@ def test_build_raw_features_has_trend_and_regime_cols(monkeypatch: pytest.Monkey
     raw = pbm.build_raw_features(ret)
     for col in (
         "r10", "r60", "ret_cum3", "close_ma20_ratio", "ks11_ret", "ixic_ret",
-        "ret_max4_prev", "ret_min5", "n_crash5",
+        "ret_max4_prev", "ret_min5", "n_crash5", "prefix_big", "prefix_ret", "prefix_lu",
     ):
         assert col in raw.columns
     pairs = pbm._training_pairs(raw)
@@ -131,6 +136,25 @@ def test_sample_weights_upweight_hard_negatives_and_quiet_hits() -> None:
     # 급락 오탐 > 평범한 음수, 잔잔한 급등 적중 > 잔열 급등 적중.
     assert w[0] > w[1]
     assert w[2] > w[3]
+
+
+def test_sample_weights_upweight_name_prefix_cluster_hits() -> None:
+    before = pd.Timestamp("2026-10-23")
+    d = before - pd.Timedelta(days=2)
+    tr = pd.DataFrame(
+        {
+            "Date": [d, d, d],
+            "big": [1, 1, 1],
+            "r1": [0.01, 0.02, 0.01],
+            "ret_max5": [0.05, 0.04, 0.05],
+            "ret_min5": [-0.02, -0.01, -0.02],
+            "prefix": ["진양", "진양", "단독"],
+            "ind": ["272", "272", "261"],
+        }
+    )
+    w = pbm._sample_weights(tr, before)
+    assert w[0] == w[1]
+    assert w[0] > w[2]
 
 
 def test_fit_return_predicts_expected_return_not_optimistic_quantile(
@@ -369,8 +393,8 @@ def test_prior_day_limit_up_listed_separately_after_main(monkeypatch: pytest.Mon
         assert probs == sorted(probs, reverse=True)
 
 
-def test_consecutive_limit_up_excluded_from_extras(monkeypatch: pytest.MonkeyPatch) -> None:
-    """연속 상한가(하이퍼코퍼레이션형)는 별도 표시에도 올리지 않는다."""
+def test_consecutive_limit_up_can_appear_in_extras(monkeypatch: pytest.MonkeyPatch) -> None:
+    """연속 상한은 규칙으로 숨기지 않고, 모델 점수가 되면 별도 표시에 남긴다."""
     monkeypatch.setattr(pbm, "_industry_map", lambda: {})
     monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
     monkeypatch.setattr(config, "PRED_PRIOR_DAY_EXHAUSTION_BLOCK_SLATE", False)
@@ -388,7 +412,7 @@ def test_consecutive_limit_up_excluded_from_extras(monkeypatch: pytest.MonkeyPat
     pbm._model_cache.clear()
     rows = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=200)
     extra_codes = {r.code for r in rows if r.prior_limit_up}
-    assert "000001" not in extra_codes
+    assert "000001" in extra_codes
     assert "000002" in extra_codes
 
 
@@ -420,3 +444,139 @@ def test_main_slate_may_include_prior_day_decliners(monkeypatch: pytest.MonkeyPa
     main = [r for r in rows if not r.prior_limit_up]
     assert any(float(prior[r.code]) < 0.0 for r in main)
     assert all(float(prior[r.code]) < 0.29 for r in main)
+
+
+def test_issuer_prefix_strips_preferred_suffix() -> None:
+    assert pbm._issuer_prefix("진양산업") == "진양"
+    assert pbm._issuer_prefix("진양화학") == "진양"
+    assert pbm._issuer_prefix("소프트센우") == "소프"
+
+
+def test_issuer_prefix_peer_features_exclude_self(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
+    days = pd.bdate_range("2026-09-01", periods=30)
+    rows = []
+    names = {"000001": "진양산업", "000002": "진양화학", "000003": "단독제약"}
+    for code, name in names.items():
+        close = 5000.0
+        for d in days:
+            r = 0.22 if (code == "000002" and d == days[-1]) else 0.01
+            prev = close
+            close = max(50.0, close * (1.0 + r))
+            rows.append(
+                {
+                    "Date": d,
+                    "Code": code,
+                    "Name": name,
+                    "Open": prev,
+                    "High": max(prev, close) * 1.01,
+                    "Low": min(prev, close) * 0.99,
+                    "Close": close,
+                    "Volume": 20000.0,
+                    "return_pct": float(r),
+                }
+            )
+    raw = pbm.build_raw_features(pd.DataFrame(rows))
+    last = raw[raw["Date"] == days[-1]].set_index("Code")
+    assert float(last.loc["000001", "prefix_big"]) == 1.0
+    assert float(last.loc["000002", "prefix_big"]) == 0.0
+    assert float(last.loc["000003", "prefix_big"]) == 0.0
+
+
+def test_article_codes_include_name_in_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pbm,
+        "_listing_name_pairs",
+        lambda: (("아이패밀리에스씨", "114840"), ("NH투자증권", "005940")),
+    )
+    codes = pbm._article_codes(
+        {
+            "stock_code": "005940",
+            "title": "日 마루베니, 아이패밀리에스씨 지분 공개매수",
+            "description": "",
+        }
+    )
+    assert "114840" in codes
+    assert "005940" in codes
+    assert pbm._article_codes({"stock_code": "000000", "title": "시황", "description": ""}) == []
+
+
+def test_news_5d_uses_prior_days_on_single_row_frame(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        pbm,
+        "_load_news_counts",
+        lambda: pd.DataFrame(
+            {
+                "Code": ["000001", "000001"],
+                "NewsDay": [pd.Timestamp("2026-10-21"), pd.Timestamp("2026-10-23")],
+                "news_n": [4.0, 1.0],
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        pbm,
+        "_load_ind_theme_counts",
+        lambda: pd.DataFrame(columns=["NewsDay", "ind", "ind_theme"]),
+    )
+    df = pd.DataFrame(
+        {
+            "Date": [pd.Timestamp("2026-10-23")],
+            "Code": ["000001"],
+            "ind": ["272"],
+            "prefix": ["진양"],
+            "Name": ["진양산업"],
+        }
+    )
+    out = pbm._attach_news_context(df)
+    assert float(out.loc[0, "news_n"]) == 1.0
+    assert float(out.loc[0, "news_5d"]) == 4.0
+
+
+def test_model_ranks_quiet_prefix_peer_after_group_hits(monkeypatch: pytest.MonkeyPatch) -> None:
+    """한쪽이 20%↑한 다음날 같은 상호의 잔잔한 형제가 반복 급등하면 그 형제를 위로 올린다."""
+    monkeypatch.setattr(pbm, "_industry_map", lambda: {})
+    monkeypatch.setattr(pbm, "_MIN_POSITIVES", 20)
+    monkeypatch.setattr(config, "PRED_LIMIT_UP_EXTRA_MAX", 0)
+    days = pd.bdate_range("2025-06-02", periods=162)
+    rng = np.random.default_rng(11)
+    rows = []
+    for i in range(30):
+        close = 4000.0
+        grouped = i < 8
+        name = f"진양{i}" if grouped else f"단독{i}"
+        for di, d in enumerate(days):
+            r = float(rng.normal(0.0, 0.006))
+            if grouped and di % 8 == 3 and i == 0:
+                r = 0.22
+            elif grouped and di % 8 == 4 and i != 0:
+                r = 0.22
+            prev = close
+            close = max(50.0, close * (1.0 + r))
+            rows.append(
+                {
+                    "Date": d,
+                    "Code": f"{i:06d}",
+                    "Name": name,
+                    "Open": prev,
+                    "High": max(prev, close) * 1.01,
+                    "Low": min(prev, close) * 0.99,
+                    "Close": close,
+                    "Volume": 20000.0,
+                    "return_pct": float(r),
+                }
+            )
+    ret = pd.DataFrame(rows)
+    asof = days[-1]
+    _set_day_return(ret, asof, ["000000"], 0.22)
+    for i in range(1, 30):
+        _set_day_return(ret, asof, [f"{i:06d}"], 0.01)
+    target = (asof + pd.Timedelta(days=1)).date()
+    pbm._raw_cache.clear()
+    pbm._model_cache.clear()
+    ranked = pbm.predict_top(ret, target, listing_codes=None, listing_names={}, top_n=30)
+    main = [r for r in ranked if not r.prior_limit_up]
+    by = {r.code: float(r.ml_prob) for r in main}
+    peer_p = [by[f"{i:06d}"] for i in range(1, 8) if f"{i:06d}" in by]
+    other_p = [by[f"{i:06d}"] for i in range(8, 30) if f"{i:06d}" in by]
+    assert peer_p and other_p
+    assert float(np.mean(peer_p)) > float(np.mean(other_p))
